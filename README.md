@@ -1,4 +1,4 @@
-# Kestrel Ridge — Smart Trainer Ride
+# Smart Trainer Ride
 
 A browser-based indoor cycling app: connects directly to a smart trainer over
 Bluetooth LE using FTMS, drives a Three.js 3D rider along a course, and pushes
