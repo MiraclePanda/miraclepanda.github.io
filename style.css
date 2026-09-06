@@ -1,0 +1,360 @@
+:root {
+  --bg-void: #0b0e11;
+  --bg-panel: rgba(18, 23, 28, 0.78);
+  --hairline: #232b31;
+  --text-primary: #e9eef1;
+  --text-muted: #7c8891;
+  --accent-speed: #5eead4;
+  --accent-power: #f2c94c;
+  --accent-warn: #ff6b57;
+
+  --font-display: "Rajdhani", "Inter", sans-serif;
+  --font-body: "Inter", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  overflow: hidden;
+}
+
+#scene-canvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+}
+
+button {
+  font-family: var(--font-body);
+}
+
+.btn {
+  border: none;
+  border-radius: 3px;
+  padding: 0.6rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+.btn:hover {
+  filter: brightness(1.1);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--accent-speed);
+  outline-offset: 2px;
+}
+.btn-primary {
+  background: var(--accent-speed);
+  color: #06201c;
+}
+
+/* ---------------------------------------------------------------- Topbar */
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.1rem 1.5rem;
+  z-index: 10;
+  pointer-events: none;
+}
+.topbar > * {
+  pointer-events: auto;
+}
+
+.course-id {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--bg-panel);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0.5rem 0.9rem;
+}
+.course-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.05rem;
+  white-space: nowrap;
+}
+.progress-track {
+  position: relative;
+  width: 140px;
+  height: 4px;
+  background: var(--hairline);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: var(--accent-speed);
+}
+.distance-readout {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.connection {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.status-pill {
+  font-size: 0.85rem;
+  padding: 0.5rem 0.8rem 0.5rem 0.7rem;
+  border-radius: 3px;
+  background: var(--bg-panel);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--text-muted);
+  color: var(--text-muted);
+}
+.status-pill[data-state="connected"] {
+  border-left-color: var(--accent-speed);
+  color: var(--text-primary);
+}
+.status-pill[data-state="connecting"] {
+  border-left-color: var(--accent-power);
+  color: var(--text-primary);
+}
+.status-pill[data-state="lost"] {
+  border-left-color: var(--accent-warn);
+  color: var(--text-primary);
+}
+
+/* --------------------------------------------------------------------- HUD */
+.hud {
+  position: fixed;
+  left: 1.5rem;
+  bottom: 1.5rem;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.hud-primary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  background: var(--bg-panel);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0.4rem 1.2rem 0.6rem;
+  width: fit-content;
+}
+.hud-value {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 4.2rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.hud-unit {
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+.hud-secondary {
+  display: flex;
+  gap: 0.6rem;
+}
+.hud-metric {
+  background: var(--bg-panel);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  min-width: 88px;
+  text-align: center;
+}
+.hud-metric-value {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.6rem;
+  font-variant-numeric: tabular-nums;
+}
+.hud-metric-label {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.1rem;
+}
+
+/* ---------------------------------------------------------------- Grade bar */
+.grade-bar {
+  position: fixed;
+  right: 1.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 260px;
+  background: var(--hairline);
+  border-radius: 5px;
+  z-index: 10;
+  overflow: hidden;
+}
+.grade-bar-center-line {
+  position: absolute;
+  left: -4px;
+  right: -4px;
+  top: 50%;
+  height: 1px;
+  background: var(--text-muted);
+}
+.grade-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 50%;
+  background: var(--accent-power);
+  transition: height 200ms ease, background-color 200ms ease;
+}
+.grade-fill.descending {
+  background: var(--accent-speed);
+}
+
+/* ------------------------------------------------------------------ Dialogs */
+dialog {
+  background: #14191e;
+  color: var(--text-primary);
+  border: none;
+  border-top: 3px solid var(--accent-speed);
+  border-radius: 4px;
+  padding: 1.8rem 2rem 2rem;
+  width: min(380px, 90vw);
+  font-family: var(--font-body);
+}
+dialog::backdrop {
+  background: rgba(5, 7, 9, 0.7);
+  backdrop-filter: blur(3px);
+}
+dialog h1 {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin: 0 0 0.6rem;
+}
+.dialog-copy {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0 0 1.3rem;
+}
+.field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+  font-size: 0.9rem;
+}
+.field input {
+  width: 90px;
+  background: var(--bg-void);
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  color: var(--text-primary);
+  padding: 0.4rem 0.5rem;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+}
+.field input:focus-visible {
+  outline: 2px solid var(--accent-speed);
+  outline-offset: 1px;
+}
+#weight-form .btn,
+#reconnect-dialog .btn {
+  width: 100%;
+  margin-top: 0.4rem;
+}
+
+/* -------------------------------------------------------------- Debug panel */
+.debug-panel {
+  position: fixed;
+  top: 5.2rem;
+  right: 1.5rem;
+  z-index: 20;
+  width: 240px;
+  background: var(--bg-panel);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 1rem 1.1rem 1.2rem;
+}
+.debug-panel h2 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+.debug-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin: 0 0 0.9rem;
+}
+.debug-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  margin-bottom: 0.6rem;
+}
+.debug-row span {
+  width: 55px;
+  color: var(--text-muted);
+}
+.debug-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent-speed);
+}
+.debug-row output {
+  width: 60px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grade-fill,
+  .btn {
+    transition: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .hud-value {
+    font-size: 3rem;
+  }
+  .hud-metric {
+    min-width: 70px;
+    padding: 0.4rem 0.6rem;
+  }
+  .progress-track {
+    width: 80px;
+  }
+  .grade-bar {
+    height: 180px;
+  }
+}

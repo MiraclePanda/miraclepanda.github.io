@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kestrel Ridge — Smart Trainer Ride</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <canvas id="scene-canvas"></canvas>
+
+    <!-- Top bar: course identity + connection controls -->
+    <header class="topbar">
+      <div class="course-id">
+        <span class="course-name" id="course-name">Course</span>
+        <div class="progress-track">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <span class="distance-readout" id="hud-distance">0.00 km</span>
+      </div>
+      <div class="connection">
+        <span class="status-pill" id="status-pill" data-state="idle">Trainer not connected</span>
+        <button class="btn btn-primary" id="connect-button" type="button">Connect trainer</button>
+      </div>
+    </header>
+
+    <!-- Bottom-left HUD: live ride numbers -->
+    <section class="hud" aria-label="Ride data">
+      <div class="hud-primary">
+        <span class="hud-value" id="hud-speed">0.0</span>
+        <span class="hud-unit">km/h</span>
+      </div>
+      <div class="hud-secondary">
+        <div class="hud-metric">
+          <span class="hud-metric-value" id="hud-power">0</span>
+          <span class="hud-metric-label">watts</span>
+        </div>
+        <div class="hud-metric">
+          <span class="hud-metric-value" id="hud-cadence">0</span>
+          <span class="hud-metric-label">rpm</span>
+        </div>
+        <div class="hud-metric">
+          <span class="hud-metric-value" id="hud-grade">0.0%</span>
+          <span class="hud-metric-label">grade</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right-edge grade bar: fills up for climbs, down (teal) for descents -->
+    <div class="grade-bar" aria-hidden="true">
+      <div class="grade-bar-center-line"></div>
+      <div class="grade-fill" id="grade-fill"></div>
+    </div>
+
+    <!-- Rider setup dialog, shown once on load -->
+    <dialog id="weight-dialog">
+      <form id="weight-form" method="dialog">
+        <h1>Before you start</h1>
+        <p class="dialog-copy">
+          Your weight and bike weight decide how quickly you accelerate and how much
+          gravity slows you down on climbs. This stays on your device for this ride only.
+        </p>
+        <label class="field">
+          <span>Rider weight (kg)</span>
+          <input id="rider-weight" type="number" min="30" max="200" step="0.5" value="75" required />
+        </label>
+        <label class="field">
+          <span>Bike weight (kg)</span>
+          <input id="bike-weight" type="number" min="4" max="30" step="0.5" value="9" required />
+        </label>
+        <button class="btn btn-primary" type="submit">Start ride</button>
+      </form>
+    </dialog>
+
+    <!-- Reconnect dialog, shown when the trainer goes silent for 3s -->
+    <dialog id="reconnect-dialog">
+      <h1>Connection lost</h1>
+      <p class="dialog-copy">
+        No data from your trainer for a few seconds. Your rider has coasted to a stop.
+        Reconnect to keep going.
+      </p>
+      <button class="btn btn-primary" id="reconnect-button" type="button">Reconnect trainer</button>
+    </dialog>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>
