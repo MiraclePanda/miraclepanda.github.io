@@ -1,4 +1,4 @@
-# Smart Trainer Ride
+# Kestrel Ridge — Smart Trainer Ride
 
 A browser-based indoor cycling app: connects directly to a smart trainer over
 Bluetooth LE using FTMS, drives a Three.js 3D rider along a course, and pushes
@@ -17,8 +17,8 @@ python3 -m http.server 8080
 ```
 
 Web Bluetooth is currently supported in Chrome and Edge (desktop and Android),
-not in Safari or Firefox. On first load you'll be asked for rider and bike
-weight, then you can either click **Connect trainer** to pair a real FTMS
+not in Safari or Firefox. On first load you'll be asked for rider weight, bike weight, and a start
+distance, then you can either click **Connect trainer** to pair a real FTMS
 device, or press **D** to open the debug panel and ride with mock power/cadence
 values (sliders or arrow keys) — useful for developing without hardware nearby.
 
@@ -33,7 +33,11 @@ src/ble.js           Web Bluetooth / FTMS GATT client (main thread only —
 src/physicsWorker.js Web Worker: parses raw FTMS bytes + runs the
                       power-to-speed physics simulation, off the main thread
 src/course.js         Distance-based course data (length + grade per segment),
-                      shared by the road-building code and the physics worker
+                      shared by the tunnel-building code and the physics worker
+src/underwater.js     Low-poly ring-tunnel rendering + zone fog/creatures
+                      (presentation only — doesn't feed back into physics)
+src/audio.js          Synthesized ambient underwater sound (Web Audio API,
+                      no external audio files)
 src/debugPanel.js     Mock power/cadence generator for development
 ```
 
@@ -46,6 +50,38 @@ stepping the physics simulation — happens in `physicsWorker.js`. The worker
 broadcasts ride state (~10 times/second); `main.js` extrapolates the rider's
 position every animation frame using delta time, so motion stays smooth at any
 display refresh rate even though updates from the worker arrive less often.
+
+## The visuals: a low-spec-friendly underwater light tunnel
+
+There's no avatar and no water shader. The rider "is" the camera, moving
+first-person along the course centerline. The tube itself is a single
+`THREE.InstancedMesh` of low-poly rings (one draw call for the whole 6km
+course), so it stays cheap even on weak GPUs. Two independent visual layers
+react to the ride, matching the original design brief:
+
+- **Zone (position-based):** the course is split into thirds — a bright
+  shallow reef, a dark shipwreck zone, and a hydrothermal/volcano zone late in
+  the lap — each with its own fog/background color and billboard creatures
+  (fish, jellyfish, glowing embers), crossfading smoothly at the boundaries.
+  See `zoneColorAtDistance` / `ZONE_CREATURE_RECIPES` in `underwater.js`.
+- **Effort (power-based):** the tunnel's rings glow deep blue at recovery
+  power, flowing emerald at cruising power, and a fast violet-white pulse
+  above ~300W. Only the ~50 rings nearest the rider are recolored each frame
+  (the rest sit beyond the fog anyway), which keeps the per-frame cost low
+  regardless of how long the course is. See `powerZoneParams` in
+  `underwater.js`.
+
+Billboard creatures use `THREE.Sprite` (always faces the camera) with tiny
+`<canvas>`-drawn textures instead of any external image/model assets, so the
+whole app has zero binary asset dependencies.
+
+## Rider setup
+
+The startup dialog now also asks for a **start distance (km)** — useful for
+resuming partway around the loop. It's sent to the worker as
+`startDistanceMeters` and wraps automatically if it exceeds the course length
+(same modulo logic the course lookup already uses). Nothing is persisted
+between sessions.
 
 ## Physics model
 

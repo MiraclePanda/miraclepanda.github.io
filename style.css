@@ -56,6 +56,17 @@ button {
   background: var(--accent-speed);
   color: #06201c;
 }
+.btn-icon {
+  background: var(--bg-panel);
+  border: 1px solid var(--hairline);
+  color: var(--text-primary);
+  font-size: 1rem;
+  padding: 0.5rem 0.65rem;
+  line-height: 1;
+}
+.btn-icon[aria-pressed="true"] {
+  color: var(--text-muted);
+}
 
 /* ---------------------------------------------------------------- Topbar */
 .topbar {

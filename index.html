@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Smart Trainer Ride</title>
+    <title>Kestrel Ridge — Smart Trainer Ride</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -26,6 +26,7 @@
       </div>
       <div class="connection">
         <span class="status-pill" id="status-pill" data-state="idle">Trainer not connected</span>
+        <button class="btn btn-icon" id="mute-button" type="button" aria-pressed="false" title="Toggle ambient sound">🔊</button>
         <button class="btn btn-primary" id="connect-button" type="button">Connect trainer</button>
       </div>
     </header>
@@ -64,7 +65,9 @@
         <h1>Before you start</h1>
         <p class="dialog-copy">
           Your weight and bike weight decide how quickly you accelerate and how much
-          gravity slows you down on climbs. This stays on your device for this ride only.
+          gravity slows you down on climbs. Start distance lets you resume partway
+          around the loop (it wraps automatically past the course length). Nothing
+          here is saved — it's reset next time you open the app.
         </p>
         <label class="field">
           <span>Rider weight (kg)</span>
@@ -73,6 +76,10 @@
         <label class="field">
           <span>Bike weight (kg)</span>
           <input id="bike-weight" type="number" min="4" max="30" step="0.5" value="9" required />
+        </label>
+        <label class="field">
+          <span>Start distance (km)</span>
+          <input id="start-distance" type="number" min="0" max="600" step="0.1" value="0" required />
         </label>
         <button class="btn btn-primary" type="submit">Start ride</button>
       </form>
