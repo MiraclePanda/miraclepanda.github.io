@@ -8,7 +8,7 @@
 // so the loop returns to the same elevation every lap (no visual "cliff"
 // at the wrap-around point).
 export const COURSE = {
-  name: "COURSE",
+  name: "Oceanic Tube Circuit",
   segments: [
     { length: 500, grade: 0.0 },   // flat start
     { length: 700, grade: 4.0 },   // easing up

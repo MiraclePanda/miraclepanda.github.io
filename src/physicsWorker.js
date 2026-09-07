@@ -164,6 +164,9 @@ onmessage = (event) => {
     case "init": {
       state.riderWeightKg = msg.riderWeightKg;
       state.bikeWeightKg = msg.bikeWeightKg;
+      if (typeof msg.startDistanceMeters === "number" && !Number.isNaN(msg.startDistanceMeters)) {
+        state.distance = msg.startDistanceMeters;
+      }
       startLoop();
       break;
     }

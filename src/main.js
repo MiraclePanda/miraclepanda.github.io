@@ -1,12 +1,9 @@
 import * as THREE from "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.js";
-import {
-  COURSE,
-  COURSE_TOTAL_LENGTH,
-  elevationAtDistance,
-  gradeAtDistance,
-} from "./course.js";
+import { COURSE, elevationAtDistance } from "./course.js";
 import { FtmsClient } from "./ble.js";
 import { DebugPanel } from "./debugPanel.js";
+import { buildTunnel, buildCreatures, zoneColorAtDistance } from "./underwater.js";
+import { AmbientAudio } from "./audio.js";
 
 // ---------------------------------------------------------------------------
 // DOM references
@@ -17,6 +14,7 @@ const weightForm = document.getElementById("weight-form");
 const reconnectDialog = document.getElementById("reconnect-dialog");
 const reconnectButton = document.getElementById("reconnect-button");
 const connectButton = document.getElementById("connect-button");
+const muteButton = document.getElementById("mute-button");
 const statusPill = document.getElementById("status-pill");
 const hud = {
   speed: document.getElementById("hud-speed"),
@@ -82,6 +80,8 @@ function updateHud(state) {
   const lapDistance = state.distance % state.totalLength;
   hud.distance.textContent = `${(lapDistance / 1000).toFixed(2)} km`;
   hud.progressFill.style.width = `${(lapDistance / state.totalLength) * 100}%`;
+
+  ambientAudio.setIntensity(state.power);
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +168,18 @@ setInterval(() => {
 }, 500);
 
 // ---------------------------------------------------------------------------
+// Ambient audio (starts on the same user gesture as the ride, per autoplay policy)
+// ---------------------------------------------------------------------------
+const ambientAudio = new AmbientAudio();
+let muted = false;
+muteButton.addEventListener("click", () => {
+  muted = !muted;
+  ambientAudio.setMuted(muted);
+  muteButton.textContent = muted ? "🔇" : "🔊";
+  muteButton.setAttribute("aria-pressed", String(muted));
+});
+
+// ---------------------------------------------------------------------------
 // Rider setup dialog
 // ---------------------------------------------------------------------------
 weightDialog.showModal();
@@ -175,20 +187,29 @@ weightForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const riderWeightKg = Number(document.getElementById("rider-weight").value) || 75;
   const bikeWeightKg = Number(document.getElementById("bike-weight").value) || 9;
-  worker.postMessage({ type: "init", riderWeightKg, bikeWeightKg });
+  const startDistanceKm = Number(document.getElementById("start-distance").value) || 0;
+  const startDistanceMeters = Math.max(0, startDistanceKm) * 1000;
+
+  worker.postMessage({ type: "init", riderWeightKg, bikeWeightKg, startDistanceMeters });
+  renderState.distance = startDistanceMeters; // so the very first rendered frame is already in place
+  renderState.receivedAt = performance.now();
+
   weightDialog.close();
   debugPanel.emitInitial();
+  ambientAudio.start();
 });
 
 // ---------------------------------------------------------------------------
-// Three.js scene
+// Three.js scene — a fog-shrouded ring tunnel (see underwater.js). No avatar:
+// the camera itself travels the course, first-person, through the tube.
 // ---------------------------------------------------------------------------
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0e11);
-scene.fog = new THREE.Fog(0x0b0e11, 40, 220);
+const initialFogColor = zoneColorAtDistance(renderState.distance);
+scene.background = initialFogColor.clone();
+scene.fog = new THREE.Fog(initialFogColor.getHex(), 12, 140);
 
 const camera = new THREE.PerspectiveCamera(
-  55,
+  62,
   window.innerWidth / window.innerHeight,
   0.1,
   500
@@ -204,148 +225,20 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Lighting: a cool, low-angle "early morning" key light plus soft fill.
-const hemiLight = new THREE.HemisphereLight(0x8fb8c9, 0x11151a, 0.9);
-scene.add(hemiLight);
-const sunLight = new THREE.DirectionalLight(0xfff2d6, 1.1);
-sunLight.position.set(-30, 40, -20);
-scene.add(sunLight);
+// Minimal lighting: dim ambient "filtered sunlight" plus a headlamp on the
+// camera so the nearest rings/creatures are never fully unlit.
+const ambientLight = new THREE.AmbientLight(0x335577, 0.5);
+scene.add(ambientLight);
+const headlamp = new THREE.PointLight(0xbfe8ff, 1.1, 18, 2);
+camera.add(headlamp);
+scene.add(camera);
 
-// Ground: a broad, understated plane so the road doesn't float in the void.
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(4000, 4000),
-  new THREE.MeshStandardMaterial({ color: 0x11161a, roughness: 1 })
-);
-ground.rotation.x = -Math.PI / 2;
-ground.position.y = -0.05;
-scene.add(ground);
-
-// ---- Road ribbon, built from the course profile -----------------------
-function buildRoad() {
-  const sampleStep = 4; // meters between cross-sections
-  const roadHalfWidth = 3;
-  const samples = Math.ceil(COURSE_TOTAL_LENGTH / sampleStep) + 1;
-
-  const positions = [];
-  const colors = [];
-  const indices = [];
-
-  const uphillColor = new THREE.Color(0xff6b57);
-  const flatColor = new THREE.Color(0x2a333a);
-  const downhillColor = new THREE.Color(0x5eead4);
-
-  for (let i = 0; i < samples; i++) {
-    const d = Math.min(i * sampleStep, COURSE_TOTAL_LENGTH);
-    const elevation = elevationAtDistance(d);
-    const grade = gradeAtDistance(d);
-
-    let color;
-    if (grade > 0.5) {
-      color = flatColor.clone().lerp(uphillColor, Math.min(grade / 10, 1));
-    } else if (grade < -0.5) {
-      color = flatColor.clone().lerp(downhillColor, Math.min(-grade / 10, 1));
-    } else {
-      color = flatColor;
-    }
-
-    positions.push(-roadHalfWidth, elevation, -d);
-    positions.push(roadHalfWidth, elevation, -d);
-    colors.push(color.r, color.g, color.b);
-    colors.push(color.r, color.g, color.b);
-
-    if (i < samples - 1) {
-      const a = i * 2;
-      const b = i * 2 + 1;
-      const c = i * 2 + 2;
-      const dIdx = i * 2 + 3;
-      indices.push(a, c, b, b, c, dIdx);
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-
-  const material = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    roughness: 0.95,
-  });
-  return new THREE.Mesh(geometry, material);
-}
-
-const road = buildRoad();
-scene.add(road);
-
-// ---- Avatar: a simple procedural rider so the app has no external asset
-// dependencies. Crank rotates in sync with live cadence. --------------------
-function buildAvatar() {
-  const group = new THREE.Group();
-
-  const frameMat = new THREE.MeshStandardMaterial({ color: 0x5eead4, roughness: 0.4 });
-  const riderMat = new THREE.MeshStandardMaterial({ color: 0xe9eef1, roughness: 0.6 });
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1a1f24, roughness: 0.8 });
-
-  const wheelGeo = new THREE.TorusGeometry(0.35, 0.045, 10, 24);
-  const frontWheel = new THREE.Mesh(wheelGeo, wheelMat);
-  frontWheel.rotation.y = Math.PI / 2;
-  frontWheel.position.set(0, 0.35, -0.55);
-  const rearWheel = frontWheel.clone();
-  rearWheel.position.set(0, 0.35, 0.55);
-  group.add(frontWheel, rearWheel);
-
-  const frameBar = new THREE.Mesh(
-    new THREE.BoxGeometry(0.05, 0.05, 1.1),
-    frameMat
-  );
-  frameBar.position.set(0, 0.5, 0);
-  group.add(frameBar);
-
-  const seatPost = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.35, 0.04), frameMat);
-  seatPost.position.set(0, 0.68, 0.4);
-  group.add(seatPost);
-
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.14, 0.5, 4, 8), riderMat);
-  torso.position.set(0, 1.05, 0.25);
-  torso.rotation.x = Math.PI / 2.6;
-  group.add(torso);
-
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 12), riderMat);
-  head.position.set(0, 1.35, -0.15);
-  group.add(head);
-
-  // Crank + pedals live in their own group so we can rotate just this part.
-  const crankGroup = new THREE.Group();
-  crankGroup.position.set(0, 0.35, 0.1);
-  const crankMat = new THREE.MeshStandardMaterial({ color: 0xf2c94c, roughness: 0.5 });
-  const pedalGeo = new THREE.BoxGeometry(0.08, 0.03, 0.14);
-  const armGeo = new THREE.BoxGeometry(0.03, 0.18, 0.03);
-
-  const armA = new THREE.Mesh(armGeo, crankMat);
-  armA.position.set(0, 0.09, 0);
-  const pedalA = new THREE.Mesh(pedalGeo, crankMat);
-  pedalA.position.set(0, 0.18, 0);
-  const legA = new THREE.Group();
-  legA.add(armA, pedalA);
-  crankGroup.add(legA);
-
-  const legB = legA.clone();
-  legB.rotation.z = Math.PI;
-  crankGroup.add(legB);
-
-  group.add(crankGroup);
-
-  return { group, crankGroup };
-}
-
-const { group: avatar, crankGroup } = buildAvatar();
-scene.add(avatar);
+const { updateRingGlow } = buildTunnel(scene);
+buildCreatures(scene);
 
 // ---------------------------------------------------------------------------
 // Animation loop — delta-time based so motion is independent of display FPS
 // ---------------------------------------------------------------------------
-let crankAngle = 0;
 let previousFrameTime = performance.now();
 
 function animate() {
@@ -356,34 +249,29 @@ function animate() {
   previousFrameTime = now;
 
   // Smoothly extrapolate distance between the worker's ~10Hz state updates
-  // so avatar motion stays fluid even at 60/120Hz displays.
+  // so camera motion stays fluid even at 60/120Hz displays.
   const elapsedSinceState = (now - renderState.receivedAt) / 1000;
   const visualDistance = renderState.distance + renderState.speed * elapsedSinceState;
 
   const elevation = elevationAtDistance(visualDistance);
-  avatar.position.set(0, elevation, -visualDistance);
+  const aheadElevation = elevationAtDistance(visualDistance + 1.5);
+  const pitch = Math.atan2(aheadElevation - elevation, 1.5);
 
-  // Orient the avatar to face the local slope direction.
-  const lookAheadElevation = elevationAtDistance(visualDistance + 1);
-  const pitch = Math.atan2(lookAheadElevation - elevation, 1);
-  avatar.rotation.x = -pitch;
-
-  // Crank rotation follows live cadence (rpm -> radians/sec).
-  const radiansPerSecond = (renderState.cadence / 60) * 2 * Math.PI;
-  crankAngle += radiansPerSecond * dt;
-  crankGroup.rotation.x = crankAngle;
-
-  // Chase camera: smoothed follow + slight pitch with the road grade.
-  const camDistance = 4.2;
-  const camHeight = 1.7;
-  const desiredCamPos = new THREE.Vector3(
-    avatar.position.x + 1.6,
-    elevation + camHeight,
-    avatar.position.z + camDistance
+  // First-person camera riding the tube's centerline, eye height above it,
+  // pitching gently to match the slope ahead.
+  camera.position.set(0, elevation + 1.3, -visualDistance);
+  const lookTarget = new THREE.Vector3(
+    0,
+    elevation + 1.3 + Math.sin(pitch) * 8,
+    -visualDistance - Math.cos(pitch) * 8
   );
-  const followStrength = 1 - Math.pow(0.001, dt); // frame-rate independent smoothing
-  camera.position.lerp(desiredCamPos, followStrength);
-  camera.lookAt(avatar.position.x, elevation + 1.0, avatar.position.z - 3);
+  camera.lookAt(lookTarget);
+
+  // Zone atmosphere follows position; the tube's glow follows effort.
+  const targetFogColor = zoneColorAtDistance(visualDistance);
+  scene.background.lerp(targetFogColor, Math.min(1, dt * 1.5));
+  scene.fog.color.copy(scene.background);
+  updateRingGlow(visualDistance, renderState.power, dt);
 
   renderer.render(scene, camera);
 }
