@@ -1,0 +1,1414 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DC1 バーチャルライド</title>
+<style>
+  :root{
+    --bg:#0f1420;
+    --panel:#171e2e;
+    --panel2:#1e2740;
+    --accent:#4fc3f7;
+    --accent2:#66bb6a;
+    --danger:#ef5350;
+    --warn:#ffb74d;
+    --text:#e8edf5;
+    --sub:#8b97ad;
+    --border:#2a3450;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  #app{max-width:920px;margin:0 auto;padding:16px 16px 60px;}
+  h1{font-size:20px;margin:8px 0 2px;display:flex;align-items:center;gap:8px;}
+  h1 .badge{font-size:11px;background:var(--accent2);color:#06210c;padding:2px 8px;border-radius:20px;font-weight:700;}
+  .subtitle{color:var(--sub);font-size:13px;margin-bottom:18px;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:14px;}
+  .card h2{font-size:15px;margin:0 0 14px;color:var(--accent);display:flex;align-items:center;gap:8px;}
+  label{display:block;font-size:13px;color:var(--sub);margin-bottom:6px;}
+  input[type=number], select{
+    width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    padding:11px 12px;border-radius:9px;font-size:16px;outline:none;
+  }
+  input[type=number]:focus, select:focus{border-color:var(--accent);}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;}
+  .field{margin-bottom:12px;}
+  .course-list{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  @media (max-width:560px){.course-list{grid-template-columns:1fr;} .row3{grid-template-columns:1fr 1fr;}}
+  .course-opt{border:2px solid var(--border);background:var(--panel2);border-radius:12px;padding:12px;cursor:pointer;transition:.15s;}
+  .course-opt:hover{border-color:#3d4a70;}
+  .course-opt.selected{border-color:var(--accent);background:#12324a;}
+  .course-opt .name{font-weight:700;font-size:14px;margin-bottom:4px;}
+  .course-opt .meta{font-size:12px;color:var(--sub);}
+  .course-opt canvas{width:100%;height:40px;display:block;margin-top:8px;}
+  button{cursor:pointer;font-family:inherit;border:none;border-radius:10px;font-weight:700;font-size:15px;}
+  .btn-primary{background:linear-gradient(135deg,#4fc3f7,#29b6f6);color:#052030;padding:14px 20px;width:100%;}
+  .btn-primary:disabled{opacity:.4;cursor:not-allowed;}
+  .btn-secondary{background:var(--panel2);color:var(--text);border:1px solid var(--border);padding:12px 18px;}
+  .btn-danger{background:#3a1a1a;color:#ff8a80;border:1px solid #5c2626;padding:12px 18px;}
+  .btn-small{padding:8px 12px;font-size:13px;border-radius:8px;}
+  .hidden{display:none !important;}
+  .status-line{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--sub);margin-top:10px;flex-wrap:wrap;}
+  .dot{width:9px;height:9px;border-radius:50%;background:#556;display:inline-block;}
+  .dot.on{background:var(--accent2);box-shadow:0 0 8px var(--accent2);}
+  .dot.off{background:var(--danger);}
+  .dot.pending{background:var(--warn);}
+
+  /* Ride screen */
+  .metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
+  @media (max-width:560px){.metrics-grid{grid-template-columns:repeat(2,1fr);}}
+  .metric{background:var(--panel2);border-radius:12px;padding:12px 10px;text-align:center;}
+  .metric .val{font-size:26px;font-weight:800;line-height:1.1;}
+  .metric .unit{font-size:11px;color:var(--sub);margin-left:2px;}
+  .metric .label{font-size:11px;color:var(--sub);margin-top:4px;}
+  .metric.power .val{color:var(--accent);}
+  .metric.grade .val{color:var(--warn);}
+
+  #courseCanvasWrap{position:relative;background:var(--panel2);border-radius:12px;padding:10px;margin-bottom:14px;}
+  #courseCanvas{width:100%;height:150px;display:block;}
+  .progress-bar-outer{background:var(--panel2);border-radius:8px;height:8px;overflow:hidden;margin-bottom:6px;}
+  .progress-bar-inner{background:linear-gradient(90deg,var(--accent),var(--accent2));height:100%;width:0%;transition:width .3s;}
+  .dist-line{display:flex;justify-content:space-between;font-size:12px;color:var(--sub);}
+
+  .load-panel{display:flex;flex-direction:column;gap:10px;}
+  .load-mode-toggle{display:flex;gap:8px;}
+  .mode-btn{flex:1;padding:10px;text-align:center;border-radius:9px;border:2px solid var(--border);background:var(--panel2);color:var(--sub);font-weight:700;font-size:13px;}
+  .mode-btn.active{border-color:var(--accent);color:var(--accent);background:#12324a;}
+  .slider-row{display:flex;align-items:center;gap:12px;}
+  input[type=range]{flex:1;-webkit-appearance:none;height:8px;border-radius:6px;background:var(--panel2);}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:var(--accent);cursor:pointer;border:3px solid #06202e;}
+  input[type=range]::-moz-range-thumb{width:24px;height:24px;border-radius:50%;background:var(--accent);cursor:pointer;border:3px solid #06202e;}
+  .load-value{font-size:22px;font-weight:800;min-width:64px;text-align:right;color:var(--accent);}
+
+  .controls-row{display:flex;gap:10px;margin-top:14px;}
+  .controls-row button{flex:1;}
+
+  details{margin-top:10px;}
+  summary{cursor:pointer;color:var(--sub);font-size:13px;padding:6px 0;}
+  .adv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
+
+  #log{background:#0a0e17;border-radius:10px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:11px;
+    color:#7fd88f;height:130px;overflow-y:auto;white-space:pre-wrap;line-height:1.5;}
+
+  .notice{background:#2a2210;border:1px solid #4a3d16;color:#ffd479;border-radius:10px;padding:12px 14px;font-size:13px;margin-bottom:14px;line-height:1.6;}
+  .finish-overlay{position:fixed;inset:0;background:rgba(4,8,16,.92);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;}
+  .finish-card{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:28px;max-width:420px;width:100%;text-align:center;}
+  .finish-card h2{color:var(--accent2);font-size:22px;}
+  .finish-stats{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:20px 0;}
+  .finish-stats .v{font-size:24px;font-weight:800;}
+  .finish-stats .l{font-size:12px;color:var(--sub);}
+  footer{text-align:center;color:var(--sub);font-size:11px;margin-top:30px;}
+
+  /* Header actions */
+  .header-actions{display:flex;gap:8px;margin-bottom:14px;}
+  .header-actions button{flex:1;}
+
+  /* View toggle (2D/3D) */
+  .view-toggle{display:flex;gap:8px;margin-bottom:10px;}
+  .view-toggle .mode-btn{flex:1;}
+  #threeCanvasWrap{position:relative;background:#0a1120;border-radius:12px;overflow:hidden;margin-bottom:14px;height:280px;}
+  #threeCanvasWrap canvas{display:block;width:100%;height:100%;}
+  #threeHud{position:absolute;top:10px;left:10px;background:rgba(10,14,23,.6);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--sub);}
+  #threeWarning{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;font-size:13px;color:var(--sub);}
+
+  /* History screen */
+  .history-item{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer;}
+  .history-item:hover{border-color:var(--accent);}
+  .history-item .hi-main{flex:1;}
+  .history-item .hi-course{font-weight:700;font-size:14px;}
+  .history-item .hi-date{font-size:12px;color:var(--sub);margin-top:2px;}
+  .history-item .hi-stats{display:flex;gap:14px;font-size:12px;color:var(--sub);margin-top:6px;}
+  .history-item .hi-stats b{color:var(--text);font-size:13px;}
+  .history-empty{text-align:center;color:var(--sub);font-size:13px;padding:30px 10px;}
+  .modal-overlay{position:fixed;inset:0;background:rgba(4,8,16,.85);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px;}
+  .modal-card{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:24px;max-width:440px;width:100%;max-height:85vh;overflow-y:auto;}
+  .modal-card h3{margin:0 0 14px;color:var(--accent);}
+  .modal-actions{display:flex;gap:10px;margin-top:16px;}
+  .modal-actions button{flex:1;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <h1>🚴 DC1 バーチャルライド <span class="badge">BLE FTMS</span></h1>
+  <div class="subtitle">CYCPLUS DC1 と Bluetooth (FTMS) 接続し、コースの勾配に応じて負荷を自動制御します</div>
+
+  <!-- ============ SETUP SCREEN ============ -->
+  <div id="screen-setup">
+
+    <div class="header-actions">
+      <button class="btn-secondary" id="btnShowHistory">📊 トレーニング記録</button>
+    </div>
+
+    <div class="notice" id="bleWarning" style="display:none;"></div>
+
+    <div class="card">
+      <h2>① ライダー・機材情報</h2>
+      <div class="row3">
+        <div class="field">
+          <label>走行距離 (km)</label>
+          <input type="number" id="inDistance" value="10" min="0.5" step="0.5">
+        </div>
+        <div class="field">
+          <label>体重 (kg)</label>
+          <input type="number" id="inRiderWeight" value="65" min="20" step="0.5">
+        </div>
+        <div class="field">
+          <label>自転車重量 (kg)</label>
+          <input type="number" id="inBikeWeight" value="8" min="3" step="0.5">
+        </div>
+      </div>
+      <details>
+        <summary>詳細設定（転がり抵抗・空気抵抗係数）</summary>
+        <div class="adv-grid">
+          <div class="field">
+            <label>転がり抵抗係数 Crr</label>
+            <input type="number" id="inCrr" value="0.004" min="0.001" max="0.02" step="0.0005">
+          </div>
+          <div class="field">
+            <label>空気抵抗係数 CdA (m²)</label>
+            <input type="number" id="inCdA" value="0.32" min="0.15" max="0.6" step="0.01">
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>② コース選択</h2>
+      <div class="course-list" id="courseList"></div>
+    </div>
+
+    <div class="card">
+      <h2>③ CYCPLUS DC1 に接続</h2>
+      <button class="btn-primary" id="btnConnect">Bluetoothでトレーナーに接続</button>
+      <div class="status-line">
+        <span class="dot off" id="connDot"></span>
+        <span id="connText">未接続</span>
+      </div>
+      <details style="margin-top:14px;">
+        <summary>通信ログ（トラブルシューティング用）</summary>
+        <div id="log" style="margin-top:8px;"></div>
+      </details>
+    </div>
+
+    <button class="btn-primary" id="btnStartRide" disabled>ライド開始</button>
+  </div>
+
+  <!-- ============ RIDE SCREEN ============ -->
+  <div id="screen-ride" class="hidden">
+
+    <div class="metrics-grid">
+      <div class="metric power"><div class="val" id="mPower">0<span class="unit">W</span></div><div class="label">パワー</div></div>
+      <div class="metric"><div class="val" id="mSpeed">0.0<span class="unit">km/h</span></div><div class="label">速度</div></div>
+      <div class="metric"><div class="val" id="mCadence">0<span class="unit">rpm</span></div><div class="label">ケイデンス</div></div>
+      <div class="metric grade"><div class="val" id="mGrade">0.0<span class="unit">%</span></div><div class="label">現在勾配</div></div>
+    </div>
+
+    <div class="view-toggle">
+      <button class="mode-btn active" id="viewMode2D">2Dプロファイル</button>
+      <button class="mode-btn" id="viewMode3D">3D仮想空間</button>
+    </div>
+
+    <div id="courseCanvasWrap">
+      <canvas id="courseCanvas"></canvas>
+    </div>
+    <div id="threeCanvasWrap" class="hidden">
+      <div id="threeHud">距離 <span id="hud3dDist">0.00</span> km ／ 勾配 <span id="hud3dGrade">0.0</span>%</div>
+    </div>
+    <div class="progress-bar-outer"><div class="progress-bar-inner" id="progressBar"></div></div>
+    <div class="dist-line">
+      <span id="distNow">0.00 km</span>
+      <span id="courseNameLabel"></span>
+      <span id="distTotal">0.00 km</span>
+    </div>
+
+    <div class="card load-panel">
+      <h2>負荷コントロール</h2>
+      <div class="load-mode-toggle">
+        <button class="mode-btn active" id="modeAuto">自動（コース勾配連動）</button>
+        <button class="mode-btn" id="modeManual">手動（0〜100%）</button>
+      </div>
+      <div class="slider-row">
+        <input type="range" id="manualSlider" min="0" max="100" value="30" disabled>
+        <div class="load-value" id="manualValue">30%</div>
+      </div>
+      <div class="status-line">
+        <span class="dot off" id="ctrlDot"></span>
+        <span id="ctrlText">トレーナー制御: 待機中</span>
+      </div>
+    </div>
+
+    <div class="controls-row">
+      <button class="btn-secondary" id="btnPause">一時停止</button>
+      <button class="btn-danger" id="btnStop">終了</button>
+    </div>
+
+    <details style="margin-top:14px;">
+      <summary>通信ログ</summary>
+      <div id="log2" style="margin-top:8px;"></div>
+    </details>
+  </div>
+
+  <footer>Web Bluetooth (FTMS) 経由で CYCPLUS DC1 と通信する単一HTMLアプリです。オフラインで動作します。</footer>
+</div>
+
+<!-- ============ FINISH OVERLAY ============ -->
+<div class="finish-overlay hidden" id="finishOverlay">
+  <div class="finish-card">
+    <h2>🏁 ライド完了</h2>
+    <div class="finish-stats">
+      <div><div class="v" id="fDist">0.00 km</div><div class="l">走行距離</div></div>
+      <div><div class="v" id="fTime">00:00</div><div class="l">走行時間</div></div>
+      <div><div class="v" id="fAvgPower">0 W</div><div class="l">平均パワー</div></div>
+      <div><div class="v" id="fAvgSpeed">0.0 km/h</div><div class="l">平均速度</div></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="btnExportTcxFinish">TCXダウンロード</button>
+      <button class="btn-primary" id="btnRestart">セットアップに戻る</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ HISTORY SCREEN ============ -->
+<div class="finish-overlay hidden" id="historyOverlay">
+  <div class="modal-card" style="max-width:640px;">
+    <h3>📊 トレーニング記録</h3>
+    <div id="historyList"></div>
+    <div class="modal-actions">
+      <button class="btn-danger btn-small" id="btnClearHistory">全記録を削除</button>
+      <button class="btn-primary" id="btnCloseHistory">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ HISTORY DETAIL MODAL ============ -->
+<div class="modal-overlay hidden" id="historyDetailOverlay">
+  <div class="modal-card" id="historyDetailCard"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+(function(){
+"use strict";
+
+/* =========================================================================
+   1. コースデータ定義
+   各コースは「区間ごとの距離(km)・勾配(%)」のコントロールポイントで表現。
+   ユーザー指定の走行距離に合わせて距離軸をスケーリングして使用する。
+   ========================================================================= */
+const COURSES = {
+  flat: {
+    name: "フラットロード",
+    desc: "ほぼ平坦。ウォームアップ向け",
+    nativeKm: 20,
+    points: [
+      [0,0],[3,0.5],[6,-0.5],[9,0.3],[12,0],[15,0.8],[18,-0.3],[20,0]
+    ]
+  },
+  rolling: {
+    name: "ローリングヒルズ",
+    desc: "小さなアップダウンが連続",
+    nativeKm: 16,
+    points: [
+      [0,0],[1.5,3],[3,-2],[4.5,4],[6,-3],[7.5,2.5],[9,-1.5],[10.5,3.5],
+      [12,-2.5],[13.5,1.5],[15,-1],[16,0]
+    ]
+  },
+  hillclimb: {
+    name: "ヒルクライム",
+    desc: "後半にかけて本格的な上り",
+    nativeKm: 12,
+    points: [
+      [0,0],[1,0.5],[2,2],[3,4],[4,5],[5,6],[6,7],[7,8],[8,8.5],[9,7],[10,4],[11,1],[12,0]
+    ]
+  },
+  alpine: {
+    name: "アルプスロングクライム",
+    desc: "長く緩急のある山岳コース",
+    nativeKm: 24,
+    points: [
+      [0,0],[2,1],[4,3],[6,5],[8,4],[10,6],[12,8],[14,9],[16,7],[18,10],
+      [20,6],[22,3],[24,0]
+    ]
+  },
+  sprint: {
+    name: "スプリンター向けコース",
+    desc: "平坦中心＋短い激坂キッカー",
+    nativeKm: 15,
+    points: [
+      [0,0],[3,0],[3.2,9],[3.6,2],[6,0],[9,0],[9.2,12],[9.5,1],[12,0],[15,0]
+    ]
+  }
+};
+
+let selectedCourseKey = "flat";
+
+/* コースの勾配プロファイルを、ユーザー指定距離にスケールして取得 */
+function getScaledPoints(course, targetKm){
+  const scale = targetKm / course.nativeKm;
+  return course.points.map(p => [p[0]*scale, p[1]]);
+}
+
+/* 距離(km)における勾配(%)を線形補間で取得 */
+function gradeAtDistance(scaledPoints, distKm){
+  const pts = scaledPoints;
+  if(distKm <= pts[0][0]) return pts[0][1];
+  const last = pts[pts.length-1];
+  if(distKm >= last[0]) return last[1];
+  for(let i=0;i<pts.length-1;i++){
+    const a = pts[i], b = pts[i+1];
+    if(distKm >= a[0] && distKm <= b[0]){
+      const t = (distKm - a[0]) / (b[0]-a[0] || 1);
+      return a[1] + (b[1]-a[1])*t;
+    }
+  }
+  return 0;
+}
+
+/* 標高プロファイル（表示用）を積分計算。戻り値: [[distKm, elevM], ...] */
+function buildElevationProfile(scaledPoints, totalKm, steps){
+  steps = steps || 120;
+  const out = [];
+  let elev = 0;
+  let prevD = 0;
+  out.push([0,0]);
+  for(let i=1;i<=steps;i++){
+    const d = totalKm * i/steps;
+    const grade = gradeAtDistance(scaledPoints, (d+prevD)/2);
+    const dd = (d-prevD)*1000; // m
+    elev += dd * (grade/100);
+    out.push([d, elev]);
+    prevD = d;
+  }
+  return out;
+}
+
+/* =========================================================================
+   2. 物理シミュレーション（パワー -> 仮想速度）
+   P_eff = grade力*v + 転がり抵抗*v + 空気抵抗*v^3  をニュートン法で解き、
+   慣性による加速度上限でスムージングする。
+   ========================================================================= */
+const PHYS = {
+  g: 9.81,
+  rho: 1.225,      // 空気密度 kg/m^3
+  drivetrainEff: 0.975,
+  maxAccel: 1.35,  // m/s^2 （体感用の上限）
+};
+
+function solveVirtualSpeed(powerW, gradePercent, totalMassKg, prevSpeedMs, dtSec, crr, cda){
+  const theta = Math.atan(gradePercent/100);
+  const sinT = Math.sin(theta);
+  const cosT = Math.cos(theta);
+  const rollingCoeff = crr * totalMassKg * PHYS.g * cosT;
+  const gradeCoeff   = totalMassKg * PHYS.g * sinT;
+  const dragCoeff    = 0.5 * PHYS.rho * cda;
+  const availablePower = Math.max(0, powerW) * PHYS.drivetrainEff;
+
+  let v = Math.max(prevSpeedMs, 0.3);
+  for(let i=0;i<25;i++){
+    const f  = dragCoeff*v*v*v + (gradeCoeff+rollingCoeff)*v - availablePower;
+    const fp = 3*dragCoeff*v*v + (gradeCoeff+rollingCoeff);
+    if(Math.abs(fp) < 1e-9) break;
+    const vNext = v - f/fp;
+    if(!isFinite(vNext) || vNext < 0){ v = 0; break; }
+    if(Math.abs(vNext-v) < 1e-4){ v = vNext; break; }
+    v = vNext;
+  }
+  if(!isFinite(v) || v < 0) v = 0;
+
+  // 慣性（加速度上限）でスムージング
+  const maxDelta = PHYS.maxAccel * dtSec;
+  const dv = v - prevSpeedMs;
+  const clamped = prevSpeedMs + Math.max(-maxDelta*1.6, Math.min(maxDelta, dv));
+  return Math.max(0, clamped);
+}
+
+/* =========================================================================
+   3. Web Bluetooth / FTMS 通信
+   ========================================================================= */
+const FTMS_SERVICE = 0x1826;
+const CHAR_INDOOR_BIKE_DATA = 0x2AD2;
+const CHAR_CONTROL_POINT    = 0x2AD9;
+const CHAR_FEATURE          = 0x2ACC;
+const CHAR_STATUS           = 0x2ADA;
+
+const OPCODE = {
+  REQUEST_CONTROL: 0x00,
+  RESET: 0x01,
+  SET_TARGET_RESISTANCE: 0x04,
+  START_RESUME: 0x07,
+  STOP_PAUSE: 0x08,
+  SET_SIM_PARAMS: 0x11,
+};
+
+const ble = {
+  device: null,
+  server: null,
+  controlChar: null,
+  bikeDataChar: null,
+  connected: false,
+  controlReady: false,
+};
+
+function log(msg){
+  const t = new Date().toLocaleTimeString('ja-JP',{hour12:false});
+  const line = `[${t}] ${msg}`;
+  ["log","log2"].forEach(id=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.textContent += line + "\n";
+    el.scrollTop = el.scrollHeight;
+  });
+  console.log(line);
+}
+
+function setConnUI(state){
+  // state: 'off' | 'pending' | 'on'
+  const dot = document.getElementById('connDot');
+  const text = document.getElementById('connText');
+  dot.className = 'dot ' + state;
+  if(state==='on'){ text.textContent = 'CYCPLUS DC1 接続済み'; }
+  else if(state==='pending'){ text.textContent = '接続中...'; }
+  else{ text.textContent = '未接続'; }
+}
+
+function setCtrlUI(state, label){
+  const dot = document.getElementById('ctrlDot');
+  const text = document.getElementById('ctrlText');
+  if(dot){ dot.className = 'dot ' + state; }
+  if(text){ text.textContent = label; }
+}
+
+async function connectTrainer(){
+  if(!navigator.bluetooth){
+    showBleWarning();
+    return;
+  }
+  try{
+    setConnUI('pending');
+    log('デバイス検索中... (CYCPLUS DC1 を選択してください)');
+    ble.device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [FTMS_SERVICE] }],
+      optionalServices: [CHAR_FEATURE, CHAR_STATUS]
+    });
+    log('選択されたデバイス: ' + ble.device.name);
+    ble.device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    ble.server = await ble.device.gatt.connect();
+    const service = await ble.server.getPrimaryService(FTMS_SERVICE);
+
+    ble.bikeDataChar = await service.getCharacteristic(CHAR_INDOOR_BIKE_DATA);
+    await ble.bikeDataChar.startNotifications();
+    ble.bikeDataChar.addEventListener('characteristicvaluechanged', onIndoorBikeData);
+    log('Indoor Bike Data 通知を開始しました');
+
+    ble.controlChar = await service.getCharacteristic(CHAR_CONTROL_POINT);
+    await ble.controlChar.startNotifications();
+    ble.controlChar.addEventListener('characteristicvaluechanged', onControlPointResponse);
+    log('Fitness Machine Control Point に接続しました');
+
+    ble.connected = true;
+    setConnUI('on');
+    document.getElementById('btnStartRide').disabled = false;
+    document.getElementById('btnConnect').textContent = '再接続する';
+
+    await requestControl();
+  }catch(err){
+    log('エラー: ' + err.message);
+    setConnUI('off');
+    if(err.name !== 'NotFoundError'){
+      alert('接続に失敗しました: ' + err.message);
+    }
+  }
+}
+
+function onDisconnected(){
+  ble.connected = false;
+  ble.controlReady = false;
+  setConnUI('off');
+  setCtrlUI('off','トレーナー制御: 切断されました');
+  log('トレーナーとの接続が切断されました');
+}
+
+/* ---- Control Point コマンド送信 ---- */
+async function sendControlCommand(bytes, label){
+  if(!ble.controlChar){ log('Control Point 未接続のため送信できません: ' + label); return; }
+  try{
+    await ble.controlChar.writeValueWithResponse(new Uint8Array(bytes));
+    log('送信: ' + label + ' [' + bytes.map(b=>b.toString(16).padStart(2,'0')).join(' ') + ']');
+  }catch(e){
+    log('送信失敗 (' + label + '): ' + e.message);
+  }
+}
+
+async function requestControl(){
+  await sendControlCommand([OPCODE.REQUEST_CONTROL], 'Request Control');
+}
+async function startOrResume(){
+  await sendControlCommand([OPCODE.START_RESUME], 'Start/Resume');
+}
+async function stopOrPause(pause){
+  await sendControlCommand([OPCODE.STOP_PAUSE, pause?2:1], pause?'Pause':'Stop');
+}
+
+/* Set Target Resistance Level: sint16, resolution 0.1 (単位: %) */
+async function setTargetResistance(percent0to100){
+  const raw = Math.round(percent0to100 * 10); // 0.1%単位
+  const buf = new ArrayBuffer(3);
+  const dv = new DataView(buf);
+  dv.setUint8(0, OPCODE.SET_TARGET_RESISTANCE);
+  dv.setInt16(1, raw, true);
+  await sendControlCommand(Array.from(new Uint8Array(buf)), 'Set Target Resistance ' + percent0to100.toFixed(0) + '%');
+}
+
+/* Set Indoor Bike Simulation Parameters
+   WindSpeed sint16 (0.001 m/s), Grade sint16 (0.01%), Crr uint8 (0.0001), Cw uint8 (0.01 kg/m) */
+async function setSimulationParams(gradePercent, crr, cda, windSpeedMs){
+  windSpeedMs = windSpeedMs || 0;
+  const cw = 0.5 * PHYS.rho * cda; // kg/m 相当
+  const buf = new ArrayBuffer(7);
+  const dv = new DataView(buf);
+  dv.setUint8(0, OPCODE.SET_SIM_PARAMS);
+  dv.setInt16(1, Math.round(windSpeedMs*1000), true);
+  dv.setInt16(3, Math.round(gradePercent*100), true);
+  dv.setUint8(5, Math.min(255, Math.round(crr/0.0001)));
+  dv.setUint8(6, Math.min(255, Math.round(cw/0.01)));
+  await sendControlCommand(Array.from(new Uint8Array(buf)), 'Sim Params grade=' + gradePercent.toFixed(1) + '%');
+}
+
+function onControlPointResponse(evt){
+  const v = evt.target.value;
+  if(v.byteLength >= 3 && v.getUint8(0) === 0x80){
+    const reqOp = v.getUint8(1);
+    const result = v.getUint8(2);
+    const resultNames = {1:'成功',2:'未対応',3:'不正パラメータ',4:'動作不可',5:'パラメータ範囲外'};
+    log('制御応答: opcode=0x' + reqOp.toString(16) + ' 結果=' + (resultNames[result]||result));
+    if(reqOp === OPCODE.REQUEST_CONTROL && result === 1){
+      ble.controlReady = true;
+      setCtrlUI('on', 'トレーナー制御: 準備完了');
+      startOrResume();
+    }
+  }
+}
+
+/* ---- Indoor Bike Data 受信パース ---- */
+const live = { power:0, speedKmh:0, cadence:0, hasSpeed:false, hasPower:false, hasCadence:false };
+
+function onIndoorBikeData(evt){
+  const dv = evt.target.value;
+  let offset = 0;
+  const flags = dv.getUint16(offset, true); offset += 2;
+
+  const moreDataPresent   = (flags & 0x0001) !== 0; // 0=Instantaneous Speed present, 1=not present (仕様上ビット0は逆論理)
+  const avgSpeedPresent   = (flags & 0x0002) !== 0;
+  const cadencePresent    = (flags & 0x0004) !== 0;
+  const avgCadencePresent = (flags & 0x0008) !== 0;
+  const distancePresent   = (flags & 0x0010) !== 0;
+  const resistPresent     = (flags & 0x0020) !== 0;
+  const powerPresent      = (flags & 0x0040) !== 0;
+  const avgPowerPresent   = (flags & 0x0080) !== 0;
+
+  // Instantaneous Speed (bit0が0の時のみ存在: uint16, 0.01 km/h)
+  if(!moreDataPresent){
+    const raw = dv.getUint16(offset, true); offset += 2;
+    live.speedKmh = raw * 0.01;
+    live.hasSpeed = true;
+  }
+  if(avgSpeedPresent){ offset += 2; }
+  if(cadencePresent){
+    const raw = dv.getUint16(offset, true); offset += 2;
+    live.cadence = raw * 0.5;
+    live.hasCadence = true;
+  }
+  if(avgCadencePresent){ offset += 2; }
+  if(distancePresent){ offset += 3; }
+  if(resistPresent){ offset += 2; }
+  if(powerPresent){
+    const raw = dv.getInt16(offset, true); offset += 2;
+    live.power = raw;
+    live.hasPower = true;
+  }
+  if(avgPowerPresent){ offset += 2; }
+
+  onSensorUpdate();
+}
+
+function showBleWarning(){
+  const el = document.getElementById('bleWarning');
+  el.style.display = 'block';
+  el.innerHTML = 'このブラウザは Web Bluetooth に対応していません。<b>PCまたはAndroidのGoogle Chrome / Microsoft Edge</b>で、このHTMLファイルを開いてください（iOS Safariは非対応です）。<br>'
+    + 'ローカルファイルとして開いても動作しない場合は、フォルダ内で <code>python3 -m http.server</code> を実行し、<code>http://localhost:8000/</code> からアクセスしてください。';
+}
+
+/* =========================================================================
+   4. アプリ状態・ライドループ
+   ========================================================================= */
+const ride = {
+  running: false,
+  paused: false,
+  courseKey: 'flat',
+  scaledPoints: null,
+  elevationProfile: null,
+  targetDistanceKm: 10,
+  riderWeight: 65,
+  bikeWeight: 8,
+  crr: 0.004,
+  cda: 0.32,
+  distanceKm: 0,
+  speedMs: 0,
+  startTime: 0,
+  startWallTime: null,
+  elapsedSec: 0,
+  powerSamples: [],
+  speedSamples: [],
+  cadenceSamples: [],
+  trackpoints: [],   // 1Hzで記録: {t, distanceKm, speedKmh, power, cadence, elevM}
+  loadMode: 'auto', // 'auto' | 'manual'
+  manualPercent: 30,
+  lastSentGrade: null,
+  lastSimSendTime: 0,
+  tickHandle: null,
+  viewMode: '2d', // '2d' | '3d'
+};
+
+function onSensorUpdate(){
+  document.getElementById('mPower').innerHTML = Math.round(live.power) + '<span class="unit">W</span>';
+  document.getElementById('mCadence').innerHTML = Math.round(live.cadence) + '<span class="unit">rpm</span>';
+  // 速度はセンサー値ではなく物理シミュレーションの仮想速度をメインに表示するため、ここでは更新しない
+}
+
+function startRide(){
+  ride.targetDistanceKm = parseFloat(document.getElementById('inDistance').value) || 10;
+  ride.riderWeight = parseFloat(document.getElementById('inRiderWeight').value) || 65;
+  ride.bikeWeight = parseFloat(document.getElementById('inBikeWeight').value) || 8;
+  ride.crr = parseFloat(document.getElementById('inCrr').value) || 0.004;
+  ride.cda = parseFloat(document.getElementById('inCdA').value) || 0.32;
+  ride.courseKey = selectedCourseKey;
+
+  const course = COURSES[ride.courseKey];
+  ride.scaledPoints = getScaledPoints(course, ride.targetDistanceKm);
+  ride.elevationProfile = buildElevationProfile(ride.scaledPoints, ride.targetDistanceKm);
+
+  ride.distanceKm = 0;
+  ride.speedMs = 0;
+  ride.elapsedSec = 0;
+  ride.powerSamples = [];
+  ride.speedSamples = [];
+  ride.cadenceSamples = [];
+  ride.trackpoints = [];
+  ride.running = true;
+  ride.paused = false;
+  ride.loadMode = 'auto';
+  ride.lastSentGrade = null;
+  ride.startWallTime = new Date();
+
+  document.getElementById('screen-setup').classList.add('hidden');
+  document.getElementById('screen-ride').classList.remove('hidden');
+  document.getElementById('distTotal').textContent = ride.targetDistanceKm.toFixed(2) + ' km';
+  document.getElementById('courseNameLabel').textContent = course.name;
+  setLoadModeUI('auto');
+  setViewMode('2d');
+
+  drawCourseCanvas();
+  build3DRoad();
+
+  ride.startTime = performance.now();
+  if(ride.tickHandle) clearInterval(ride.tickHandle);
+  ride.tickHandle = setInterval(physicsTick, 250);
+  log('ライド開始: ' + course.name + ' / ' + ride.targetDistanceKm + 'km');
+}
+
+function physicsTick(){
+  if(!ride.running || ride.paused) return;
+  const dt = 0.25;
+  ride.elapsedSec += dt;
+
+  const totalMass = ride.riderWeight + ride.bikeWeight;
+  const currentGrade = gradeAtDistance(ride.scaledPoints, ride.distanceKm);
+
+  ride.speedMs = solveVirtualSpeed(live.power, currentGrade, totalMass, ride.speedMs, dt, ride.crr, ride.cda);
+  ride.distanceKm += (ride.speedMs * dt) / 1000;
+
+  ride.powerSamples.push(live.power);
+  ride.speedSamples.push(ride.speedMs*3.6);
+  ride.cadenceSamples.push(live.cadence);
+
+  // 1Hzでトラックポイントを記録（トレーニング記録・TCX出力用）
+  const secNow = Math.floor(ride.elapsedSec);
+  if(!ride.trackpoints.length || secNow > ride.trackpoints[ride.trackpoints.length-1].t){
+    const elevProfile = ride.elevationProfile;
+    let elevM = 0;
+    if(elevProfile){
+      for(let i=0;i<elevProfile.length-1;i++){
+        if(ride.distanceKm >= elevProfile[i][0] && ride.distanceKm <= elevProfile[i+1][0]){
+          const t = (ride.distanceKm-elevProfile[i][0])/((elevProfile[i+1][0]-elevProfile[i][0])||1);
+          elevM = elevProfile[i][1] + (elevProfile[i+1][1]-elevProfile[i][1])*t;
+          break;
+        }
+      }
+    }
+    ride.trackpoints.push({
+      t: secNow,
+      distanceKm: ride.distanceKm,
+      speedKmh: ride.speedMs*3.6,
+      power: Math.round(live.power),
+      cadence: Math.round(live.cadence),
+      elevM: elevM
+    });
+  }
+
+  // 自動負荷モード: 勾配が一定以上変化したら Simulation Parameters を再送信
+  if(ride.loadMode === 'auto' && ble.controlReady){
+    const now = performance.now();
+    const changed = ride.lastSentGrade === null || Math.abs(currentGrade - ride.lastSentGrade) > 0.2;
+    const timeElapsed = now - ride.lastSimSendTime > 2000;
+    if(changed || timeElapsed){
+      setSimulationParams(currentGrade, ride.crr, ride.cda, 0);
+      ride.lastSentGrade = currentGrade;
+      ride.lastSimSendTime = now;
+    }
+  }
+
+  updateRideUI(currentGrade);
+
+  if(ride.distanceKm >= ride.targetDistanceKm){
+    finishRide();
+  }
+}
+
+function updateRideUI(currentGrade){
+  document.getElementById('mSpeed').innerHTML = (ride.speedMs*3.6).toFixed(1) + '<span class="unit">km/h</span>';
+  document.getElementById('mGrade').innerHTML = currentGrade.toFixed(1) + '<span class="unit">%</span>';
+  document.getElementById('distNow').textContent = ride.distanceKm.toFixed(2) + ' km';
+  const pct = Math.min(100, (ride.distanceKm/ride.targetDistanceKm)*100);
+  document.getElementById('progressBar').style.width = pct + '%';
+  drawCourseCanvas();
+  update3DHud(currentGrade);
+}
+
+function setLoadModeUI(mode){
+  ride.loadMode = mode;
+  document.getElementById('modeAuto').classList.toggle('active', mode==='auto');
+  document.getElementById('modeManual').classList.toggle('active', mode==='manual');
+  document.getElementById('manualSlider').disabled = (mode !== 'manual');
+  if(mode === 'manual'){
+    setCtrlUI('on', '手動負荷: ' + ride.manualPercent + '%');
+    if(ble.controlReady) setTargetResistance(ride.manualPercent);
+  }else{
+    setCtrlUI('on', 'トレーナー制御: 自動（コース連動）');
+    ride.lastSentGrade = null; // 次tickで再送させる
+  }
+}
+
+function pauseRide(){
+  ride.paused = !ride.paused;
+  document.getElementById('btnPause').textContent = ride.paused ? '再開' : '一時停止';
+  if(ble.controlReady) stopOrPause(ride.paused);
+  log(ride.paused ? '一時停止しました' : 'ライドを再開しました');
+}
+
+let lastFinishedRecord = null;
+
+function finishRide(){
+  ride.running = false;
+  if(ride.tickHandle) clearInterval(ride.tickHandle);
+  if(ble.controlReady) stopOrPause(false);
+  stop3DLoop();
+
+  const avgPower = ride.powerSamples.length ? ride.powerSamples.reduce((a,b)=>a+b,0)/ride.powerSamples.length : 0;
+  const maxPower = ride.powerSamples.length ? Math.max(...ride.powerSamples) : 0;
+  const avgSpeed = ride.speedSamples.length ? ride.speedSamples.reduce((a,b)=>a+b,0)/ride.speedSamples.length : 0;
+  const avgCadence = ride.cadenceSamples.length ? ride.cadenceSamples.reduce((a,b)=>a+b,0)/ride.cadenceSamples.length : 0;
+  const mm = String(Math.floor(ride.elapsedSec/60)).padStart(2,'0');
+  const ss = String(Math.floor(ride.elapsedSec%60)).padStart(2,'0');
+
+  document.getElementById('fDist').textContent = ride.distanceKm.toFixed(2) + ' km';
+  document.getElementById('fTime').textContent = mm + ':' + ss;
+  document.getElementById('fAvgPower').textContent = Math.round(avgPower) + ' W';
+  document.getElementById('fAvgSpeed').textContent = avgSpeed.toFixed(1) + ' km/h';
+  document.getElementById('finishOverlay').classList.remove('hidden');
+  log('ライド終了: 距離=' + ride.distanceKm.toFixed(2) + 'km 平均パワー=' + Math.round(avgPower) + 'W');
+
+  lastFinishedRecord = {
+    id: 'ride_' + Date.now(),
+    startWallTime: ride.startWallTime ? ride.startWallTime.toISOString() : new Date().toISOString(),
+    courseKey: ride.courseKey,
+    courseName: COURSES[ride.courseKey].name,
+    targetDistanceKm: ride.targetDistanceKm,
+    distanceKm: ride.distanceKm,
+    elapsedSec: ride.elapsedSec,
+    avgPower: Math.round(avgPower),
+    maxPower: Math.round(maxPower),
+    avgSpeedKmh: avgSpeed,
+    avgCadence: Math.round(avgCadence),
+    riderWeight: ride.riderWeight,
+    bikeWeight: ride.bikeWeight,
+    trackpoints: ride.trackpoints,
+  };
+  saveRideRecord(lastFinishedRecord);
+}
+
+function stopRideManually(){
+  if(confirm('ライドを終了しますか？')){
+    finishRide();
+  }
+}
+
+/* =========================================================================
+   5. コースキャンバス描画
+   ========================================================================= */
+function drawMiniProfile(canvas, course){
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const h = canvas.height = canvas.clientHeight * devicePixelRatio;
+  ctx.clearRect(0,0,w,h);
+  const scaled = getScaledPoints(course, course.nativeKm);
+  const profile = buildElevationProfile(scaled, course.nativeKm, 60);
+  const maxE = Math.max(1, ...profile.map(p=>p[1]));
+  const minE = Math.min(0, ...profile.map(p=>p[1]));
+  const range = (maxE-minE) || 1;
+  ctx.beginPath();
+  profile.forEach((p,i)=>{
+    const x = (p[0]/course.nativeKm) * w;
+    const y = h - ((p[1]-minE)/range) * (h*0.85) - h*0.05;
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  ctx.lineTo(w,h); ctx.lineTo(0,h); ctx.closePath();
+  const grad = ctx.createLinearGradient(0,0,0,h);
+  grad.addColorStop(0,'rgba(79,195,247,0.55)');
+  grad.addColorStop(1,'rgba(79,195,247,0.05)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+function renderCourseList(){
+  const wrap = document.getElementById('courseList');
+  wrap.innerHTML = '';
+  Object.keys(COURSES).forEach(key=>{
+    const c = COURSES[key];
+    const div = document.createElement('div');
+    div.className = 'course-opt' + (key===selectedCourseKey ? ' selected' : '');
+    div.innerHTML = `<div class="name">${c.name}</div><div class="meta">${c.desc}（基準距離 ${c.nativeKm}km）</div><canvas></canvas>`;
+    div.addEventListener('click', ()=>{
+      selectedCourseKey = key;
+      renderCourseList();
+    });
+    wrap.appendChild(div);
+    requestAnimationFrame(()=> drawMiniProfile(div.querySelector('canvas'), c));
+  });
+}
+
+function drawCourseCanvas(){
+  const canvas = document.getElementById('courseCanvas');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const h = canvas.height = canvas.clientHeight * devicePixelRatio;
+  ctx.clearRect(0,0,w,h);
+  const profile = ride.elevationProfile;
+  if(!profile) return;
+  const maxE = Math.max(1, ...profile.map(p=>p[1]));
+  const minE = Math.min(0, ...profile.map(p=>p[1]));
+  const range = (maxE-minE) || 1;
+
+  ctx.beginPath();
+  profile.forEach((p,i)=>{
+    const x = (p[0]/ride.targetDistanceKm) * w;
+    const y = h - ((p[1]-minE)/range) * (h*0.8) - h*0.08;
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  ctx.lineTo(w,h); ctx.lineTo(0,h); ctx.closePath();
+  const grad = ctx.createLinearGradient(0,0,0,h);
+  grad.addColorStop(0,'rgba(102,187,106,0.5)');
+  grad.addColorStop(1,'rgba(102,187,106,0.05)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = '#66bb6a';
+  ctx.lineWidth = 2*devicePixelRatio;
+  ctx.stroke();
+
+  // 現在地マーカー
+  const curX = (ride.distanceKm/ride.targetDistanceKm) * w;
+  let curY = h*0.5;
+  for(let i=0;i<profile.length-1;i++){
+    if(ride.distanceKm >= profile[i][0] && ride.distanceKm <= profile[i+1][0]){
+      const t = (ride.distanceKm-profile[i][0])/((profile[i+1][0]-profile[i][0])||1);
+      const e = profile[i][1] + (profile[i+1][1]-profile[i][1])*t;
+      curY = h - ((e-minE)/range)*(h*0.8) - h*0.08;
+      break;
+    }
+  }
+  ctx.beginPath();
+  ctx.arc(curX, curY, 6*devicePixelRatio, 0, Math.PI*2);
+  ctx.fillStyle = '#4fc3f7';
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2*devicePixelRatio;
+  ctx.stroke();
+}
+
+/* =========================================================================
+   6. トレーニング記録（localStorage保存・履歴表示）
+   ========================================================================= */
+const HISTORY_KEY = 'dc1_ride_history_v1';
+const HISTORY_MAX = 60;
+
+function loadHistory(){
+  try{
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){
+    log('履歴の読み込みに失敗しました: ' + e.message);
+    return [];
+  }
+}
+
+function saveRideRecord(record){
+  try{
+    let list = loadHistory();
+    list.unshift(record);
+    if(list.length > HISTORY_MAX) list = list.slice(0, HISTORY_MAX);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+    log('トレーニング記録を保存しました');
+  }catch(e){
+    // 容量超過時はトラックポイントを間引いて再試行
+    try{
+      let list = loadHistory();
+      const thinned = { ...record, trackpoints: record.trackpoints.filter((_,i)=> i%3===0) };
+      list.unshift(thinned);
+      if(list.length > HISTORY_MAX) list = list.slice(0, HISTORY_MAX);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+      log('容量制限のため記録を間引いて保存しました');
+    }catch(e2){
+      log('記録の保存に失敗しました: ' + e2.message);
+    }
+  }
+}
+
+function deleteRideRecord(id){
+  const list = loadHistory().filter(r => r.id !== id);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+}
+
+function fmtDuration(sec){
+  const m = String(Math.floor(sec/60)).padStart(2,'0');
+  const s = String(Math.floor(sec%60)).padStart(2,'0');
+  return m + ':' + s;
+}
+
+function renderHistoryList(){
+  const wrap = document.getElementById('historyList');
+  const list = loadHistory();
+  if(!list.length){
+    wrap.innerHTML = '<div class="history-empty">まだトレーニング記録がありません</div>';
+    return;
+  }
+  wrap.innerHTML = '';
+  list.forEach(r=>{
+    const d = new Date(r.startWallTime);
+    const dateStr = d.toLocaleString('ja-JP',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const div = document.createElement('div');
+    div.className = 'history-item';
+    div.innerHTML = `
+      <div class="hi-main">
+        <div class="hi-course">${r.courseName}</div>
+        <div class="hi-date">${dateStr}</div>
+        <div class="hi-stats">
+          <span><b>${r.distanceKm.toFixed(2)}</b> km</span>
+          <span><b>${fmtDuration(r.elapsedSec)}</b></span>
+          <span><b>${r.avgPower}</b> W (平均)</span>
+        </div>
+      </div>`;
+    div.addEventListener('click', ()=> showHistoryDetail(r));
+    wrap.appendChild(div);
+  });
+}
+
+function showHistoryDetail(record){
+  const card = document.getElementById('historyDetailCard');
+  const d = new Date(record.startWallTime);
+  const dateStr = d.toLocaleString('ja-JP',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+  card.innerHTML = `
+    <h3>${record.courseName}</h3>
+    <div class="hi-date">${dateStr}</div>
+    <div class="finish-stats" style="margin-top:16px;">
+      <div><div class="v">${record.distanceKm.toFixed(2)} km</div><div class="l">走行距離</div></div>
+      <div><div class="v">${fmtDuration(record.elapsedSec)}</div><div class="l">走行時間</div></div>
+      <div><div class="v">${record.avgPower} W</div><div class="l">平均パワー</div></div>
+      <div><div class="v">${record.maxPower} W</div><div class="l">最大パワー</div></div>
+      <div><div class="v">${record.avgSpeedKmh.toFixed(1)} km/h</div><div class="l">平均速度</div></div>
+      <div><div class="v">${record.avgCadence} rpm</div><div class="l">平均ケイデンス</div></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-danger btn-small" id="btnDeleteRecord">削除</button>
+      <button class="btn-secondary btn-small" id="btnExportTcxDetail">TCXダウンロード</button>
+      <button class="btn-primary" id="btnCloseDetail">閉じる</button>
+    </div>
+  `;
+  document.getElementById('historyDetailOverlay').classList.remove('hidden');
+  document.getElementById('btnCloseDetail').addEventListener('click', ()=>{
+    document.getElementById('historyDetailOverlay').classList.add('hidden');
+  });
+  document.getElementById('btnDeleteRecord').addEventListener('click', ()=>{
+    if(confirm('この記録を削除しますか？')){
+      deleteRideRecord(record.id);
+      document.getElementById('historyDetailOverlay').classList.add('hidden');
+      renderHistoryList();
+    }
+  });
+  document.getElementById('btnExportTcxDetail').addEventListener('click', ()=>{
+    downloadTcx(record);
+  });
+}
+
+/* =========================================================================
+   7. TCXファイル出力（Strava手動アップロード用）
+   ========================================================================= */
+function buildTcxXml(record){
+  const startDate = new Date(record.startWallTime);
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const pts = record.trackpoints || [];
+  const trackpointsXml = pts.map(p=>{
+    const t = new Date(startDate.getTime() + p.t*1000).toISOString();
+    return `      <Trackpoint>
+        <Time>${t}</Time>
+        <DistanceMeters>${(p.distanceKm*1000).toFixed(1)}</DistanceMeters>
+        <AltitudeMeters>${(p.elevM||0).toFixed(1)}</AltitudeMeters>
+        <Cadence>${Math.min(254, Math.max(0, p.cadence||0))}</Cadence>
+        <Extensions>
+          <ns3:TPX xmlns:ns3="http://www.garmin.com/xmlschemas/ActivityExtension/v2">
+            <ns3:Speed>${(p.speedKmh/3.6).toFixed(2)}</ns3:Speed>
+            <ns3:Watts>${Math.max(0, p.power||0)}</ns3:Watts>
+          </ns3:TPX>
+        </Extensions>
+      </Trackpoint>`;
+  }).join('\n');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
+  xmlns:ns3="http://www.garmin.com/xmlschemas/ActivityExtension/v2"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2 http://www.garmin.com/xmlschemas/TrainingCenterDatabasev2.xsd">
+  <Activities>
+    <Activity Sport="Biking">
+      <Id>${startDate.toISOString()}</Id>
+      <Lap StartTime="${startDate.toISOString()}">
+        <TotalTimeSeconds>${Math.round(record.elapsedSec)}</TotalTimeSeconds>
+        <DistanceMeters>${(record.distanceKm*1000).toFixed(1)}</DistanceMeters>
+        <Calories>0</Calories>
+        <Intensity>Active</Intensity>
+        <TriggerMethod>Manual</TriggerMethod>
+        <Track>
+${trackpointsXml}
+        </Track>
+        <Notes>${esc(record.courseName)} - DC1 バーチャルライド (仮想コース)</Notes>
+      </Lap>
+      <Creator xsi:type="Device_t">
+        <Name>CYCPLUS DC1 Virtual Ride</Name>
+      </Creator>
+    </Activity>
+  </Activities>
+</TrainingCenterDatabase>`;
+}
+
+function downloadTcx(record){
+  if(!record.trackpoints || !record.trackpoints.length){
+    alert('この記録にはトラックポイントデータがありません');
+    return;
+  }
+  const xml = buildTcxXml(record);
+  const blob = new Blob([xml], {type: 'application/vnd.garmin.tcx+xml'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date(record.startWallTime);
+  const stamp = d.toISOString().replace(/[:.]/g,'-').slice(0,19);
+  a.href = url;
+  a.download = `dc1ride_${record.courseKey}_${stamp}.tcx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  log('TCXファイルを書き出しました: ' + a.download);
+}
+
+/* =========================================================================
+   8. 3D仮想空間モード（Three.js）
+   ========================================================================= */
+const KM_TO_WORLD = 60;      // 1kmを何ワールド単位にするか
+const ELEV_EXAGGERATION = 0.35; // 標高（m）の視覚的な誇張スケール
+const three = {
+  ready: (typeof THREE !== 'undefined'),
+  renderer: null, scene: null, camera: null,
+  rider: null, road: null,
+  animHandle: null,
+  renderDistanceKm: 0,
+  initialized: false,
+};
+
+function elevAtDistance(distKm){
+  const profile = ride.elevationProfile;
+  if(!profile) return 0;
+  if(distKm <= profile[0][0]) return profile[0][1];
+  const last = profile[profile.length-1];
+  if(distKm >= last[0]) return last[1];
+  for(let i=0;i<profile.length-1;i++){
+    if(distKm >= profile[i][0] && distKm <= profile[i+1][0]){
+      const t = (distKm-profile[i][0])/((profile[i+1][0]-profile[i][0])||1);
+      return profile[i][1] + (profile[i+1][1]-profile[i][1])*t;
+    }
+  }
+  return 0;
+}
+
+function worldXFromKm(distKm){ return distKm * KM_TO_WORLD; }
+function worldYFromElev(elevM){ return elevM * ELEV_EXAGGERATION; }
+
+function init3DScene(){
+  if(three.initialized || !three.ready) return;
+  const wrap = document.getElementById('threeCanvasWrap');
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+
+  three.scene = new THREE.Scene();
+  three.scene.background = new THREE.Color(0x8fc7e8);
+  three.scene.fog = new THREE.Fog(0x8fc7e8, 80, 500);
+
+  three.camera = new THREE.PerspectiveCamera(62, w/h, 0.5, 2000);
+
+  three.renderer = new THREE.WebGLRenderer({ antialias:true, canvas: document.createElement('canvas') });
+  three.renderer.setSize(w, h);
+  three.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1));
+  wrap.appendChild(three.renderer.domElement);
+
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x445533, 1.0);
+  three.scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xfff4e0, 1.1);
+  sun.position.set(-60, 120, 80);
+  three.scene.add(sun);
+
+  // 地面（左右の草地）
+  const groundGeo = new THREE.PlaneGeometry(4000, 400);
+  const groundMat = new THREE.MeshLambertMaterial({ color: 0x4c8c46 });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI/2;
+  ground.position.set(1500, -0.1, 0);
+  three.scene.add(ground);
+
+  // ライダーマーカー
+  const riderGroup = new THREE.Group();
+  const bodyGeo = new THREE.CapsuleGeometry ? new THREE.CapsuleGeometry(0.55, 1.1, 4, 8) : new THREE.SphereGeometry(0.7,12,12);
+  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x4fc3f7 });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.y = 1.3;
+  riderGroup.add(body);
+  const wheelGeo = new THREE.SphereGeometry(0.35, 10, 10);
+  const wheelMat = new THREE.MeshLambertMaterial({ color: 0x222833 });
+  const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+  wheel.position.y = 0.35;
+  riderGroup.add(wheel);
+  three.rider = riderGroup;
+  three.scene.add(riderGroup);
+
+  // 沿道の木・ポール（距離マーカー代わり）
+  three.scenery = new THREE.Group();
+  three.scene.add(three.scenery);
+
+  three.initialized = true;
+  window.addEventListener('resize', resize3D);
+}
+
+function resize3D(){
+  if(!three.initialized) return;
+  const wrap = document.getElementById('threeCanvasWrap');
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  if(w===0||h===0) return;
+  three.camera.aspect = w/h;
+  three.camera.updateProjectionMatrix();
+  three.renderer.setSize(w, h);
+}
+
+function build3DRoad(){
+  if(!three.ready) return;
+  init3DScene();
+  if(!three.initialized) return;
+
+  if(three.road){
+    three.scene.remove(three.road);
+    three.road.geometry.dispose();
+    three.road.material.dispose();
+  }
+  Array.from(three.scenery.children).forEach(c=>three.scenery.remove(c));
+
+  const profile = ride.elevationProfile;
+  if(!profile) return;
+  const roadWidth = 7;
+  const positions = [];
+  const indices = [];
+  profile.forEach((p,i)=>{
+    const x = worldXFromKm(p[0]);
+    const y = worldYFromElev(p[1]);
+    positions.push(x, y,  roadWidth/2);
+    positions.push(x, y, -roadWidth/2);
+    if(i>0){
+      const a = (i-1)*2, b=(i-1)*2+1, c=i*2, d=i*2+1;
+      indices.push(a,c,b, b,c,d);
+    }
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshLambertMaterial({ color: 0x3a3f4a });
+  three.road = new THREE.Mesh(geo, mat);
+  three.scene.add(three.road);
+
+  // 沿道の木を一定間隔で配置
+  const totalKm = ride.targetDistanceKm;
+  const treeMat = new THREE.MeshLambertMaterial({ color: 0x2e6b2e });
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5a4632 });
+  for(let d=0.1; d<totalKm; d+=0.15){
+    const elev = elevAtDistance(d);
+    const x = worldXFromKm(d);
+    const y = worldYFromElev(elev);
+    [-1,1].forEach(side=>{
+      const treeGroup = new THREE.Group();
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.2,1.4,6), trunkMat);
+      trunk.position.y = 0.7;
+      const leaves = new THREE.Mesh(new THREE.ConeGeometry(1.1,2.6,7), treeMat);
+      leaves.position.y = 2.2;
+      treeGroup.add(trunk, leaves);
+      treeGroup.position.set(x + (Math.random()*2-1)*1.5, y, side*(roadWidth/2 + 3 + Math.random()*4));
+      three.scenery.add(treeGroup);
+    });
+  }
+
+  three.renderDistanceKm = 0;
+}
+
+function update3DHud(currentGrade){
+  const distEl = document.getElementById('hud3dDist');
+  const gradeEl = document.getElementById('hud3dGrade');
+  if(distEl) distEl.textContent = ride.distanceKm.toFixed(2);
+  if(gradeEl) gradeEl.textContent = currentGrade.toFixed(1);
+}
+
+function animate3D(){
+  three.animHandle = requestAnimationFrame(animate3D);
+  if(!three.initialized || !three.renderer) return;
+
+  // 表示距離を物理シミュレーションの距離へ滑らかに追従させる
+  const target = ride.running ? ride.distanceKm : three.renderDistanceKm;
+  three.renderDistanceKm += (target - three.renderDistanceKm) * 0.15;
+
+  const elev = elevAtDistance(three.renderDistanceKm);
+  const x = worldXFromKm(three.renderDistanceKm);
+  const y = worldYFromElev(elev);
+
+  three.rider.position.set(x, y, 0);
+
+  // 少し先の勾配からカメラの俯角を微調整
+  const aheadElev = elevAtDistance(three.renderDistanceKm + 0.02);
+  const slope = (worldYFromElev(aheadElev) - y) / (worldXFromKm(0.02)||1);
+
+  const camBackOffset = 9;
+  const camHeight = 3.6 + Math.max(0,-slope)*2;
+  const desired = new THREE.Vector3(x - camBackOffset, y + camHeight, 0);
+  three.camera.position.lerp(desired, 0.12);
+  three.camera.lookAt(x + 12, y + 1.2, 0);
+
+  three.renderer.render(three.scene, three.camera);
+}
+
+function start3DLoop(){
+  if(!three.ready){
+    document.getElementById('threeCanvasWrap').innerHTML =
+      '<div id="threeWarning">3D表示にはインターネット接続が必要です（Three.jsライブラリの読み込みに失敗しました）。2Dプロファイル表示をご利用ください。</div>';
+    return;
+  }
+  init3DScene();
+  build3DRoad();
+  resize3D();
+  if(!three.animHandle) animate3D();
+}
+
+function stop3DLoop(){
+  if(three.animHandle){
+    cancelAnimationFrame(three.animHandle);
+    three.animHandle = null;
+  }
+}
+
+function setViewMode(mode){
+  ride.viewMode = mode;
+  document.getElementById('viewMode2D').classList.toggle('active', mode==='2d');
+  document.getElementById('viewMode3D').classList.toggle('active', mode==='3d');
+  document.getElementById('courseCanvasWrap').classList.toggle('hidden', mode!=='2d');
+  document.getElementById('threeCanvasWrap').classList.toggle('hidden', mode!=='3d');
+  if(mode === '3d'){
+    start3DLoop();
+  }else{
+    stop3DLoop();
+  }
+}
+
+/* =========================================================================
+   9. イベント登録
+   ========================================================================= */
+document.getElementById('btnConnect').addEventListener('click', connectTrainer);
+document.getElementById('btnStartRide').addEventListener('click', startRide);
+document.getElementById('btnPause').addEventListener('click', pauseRide);
+document.getElementById('btnStop').addEventListener('click', stopRideManually);
+document.getElementById('btnRestart').addEventListener('click', ()=>{
+  document.getElementById('finishOverlay').classList.add('hidden');
+  document.getElementById('screen-ride').classList.add('hidden');
+  document.getElementById('screen-setup').classList.remove('hidden');
+});
+
+document.getElementById('modeAuto').addEventListener('click', ()=> setLoadModeUI('auto'));
+document.getElementById('modeManual').addEventListener('click', ()=> setLoadModeUI('manual'));
+document.getElementById('manualSlider').addEventListener('input', (e)=>{
+  ride.manualPercent = parseInt(e.target.value,10);
+  document.getElementById('manualValue').textContent = ride.manualPercent + '%';
+  if(ride.loadMode === 'manual'){
+    document.getElementById('ctrlText').textContent = '手動負荷: ' + ride.manualPercent + '%';
+    if(ble.controlReady) setTargetResistance(ride.manualPercent);
+  }
+});
+
+window.addEventListener('resize', ()=>{
+  if(ride.elevationProfile) drawCourseCanvas();
+});
+
+document.getElementById('viewMode2D').addEventListener('click', ()=> setViewMode('2d'));
+document.getElementById('viewMode3D').addEventListener('click', ()=> setViewMode('3d'));
+
+document.getElementById('btnShowHistory').addEventListener('click', ()=>{
+  renderHistoryList();
+  document.getElementById('historyOverlay').classList.remove('hidden');
+});
+document.getElementById('btnCloseHistory').addEventListener('click', ()=>{
+  document.getElementById('historyOverlay').classList.add('hidden');
+});
+document.getElementById('btnClearHistory').addEventListener('click', ()=>{
+  if(confirm('すべてのトレーニング記録を削除しますか？この操作は取り消せません。')){
+    localStorage.removeItem(HISTORY_KEY);
+    renderHistoryList();
+  }
+});
+document.getElementById('btnExportTcxFinish').addEventListener('click', ()=>{
+  if(lastFinishedRecord) downloadTcx(lastFinishedRecord);
+});
+
+/* =========================================================================
+   10. 初期化
+   ========================================================================= */
+if(!navigator.bluetooth){
+  showBleWarning();
+}
+renderCourseList();
+
+})();
+</script>
+</body>
+</html>
