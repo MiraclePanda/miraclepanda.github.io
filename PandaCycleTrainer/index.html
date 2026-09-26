@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>PandaCycleTrainer</title>
+<meta name="description" content="CYCPLUS DC1対応 BLE FTMS仮想サイクリングWebアプリ" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="root">
+  <p style="padding:2rem;font-family:sans-serif;">読み込み中...</p>
+</div>
+
+<!-- React / ReactDOM (CDN, ビルドツール不使用) -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+
+<!-- Three.jsはCDN URLを直接importする(js/three/three.js参照)。
+     importmapは使わない — 一部の管理・サンドボックス環境ではimport mapの
+     解決がポリシーでブロックされる場合があるため、より互換性の高い
+     素のURL importを採用している。 -->
+
+<!-- アプリ本体 (ESモジュール, JSXなし = React.createElementで記述) -->
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
