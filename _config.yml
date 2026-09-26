@@ -1,0 +1,5 @@
+# GitHub Pages (Jekyll) 設定。エージェント/開発用ファイルを公開サイトから除外する。
+exclude:
+  - AGENTS.md
+  - CLAUDE.md
+  - harness
