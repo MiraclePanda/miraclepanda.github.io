@@ -17,7 +17,7 @@ const QUALITY_LABELS = { auto: '自動', high: '高', medium: '中', low: '低' 
 /**
  * 走行中画面。物理演算ループ・BLEデータ購読・記録・一時停止/終了/ゴール処理を統括する。
  */
-export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderWeightKg, bikeWeightKg, crr, cdaM2, courseProfile, goalDistanceKm, initialLoadRatioPercent, onFinish }) {
+export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderWeightKg, bikeWeightKg, crr, cdaM2, vehicle, courseProfile, goalDistanceKm, initialLoadRatioPercent, onFinish }) {
   const [paused, setPaused] = useState(false);
   // 表示用のcontrolMode。トレーナー再接続で変わりうるため、ftmsClientの
   // 'control-mode'イベントを購読して更新する(高頻度ループはcontrolModeRefを参照)。
@@ -404,6 +404,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const sceneProps = {
     ref: cityRef,
     courseEngine: courseEngineRef.current,
+    vehicle,
     qualityMode,
     onQualityChange: setActiveTier,
   };

@@ -228,18 +228,129 @@ export function buildRiderAvatar() {
   group.add(head, helmet);
 
   group.position.x = RIDER_X_M;
-  return { group, frontWheel, rearWheel };
+  return { group, spinners: [frontWheel, rearWheel], spinRadiusM: R, bobber: null, camera: { sideM: 0, raiseM: 0, backM: 0 } };
 }
 
-/** 車輪の回転とアバターの前傾(路面の勾配)を更新する。 */
+// セットアップ画面「④ オプション」のバイク種別。見た目だけを切り替える(物理演算・負荷は同じ)。
+export const VEHICLES = ['bike', 'swan'];
+const SWAN_PADDLE_RADIUS_M = 0.36;
+
+/**
+ * パロディモード: 上野・不忍池にあるようなレジャー用の足漕ぎスワンボート。
+ * 白い胴体にS字の首と橙色のくちばし、たたんだ翼、座席のある操縦席、船尾で回る外輪。
+ * 自転車の代わりに路面を進む(ライダーは操縦席に座って漕いでいる)。
+ */
+export function buildSwanBoat() {
+  const group = new THREE.Group();
+  // 揺れ(ぷかぷか)は内側のグループにかける(外側のグループの位置は毎フレーム各シーンが設定する)。
+  const boat = new THREE.Group();
+  group.add(boat);
+
+  const white = new THREE.MeshStandardMaterial({ color: 0xf6f5ef, roughness: 0.32 });
+  const shade = new THREE.MeshStandardMaterial({ color: 0xe4e2da, roughness: 0.4 });
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0x5aa9d6, roughness: 0.35 });
+  const cockpitMat = new THREE.MeshStandardMaterial({ color: 0x23324a, roughness: 0.8 });
+  const seatMat = new THREE.MeshStandardMaterial({ color: 0x2f7ad1, roughness: 0.55 });
+  const beakMat = new THREE.MeshStandardMaterial({ color: 0xf08a24, roughness: 0.45 });
+  const blackMat = new THREE.MeshStandardMaterial({ color: 0x121212, roughness: 0.3 });
+  const paddleMat = new THREE.MeshStandardMaterial({ color: 0xd8412f, roughness: 0.5 });
+  const jerseyMat = new THREE.MeshStandardMaterial({ color: 0x1f5fbf, roughness: 0.7 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0b48f, roughness: 0.8 });
+  const helmetMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.35 });
+
+  const add = (geometry, material, [x, y, z], [sx, sy, sz] = [1, 1, 1], [rx, ry, rz] = [0, 0, 0]) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    mesh.scale.set(sx, sy, sz);
+    mesh.rotation.set(rx, ry, rz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    boat.add(mesh);
+    return mesh;
+  };
+  const sphere = new THREE.SphereGeometry(1, 28, 18);
+
+  // 船体(水色の帯)と白い胴体
+  add(sphere, hullMat, [0, 0.42, 0.1], [0.82, 0.3, 1.45]);
+  add(sphere, white, [0, 0.72, 0.12], [0.8, 0.52, 1.32]);
+  // 操縦席の開口部・座席・背もたれ
+  add(new THREE.CylinderGeometry(1, 1, 1, 28), cockpitMat, [0, 1.2, 0.22], [0.52, 0.05, 0.72]);
+  add(new THREE.BoxGeometry(0.9, 0.12, 0.42), seatMat, [0, 1.18, 0.42]);
+  add(new THREE.BoxGeometry(0.9, 0.22, 0.1), seatMat, [0, 1.3, 0.68], [1, 1, 1], [-0.18, 0, 0]);
+  // 翼(左右)と尾
+  for (const side of [-1, 1]) {
+    add(sphere, shade, [side * 0.74, 1.0, 0.32], [0.14, 0.42, 0.95], [-0.25, 0, side * 0.28]);
+    add(sphere, white, [side * 0.8, 1.12, 0.62], [0.1, 0.3, 0.6], [-0.55, 0, side * 0.35]);
+  }
+  add(new THREE.ConeGeometry(0.32, 0.7, 16), white, [0, 1.1, 1.38], [1, 1, 0.6], [0.95, 0, 0]);
+  // S字の首と頭
+  const neckCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0.9, -0.92),
+    new THREE.Vector3(0, 1.32, -1.28),
+    new THREE.Vector3(0, 1.78, -1.22),
+    new THREE.Vector3(0, 2.08, -1.02),
+    new THREE.Vector3(0, 2.24, -1.12),
+  ]);
+  add(new THREE.TubeGeometry(neckCurve, 32, 0.17, 16, false), white, [0, 0, 0]);
+  add(sphere, white, [0, 1.3, -1.18], [0.26, 0.4, 0.3]); // 首の付け根のふくらみ
+  add(sphere, white, [0, 2.27, -1.2], [0.27, 0.25, 0.34]);
+  add(new THREE.ConeGeometry(0.1, 0.38, 16), beakMat, [0, 2.2, -1.66], [1, 1, 1], [-Math.PI / 2 - 0.2, 0, 0]);
+  add(sphere, blackMat, [0, 2.28, -1.5], [0.08, 0.09, 0.09]); // くちばしの付け根のこぶ
+  for (const side of [-1, 1]) add(sphere, blackMat, [side * 0.2, 2.33, -1.36], [0.045, 0.045, 0.045]);
+
+  // 操縦席で漕ぐライダー(上半身)と操縦レバー
+  const riderPart = (from, to, radius, material) => {
+    const mesh = tube(from, to, radius, material);
+    boat.add(mesh);
+    return mesh;
+  };
+  riderPart([0, 1.2, 0.4], [0, 1.66, 0.32], 0.16, jerseyMat);
+  for (const side of [-1, 1]) riderPart([side * 0.19, 1.62, 0.3], [side * 0.12, 1.3, -0.08], 0.045, skinMat);
+  riderPart([0, 1.05, -0.1], [0, 1.32, -0.12], 0.03, blackMat);
+  add(new THREE.SphereGeometry(0.11, 14, 10), skinMat, [0, 1.84, 0.28]);
+  add(new THREE.SphereGeometry(0.135, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), helmetMat, [0, 1.86, 0.3], [1, 0.9, 1.2]);
+
+  // 船尾の外輪(速度に合わせて回る)
+  const paddle = new THREE.Group();
+  paddle.add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.5, 12).rotateZ(Math.PI / 2), blackMat));
+  for (let i = 0; i < 6; i++) {
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.05, SWAN_PADDLE_RADIUS_M), paddleMat);
+    blade.position.set(0, Math.sin((i * Math.PI) / 3) * SWAN_PADDLE_RADIUS_M * 0.5, Math.cos((i * Math.PI) / 3) * SWAN_PADDLE_RADIUS_M * 0.5);
+    blade.rotation.x = -(i * Math.PI) / 3;
+    blade.castShadow = true;
+    paddle.add(blade);
+  }
+  paddle.position.set(0, SWAN_PADDLE_RADIUS_M + 0.02, 1.62);
+  boat.add(paddle);
+
+  // 実物(全長約3m)より少し大きめにして、走行画面でもスワンだと分かるようにする
+  boat.scale.setScalar(1.2);
+  group.position.x = RIDER_X_M;
+  // カメラは少し右上の斜め後ろから: 真後ろだとS字の首と頭が胴体に隠れてしまう
+  return { group, spinners: [paddle], spinRadiusM: SWAN_PADDLE_RADIUS_M, bobber: boat, camera: { sideM: 2.4, raiseM: 1.0, backM: 1.2 } };
+}
+
+/** バイク種別('bike' | 'swan')に応じたアバターを作る。 */
+export function createAvatar(vehicle) {
+  return vehicle === 'swan' ? buildSwanBoat() : buildRiderAvatar();
+}
+
+/** 車輪(外輪)の回転とアバターの前傾(路面の勾配)、スワンボートの揺れを更新する。 */
 export function updateRiderAvatar(rider, clock, speedKmh, pitch) {
   const dt = Math.min(clock.getDelta(), 0.1);
   const speedMps = speedKmh / 3.6;
-  const delta = (speedMps / WHEEL_RADIUS_M) * dt; // rad
+  const delta = (speedMps / rider.spinRadiusM) * dt; // rad
   // 前進(-Z方向)で車輪の上端が前へ回る向き。
-  rider.frontWheel.rotation.x -= delta;
-  rider.rearWheel.rotation.x -= delta;
+  for (const spinner of rider.spinners) spinner.rotation.x -= delta;
   rider.group.rotation.x = pitch;
+  if (rider.bobber) {
+    // 水に浮いているかのように、ゆっくり上下しながら左右に揺れる(進むほど少し大きく)
+    const t = clock.elapsedTime;
+    const amp = 1 + Math.min(speedMps, 10) * 0.05;
+    rider.bobber.position.y = Math.sin(t * 1.7) * 0.025 * amp;
+    rider.bobber.rotation.z = Math.sin(t * 1.1 + 0.6) * 0.03 * amp;
+    rider.bobber.rotation.x = Math.sin(t * 1.3 + 1.9) * 0.015 * amp;
+  }
 }
 
 // ---- インスタンスプール ----

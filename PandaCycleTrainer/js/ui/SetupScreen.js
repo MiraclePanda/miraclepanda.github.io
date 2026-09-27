@@ -22,6 +22,7 @@ export function SetupScreen({
   initialBikeWeightKg,
   initialCrr,
   initialCdaM2,
+  initialVehicle,
   deviceState,
   onConnectDevice,
   onDisconnectDevice,
@@ -33,6 +34,7 @@ export function SetupScreen({
   const [bikeWeightKg, setBikeWeightKg] = useState(initialBikeWeightKg ?? '');
   const [courseId, setCourseId] = useState(COURSE_PROFILES[0].id);
   const [loadRatioPercent, setLoadRatioPercent] = useState(100);
+  const [vehicle, setVehicle] = useState(initialVehicle ?? 'bike');
   const [crr, setCrr] = useState(initialCrr ?? PhysicsConstants.CRR);
   const [cdaM2, setCdaM2] = useState(initialCdaM2 ?? PhysicsConstants.CDA);
 
@@ -58,6 +60,7 @@ export function SetupScreen({
       bikeWeightKg: Number(bikeWeightKg),
       courseId,
       loadRatioPercent,
+      vehicle,
       crr: Number(crr),
       cdaM2: Number(cdaM2),
     });
@@ -236,6 +239,30 @@ export function SetupScreen({
     ),
 
     h(
+      'section', { className: 'card' },
+      h('h2', null, '④ オプション'),
+      h('p', { className: 'field-title' }, 'バイク種別'),
+      h(
+        'div', { className: 'course-list vehicle-list' },
+        VEHICLE_OPTIONS.map((v) =>
+          h(
+            'label',
+            { key: v.id, className: `vehicle-option ${vehicle === v.id ? 'selected' : ''}` },
+            h('input', {
+              type: 'radio',
+              name: 'vehicle',
+              value: v.id,
+              checked: vehicle === v.id,
+              onChange: () => setVehicle(v.id),
+            }),
+            h('div', null, h('strong', null, v.name), h('p', { className: 'muted small' }, v.description))
+          )
+        )
+      ),
+      h('p', { className: 'muted small' }, '※ 走行中の3D表示の見た目だけが変わります。速度・距離の計算やトレーナーの負荷は変わりません。')
+    ),
+
+    h(
       'div', { className: 'start-bar' },
       h('button', { className: 'btn btn-primary btn-large', disabled: !canStart, onClick: handleStart }, '開始'),
       !canStart && h('p', { className: 'muted small' }, '入力内容とデバイス接続が両方完了すると開始できます。'),
@@ -243,6 +270,11 @@ export function SetupScreen({
     )
   );
 }
+
+const VEHICLE_OPTIONS = [
+  { id: 'bike', name: '標準', description: 'ロードバイクで走ります。' },
+  { id: 'swan', name: 'スワンボート', description: 'パロディモード。上野・不忍池のような足漕ぎスワンボートで道路を進みます。' },
+];
 
 function modeLabel(mode) {
   if (mode === 'simulation') return 'Simulation Mode';

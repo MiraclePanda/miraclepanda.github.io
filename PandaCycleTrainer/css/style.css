@@ -134,7 +134,8 @@ p { line-height: 1.6; }
   grid-template-columns: 1fr;
   gap: 0.6rem;
 }
-.course-option {
+.course-option,
+.vehicle-option {
   display: flex;
   gap: 0.6rem;
   align-items: flex-start;
@@ -143,11 +144,13 @@ p { line-height: 1.6; }
   padding: 0.6rem 0.8rem;
   cursor: pointer;
 }
-.course-option.selected {
+.course-option.selected,
+.vehicle-option.selected {
   border-color: var(--color-primary);
   background: #eef8f0;
 }
-.course-option p { margin: 0.15rem 0 0; }
+.course-option p,
+.vehicle-option p { margin: 0.15rem 0 0; }
 
 .start-bar {
   text-align: center;
@@ -457,3 +460,11 @@ p { line-height: 1.6; }
   background: rgba(12, 16, 22, 0.62);
   color: #fff;
 }
+
+/* ---- ④ オプション ---- */
+.field-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.9rem;
+  color: var(--color-muted);
+}
+.vehicle-list { margin-bottom: 0.5rem; }
