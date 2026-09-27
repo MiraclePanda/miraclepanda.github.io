@@ -19,5 +19,5 @@ Web Bluetooth APIを使用するため、iOS Safariなど対応していない�
 [`PandaCycleTrainer/`](PandaCycleTrainer/) には、[MiraclePanda/PandaCycleTrainer](https://github.com/MiraclePanda/PandaCycleTrainer) の最新版（React + ESモジュール構成、Three.jsによるリアルな3D街並み表示）を配置しています。
 GitHub Pages上では `https://miraclepanda.github.io/PandaCycleTrainer/` から利用できます（HTTPS配信のためWeb Bluetoothがそのまま動作します）。
 
-- 反映元コミット: `396972a`（2026-09-27「Add advanced Crr/CdA settings and remember last setup values」まで。詳細設定（転がり抵抗・空気抵抗係数）と前回走行設定の記憶を含む）
+- 反映元コミット: `8e06c4e`（2026-09-27「Add lakeside (hilly) and mountain scenery to the 3D ride view」まで。丘陵コースの湖畔・山岳コースの山岳の3D景観、詳細設定（転がり抵抗・空気抵抗係数）、前回走行設定の記憶を含む）
 - アプリ本体（`index.html`, `css/`, `js/`）のみを配置しており、テスト・開発用設定は含みません。

@@ -4,6 +4,7 @@ import { CourseEngine } from '../physics/courseEngine.js';
 import { WakeLockManager } from '../utils/wakeLock.js';
 import { Dashboard } from './Dashboard.js';
 import { CityScene } from './CityScene.js';
+import { LandscapeScene } from './LandscapeScene.js';
 import { ConfirmDialog } from './Modal.js';
 import { fmtTime } from '../utils/format.js';
 
@@ -307,7 +308,10 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   return h(
     'div', { className: 'screen ride-screen' },
     communicationWarning && h('div', { className: 'banner banner-warning' }, '⚠ トレーナーとの通信が不安定です。'),
-    h(CityScene, { ref: cityRef, courseEngine: courseEngineRef.current }),
+    // 平坦コースは街並み、丘陵・山岳コースは湖畔/山岳の景観(どちらも同じdraw()契約)
+    !courseProfile.scenery || courseProfile.scenery === 'city'
+      ? h(CityScene, { ref: cityRef, courseEngine: courseEngineRef.current })
+      : h(LandscapeScene, { ref: cityRef, courseEngine: courseEngineRef.current, landscape: courseProfile.scenery }),
     h(Dashboard, { ref: dashboardRef, controlMode }),
     h(
       'div', { className: 'load-ratio-live' },
