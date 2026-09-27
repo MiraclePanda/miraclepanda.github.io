@@ -8,7 +8,7 @@ import {
 import { buildElevationProfile, interpolateElevation } from '../three/roadElevation.js';
 import { createCityTextures, createFacadeMaterial, createFacadeGeometry, FACADE_TILE } from '../three/cityMaterials.js';
 import {
-  RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, buildRiderAvatar, updateRiderAvatar,
+  RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstance, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
 } from '../three/sceneKit.js';
 
@@ -80,7 +80,7 @@ const ASPHALT_TILE_M = 8;
  * ref経由のdraw()呼び出しで直接Three.jsシーンを更新・描画する
  * (Dashboardと同じ設計方針)。
  */
-export const CityScene = forwardRef(function CityScene({ courseEngine, qualityMode = 'auto', onQualityChange }, ref) {
+export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
@@ -113,7 +113,7 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, qualityMo
 
     let scene3d;
     try {
-      scene3d = initScene(canvas);
+      scene3d = initScene(canvas, vehicle);
       sceneRef.current = scene3d;
     } catch (err) {
       setRenderError(String(err));
@@ -143,7 +143,7 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, qualityMo
 
   return h(
     'div', { className: 'city-scene-wrap' },
-    h('canvas', { ref: canvasRef, className: 'city-scene-canvas' }),
+    h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-vehicle': vehicle }),
     renderError &&
       h(
         'div', { className: 'city-scene-fallback' },
@@ -154,7 +154,7 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, qualityMo
 
 // ---- シーン初期化 ----
 
-function initScene(canvas) {
+function initScene(canvas, vehicle) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -249,7 +249,7 @@ function initScene(canvas) {
   const carWheels = makePool(car.wheels, new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 }), MAX_CARS);
   scene.add(trunks.mesh, canopies.mesh, lamps.mesh, carBodies.mesh, carGlass.mesh, carWheels.mesh);
 
-  const rider = buildRiderAvatar();
+  const rider = createAvatar(vehicle);
   scene.add(rider.group);
 
   return {
@@ -473,8 +473,11 @@ function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pit
 }
 
 function updateCamera(s, elevAt) {
-  const camY = elevAt(-CAM_BACK_M) + CAM_HEIGHT_M;
-  s.camera.position.set(RIDER_X_M + 0.4, camY, CAM_BACK_M);
+  // アバターごとの補正(スワンボートは斜め後ろ上から見る)
+  const { sideM, raiseM, backM } = s.rider.camera;
+  const camBack = CAM_BACK_M + backM;
+  const camY = elevAt(-camBack) + CAM_HEIGHT_M + raiseM;
+  s.camera.position.set(RIDER_X_M + 0.4 + sideM, camY, camBack);
   const lookY = elevAt(CAM_LOOKAHEAD_M) + CAM_LOOKAHEAD_HEIGHT_M;
   s.camera.lookAt(RIDER_X_M * 0.4, lookY, -CAM_LOOKAHEAD_M);
 }

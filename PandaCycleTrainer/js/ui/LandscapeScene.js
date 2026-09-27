@@ -7,7 +7,7 @@ import {
 } from '../three/landscapeLayout.js';
 import { createLandscapeTextures } from '../three/landscapeMaterials.js';
 import {
-  RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, buildRiderAvatar, updateRiderAvatar,
+  RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
 } from '../three/sceneKit.js';
 
@@ -81,7 +81,7 @@ const MAX_BOATS = 16;
  * 組み直しの間は、ライダーを原点に保つよう世界全体のグループを平行移動し、
  * 道路のカーブの向きに合わせて回転させるだけで描画する。
  */
-export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, qualityMode = 'auto', onQualityChange }, ref) {
+export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
@@ -113,7 +113,7 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
 
     let scene3d;
     try {
-      scene3d = initScene(canvas, courseEngine, getLandscape(landscape));
+      scene3d = initScene(canvas, courseEngine, getLandscape(landscape), vehicle);
       sceneRef.current = scene3d;
     } catch (err) {
       setRenderError(String(err));
@@ -143,7 +143,7 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
 
   return h(
     'div', { className: 'city-scene-wrap' },
-    h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': getLandscape(landscape).id }),
+    h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': getLandscape(landscape).id, 'data-vehicle': vehicle }),
     renderError &&
       h(
         'div', { className: 'city-scene-fallback' },
@@ -154,7 +154,7 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
 
 // ---- シーン初期化 ----
 
-function initScene(canvas, courseEngine, L) {
+function initScene(canvas, courseEngine, L, vehicle) {
   const atmo = ATMOSPHERE[L.id];
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -241,7 +241,7 @@ function initScene(canvas, courseEngine, L) {
     houseBodies.mesh, houseRoofs.mesh, boatHulls.mesh, boatSails.mesh
   );
 
-  const rider = buildRiderAvatar();
+  const rider = createAvatar(vehicle);
   scene.add(rider.group);
 
   const elev = createElevationSampler((km) => courseEngine.gradeAtKm(km));
@@ -609,7 +609,9 @@ function drawFrame(st, distanceKm, speedKmh) {
   st.rider.group.position.set(riderPos[0], riderPos[1], riderPos[2]);
   updateRiderAvatar(st.rider, st.clock, speedKmh, pitch);
 
-  const cam = worldPoint(st, dist, dist - CAM_BACK_M, RIDER_X_M + 0.4, CAM_HEIGHT_M);
+  // アバターごとの補正(スワンボートは斜め後ろ上から見る)
+  const { sideM, raiseM, backM } = st.rider.camera;
+  const cam = worldPoint(st, dist, dist - CAM_BACK_M - backM, RIDER_X_M + 0.4 + sideM, CAM_HEIGHT_M + raiseM);
   st.camera.position.set(cam[0], cam[1], cam[2]);
   const look = worldPoint(st, dist, dist + CAM_LOOKAHEAD_M, CAM_LOOK_LATERAL_M, CAM_LOOKAHEAD_HEIGHT_M);
   st.camera.lookAt(look[0], look[1], look[2]);

@@ -103,3 +103,22 @@ test('描画品質の保存: auto/high/medium/low のみ受け付け、既定は
     globalThis.localStorage = saved;
   }
 });
+
+test('バイク種別の保存: bike/swan のみ復元し、不正値は未設定扱い', async () => {
+  const store = new Map();
+  const saved = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+  };
+  try {
+    const { loadPrefs, savePrefs } = await import('../../PandaCycleTrainer/js/storage/prefs.js');
+    savePrefs({ distanceKm: 10, weightKg: 60, bikeWeightKg: 8, crr: 0.004, cdaM2: 0.32, vehicle: 'swan' });
+    assert.equal(loadPrefs().vehicle, 'swan');
+    assert.equal(loadPrefs().distanceKm, 10);
+    store.set('pct_prefs_v1', JSON.stringify({ vehicle: 'rocket' }));
+    assert.equal(loadPrefs().vehicle, undefined, '未知の種別は既定(標準)に任せる');
+  } finally {
+    globalThis.localStorage = saved;
+  }
+});
