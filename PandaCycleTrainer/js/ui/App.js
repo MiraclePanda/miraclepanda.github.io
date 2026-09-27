@@ -57,7 +57,15 @@ export function App() {
   }, []);
 
   const handleStart = useCallback((config) => {
-    savePrefs({ weightKg: config.weightKg, bikeWeightKg: config.bikeWeightKg });
+    savePrefs({
+      distanceKm: config.distanceKm,
+      weightKg: config.weightKg,
+      bikeWeightKg: config.bikeWeightKg,
+      crr: config.crr,
+      cdaM2: config.cdaM2,
+    });
+    // 詳細設定のCrr/CdAはSimulation Modeでトレーナーにも送る(物理演算側はRideScreenへ渡す)。
+    ftmsClientRef.current.setSimulationCoefficients({ crr: config.crr, cdaM2: config.cdaM2 });
     // FTMS User Data Service (体重書き込み) はベストエフォート。結果は待たずに進める。
     ftmsClientRef.current.tryWriteUserWeight(config.weightKg).catch(() => {});
     setSessionConfig({
@@ -92,16 +100,21 @@ export function App() {
     return h(UnsupportedGuidance);
   }
 
+  const setupProps = {
+    initialDistanceKm: prefs.distanceKm,
+    initialWeightKg: prefs.weightKg,
+    initialBikeWeightKg: prefs.bikeWeightKg,
+    initialCrr: prefs.crr,
+    initialCdaM2: prefs.cdaM2,
+    deviceState,
+    onConnectDevice: handleConnectDevice,
+    onDisconnectDevice: handleDisconnectDevice,
+    onStart: handleStart,
+    onOpenHistory: openHistory,
+  };
+
   if (screen === 'setup') {
-    return h(SetupScreen, {
-      initialWeightKg: prefs.weightKg,
-      initialBikeWeightKg: prefs.bikeWeightKg,
-      deviceState,
-      onConnectDevice: handleConnectDevice,
-      onDisconnectDevice: handleDisconnectDevice,
-      onStart: handleStart,
-      onOpenHistory: openHistory,
-    });
+    return h(SetupScreen, setupProps);
   }
 
   if (screen === 'riding' && sessionConfig) {
@@ -111,6 +124,8 @@ export function App() {
       controlMode: deviceState.controlMode,
       riderWeightKg: sessionConfig.weightKg,
       bikeWeightKg: sessionConfig.bikeWeightKg,
+      crr: sessionConfig.crr,
+      cdaM2: sessionConfig.cdaM2,
       courseProfile: sessionConfig.courseProfile,
       goalDistanceKm: sessionConfig.distanceKm,
       initialLoadRatioPercent: sessionConfig.loadRatioPercent,
@@ -130,13 +145,5 @@ export function App() {
     return h(HistoryScreen, { onBack: closeHistory });
   }
 
-  return h(SetupScreen, {
-    initialWeightKg: prefs.weightKg,
-    initialBikeWeightKg: prefs.bikeWeightKg,
-    deviceState,
-    onConnectDevice: handleConnectDevice,
-    onDisconnectDevice: handleDisconnectDevice,
-    onStart: handleStart,
-    onOpenHistory: openHistory,
-  });
+  return h(SetupScreen, setupProps);
 }

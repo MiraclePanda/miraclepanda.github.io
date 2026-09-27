@@ -79,3 +79,15 @@ test('ゴール判定と延長', () => {
   c.extendGoal();
   assert.equal(c.remainingKm(5), p.loopLengthKm);
 });
+
+test('Crr/CdA未指定時は既定値、指定時はその係数で走る(詳細設定)', () => {
+  const def = new PhysicsEngine({ riderWeightKg: 65, bikeWeightKg: 8, courseEngine: flatCourse() });
+  assert.equal(def.crr, PhysicsConstants.CRR);
+  assert.equal(def.cdaM2, PhysicsConstants.CDA);
+  const draggy = new PhysicsEngine({ riderWeightKg: 65, bikeWeightKg: 8, courseEngine: flatCourse(), crr: 0.008, cdaM2: 0.5 });
+  const aero = new PhysicsEngine({ riderWeightKg: 65, bikeWeightKg: 8, courseEngine: flatCourse(), crr: 0.002, cdaM2: 0.2 });
+  const vd = ride(draggy, 200, 120).speedMps;
+  const va = ride(aero, 200, 120).speedMps;
+  const vdef = ride(def, 200, 120).speedMps;
+  assert.ok(va > vdef && vdef > vd, `aero=${va} default=${vdef} draggy=${vd}`);
+});

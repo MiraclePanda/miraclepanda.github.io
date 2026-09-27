@@ -15,11 +15,15 @@ export class PhysicsEngine {
    * @param {number} opts.riderWeightKg
    * @param {number} opts.bikeWeightKg
    * @param {CourseEngine} opts.courseEngine
+   * @param {number} [opts.crr]     転がり抵抗係数。省略時はPhysicsConstants.CRR
+   * @param {number} [opts.cdaM2]   空気抵抗係数CdA(m^2)。省略時はPhysicsConstants.CDA
    */
   constructor(opts) {
     this.riderWeightKg = opts.riderWeightKg;
     this.bikeWeightKg = opts.bikeWeightKg;
     this.courseEngine = opts.courseEngine;
+    this.crr = opts.crr ?? PhysicsConstants.CRR;
+    this.cdaM2 = opts.cdaM2 ?? PhysicsConstants.CDA;
 
     this.totalMassKg = this.riderWeightKg + this.bikeWeightKg;
     this.speedMps = 0;
@@ -59,9 +63,9 @@ export class PhysicsEngine {
     const mass = this.totalMassKg;
 
     const fGravity = mass * g * Math.sin(theta);
-    const fRolling = PhysicsConstants.CRR * mass * g * Math.cos(theta);
+    const fRolling = this.crr * mass * g * Math.cos(theta);
     const relativeAirSpeed = Math.max(0, this.speedMps - PhysicsConstants.WIND_SPEED_MPS);
-    const fAir = 0.5 * PhysicsConstants.AIR_DENSITY * PhysicsConstants.CDA * relativeAirSpeed * relativeAirSpeed;
+    const fAir = 0.5 * PhysicsConstants.AIR_DENSITY * this.cdaM2 * relativeAirSpeed * relativeAirSpeed;
 
     const effectiveSpeedForDrive = Math.max(this.speedMps, PhysicsConstants.MIN_SPEED_FOR_DRIVE_FORCE);
     const fDrive = this.currentPowerW / effectiveSpeedForDrive;

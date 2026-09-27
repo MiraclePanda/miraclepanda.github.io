@@ -12,7 +12,7 @@ const SAMPLE_INTERVAL_MS = 1000;
 /**
  * 走行中画面。物理演算ループ・BLEデータ購読・記録・一時停止/終了/ゴール処理を統括する。
  */
-export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderWeightKg, bikeWeightKg, courseProfile, goalDistanceKm, initialLoadRatioPercent, onFinish }) {
+export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderWeightKg, bikeWeightKg, crr, cdaM2, courseProfile, goalDistanceKm, initialLoadRatioPercent, onFinish }) {
   const [paused, setPaused] = useState(false);
   // 表示用のcontrolMode。トレーナー再接続で変わりうるため、ftmsClientの
   // 'control-mode'イベントを購読して更新する(高頻度ループはcontrolModeRefを参照)。
@@ -63,6 +63,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     physicsRef.current = new PhysicsEngine({
       riderWeightKg,
       bikeWeightKg,
+      crr,
+      cdaM2,
       courseEngine: courseEngineRef.current,
     });
   }
