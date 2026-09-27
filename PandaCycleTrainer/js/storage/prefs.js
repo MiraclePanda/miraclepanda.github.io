@@ -29,3 +29,26 @@ export function savePrefs({ distanceKm, weightKg, bikeWeightKg, crr, cdaM2 }) {
     // localStorageが使用不可(プライベートモード等)の場合は無視する。
   }
 }
+
+// 走行画面の「描画品質」(auto / high / medium / low)。セットアップ入力とは独立に、
+// 変更した時点で保存し、次の走行でも同じ設定から始める。
+const RENDER_QUALITY_KEY = 'pct_render_quality_v1';
+const RENDER_QUALITY_VALUES = ['auto', 'high', 'medium', 'low'];
+
+export function loadRenderQuality() {
+  try {
+    const value = localStorage.getItem(RENDER_QUALITY_KEY);
+    return RENDER_QUALITY_VALUES.includes(value) ? value : 'auto';
+  } catch (e) {
+    return 'auto';
+  }
+}
+
+export function saveRenderQuality(value) {
+  if (!RENDER_QUALITY_VALUES.includes(value)) return;
+  try {
+    localStorage.setItem(RENDER_QUALITY_KEY, value);
+  } catch (e) {
+    // localStorageが使用不可(プライベートモード等)の場合は無視する。
+  }
+}

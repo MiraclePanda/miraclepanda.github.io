@@ -8,7 +8,7 @@ import {
 import { createLandscapeTextures } from '../three/landscapeMaterials.js';
 import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, buildRiderAvatar, updateRiderAvatar,
-  makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, adaptQuality, resizeScene, disposeScene,
+  makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
 } from '../three/sceneKit.js';
 
 const { forwardRef, useImperativeHandle } = React;
@@ -81,10 +81,13 @@ const MAX_BOATS = 16;
  * 組み直しの間は、ライダーを原点に保つよう世界全体のグループを平行移動し、
  * 道路のカーブの向きに合わせて回転させるだけで描画する。
  */
-export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape }, ref) {
+export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, qualityMode = 'auto', onQualityChange }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
+  // 品質段階の変化(自動調整による段階変更を含む)を親へ通知する。最新のコールバックを参照するためrefで持つ。
+  const onQualityChangeRef = useRef(onQualityChange);
+  onQualityChangeRef.current = onQualityChange;
 
   useImperativeHandle(ref, () => ({
     draw({ distanceKm, speedKmh }) {
@@ -97,6 +100,10 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
         setRenderError(String(err));
       }
+    },
+    /** フルスクリーン切替などでキャンバスの表示サイズが変わった時に呼ぶ。 */
+    resize() {
+      if (sceneRef.current) resizeScene(sceneRef.current);
     },
   }));
 
@@ -114,7 +121,9 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
     }
 
     const resize = () => resizeScene(scene3d);
-    setupQuality(scene3d);
+    scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+    scene3d.appliedQualityMode = qualityMode;
+    setupQuality(scene3d, qualityMode);
     window.addEventListener('resize', resize);
 
     return () => {
@@ -123,6 +132,14 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
       sceneRef.current = null;
     };
   }, []);
+
+  // 走行中に描画品質のモードが変更されたら適用する(初回はsetupQualityで適用済み)。
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (!s || s.appliedQualityMode === qualityMode) return;
+    s.appliedQualityMode = qualityMode;
+    setQualityMode(s, qualityMode);
+  }, [qualityMode]);
 
   return h(
     'div', { className: 'city-scene-wrap' },
