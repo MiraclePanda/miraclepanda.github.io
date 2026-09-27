@@ -337,3 +337,123 @@ p { line-height: 1.6; }
   font-size: 0.85rem;
   padding: 0.4rem 0.8rem;
 }
+
+/* ---- 3D表示のツールバー(フルスクリーン・描画品質) ---- */
+.ride-stage { position: relative; }
+.scene-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: -0.25rem 0 0.75rem;
+}
+.scene-toolbar .btn { margin: 0; }
+.quality-select,
+.fs-quality {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+.quality-select select,
+.fs-quality select {
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  font-size: 0.9rem;
+  background: #fff;
+}
+
+/* ---- フルスクリーン表示 ---- */
+.ride-stage.is-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+}
+.ride-stage.is-pseudo-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+.ride-stage.is-fullscreen .city-scene-wrap {
+  height: 100%;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+
+/* 左端に重ねる走行データ */
+.fs-hud {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(4px, 1.1vh, 12px);
+  padding: 0 clamp(8px, 1.4vw, 20px);
+  pointer-events: none;
+  color: #fff;
+}
+.fs-hud-item {
+  min-width: clamp(118px, 13vw, 210px);
+  padding: 0.3em 0.8em 0.35em;
+  border-radius: 10px;
+  background: rgba(12, 16, 22, 0.58);
+  backdrop-filter: blur(4px);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.fs-hud-label {
+  font-size: clamp(11px, 1.6vh, 15px);
+  opacity: 0.82;
+}
+.fs-hud-value {
+  font-size: clamp(20px, 4.2vh, 44px);
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.fs-hud-unit {
+  font-size: 0.45em;
+  font-weight: 400;
+  margin-left: 0.25em;
+  opacity: 0.82;
+}
+.fs-hud-badge {
+  align-self: flex-start;
+  padding: 0.25em 0.7em;
+  border-radius: 999px;
+  font-size: clamp(12px, 1.7vh, 16px);
+  font-weight: 700;
+  background: rgba(255, 196, 0, 0.92);
+  color: #1e1e1e;
+}
+.fs-hud-warning {
+  background: rgba(192, 57, 43, 0.92);
+  color: #fff;
+}
+
+.fs-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.fs-toolbar .btn {
+  margin: 0;
+  background: rgba(12, 16, 22, 0.62);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.fs-toolbar .fs-quality {
+  padding: 0.3rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(12, 16, 22, 0.62);
+  color: #fff;
+}

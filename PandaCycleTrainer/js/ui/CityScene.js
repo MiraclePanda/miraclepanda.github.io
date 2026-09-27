@@ -9,7 +9,7 @@ import { buildElevationProfile, interpolateElevation } from '../three/roadElevat
 import { createCityTextures, createFacadeMaterial, createFacadeGeometry, FACADE_TILE } from '../three/cityMaterials.js';
 import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, buildRiderAvatar, updateRiderAvatar,
-  makePool, pushInstance, commitPool, setupQuality, adaptQuality, resizeScene, disposeScene,
+  makePool, pushInstance, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
 } from '../three/sceneKit.js';
 
 const { forwardRef, useImperativeHandle } = React;
@@ -80,10 +80,13 @@ const ASPHALT_TILE_M = 8;
  * ref経由のdraw()呼び出しで直接Three.jsシーンを更新・描画する
  * (Dashboardと同じ設計方針)。
  */
-export const CityScene = forwardRef(function CityScene({ courseEngine }, ref) {
+export const CityScene = forwardRef(function CityScene({ courseEngine, qualityMode = 'auto', onQualityChange }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
+  // 品質段階の変化(自動調整による段階変更を含む)を親へ通知する。最新のコールバックを参照するためrefで持つ。
+  const onQualityChangeRef = useRef(onQualityChange);
+  onQualityChangeRef.current = onQualityChange;
 
   useImperativeHandle(ref, () => ({
     draw({ distanceKm, speedKmh }) {
@@ -97,6 +100,10 @@ export const CityScene = forwardRef(function CityScene({ courseEngine }, ref) {
         // 巻き込んでクラッシュさせない。
         setRenderError(String(err));
       }
+    },
+    /** フルスクリーン切替などでキャンバスの表示サイズが変わった時に呼ぶ。 */
+    resize() {
+      if (sceneRef.current) resizeScene(sceneRef.current);
     },
   }));
 
@@ -114,7 +121,9 @@ export const CityScene = forwardRef(function CityScene({ courseEngine }, ref) {
     }
 
     const resize = () => resizeScene(scene3d);
-    setupQuality(scene3d);
+    scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+    scene3d.appliedQualityMode = qualityMode;
+    setupQuality(scene3d, qualityMode);
     window.addEventListener('resize', resize);
 
     return () => {
@@ -123,6 +132,14 @@ export const CityScene = forwardRef(function CityScene({ courseEngine }, ref) {
       sceneRef.current = null;
     };
   }, []);
+
+  // 走行中に描画品質のモードが変更されたら適用する(初回はsetupQualityで適用済み)。
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (!s || s.appliedQualityMode === qualityMode) return;
+    s.appliedQualityMode = qualityMode;
+    setQualityMode(s, qualityMode);
+  }, [qualityMode]);
 
   return h(
     'div', { className: 'city-scene-wrap' },

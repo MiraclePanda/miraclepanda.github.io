@@ -307,6 +307,8 @@ export const QUALITY_TIERS = [
   { name: 'medium', maxPixelRatio: 1, shadows: false, envMap: true },
   { name: 'low', maxPixelRatio: 0.6, shadows: false, envMap: false },
 ];
+// 走行画面の「描画品質」で選べるモード。'auto' は実測のフレーム間隔による自動調整。
+export const QUALITY_MODES = ['auto', 'high', 'medium', 'low'];
 const QUALITY_SAMPLE_FRAMES = 10;
 const SLOW_FRAME_MS = 45; // 約22fps未満が続いたら品質を下げる
 const VERY_SLOW_FRAME_MS = 180; // 桁違いに遅い(ソフトウェアGL等)なら最低品質へ直行する
@@ -335,6 +337,7 @@ export function applyQuality(s, index) {
   });
   s.canvas.dataset.quality = tier.name;
   resizeScene(s);
+  s.onQualityChange?.(tier.name);
 }
 
 /** URLの ?quality=high|medium|low で品質を固定できる(自動調整は無効になる)。 */
@@ -364,14 +367,35 @@ export function initialQualityIndex(renderer) {
   return 0;
 }
 
-/** 初期品質を決める(?quality=指定があれば固定、無ければ自動調整を有効にする)。 */
-export function setupQuality(s) {
-  const forced = forcedQualityIndex();
-  s.autoQuality = forced === null;
+/**
+ * 初期品質を決める。URLの ?quality= 指定(テスト用)があればそれを固定し、
+ * 無ければユーザーが選んだモード(QUALITY_MODES、既定は自動)に従う。
+ */
+export function setupQuality(s, mode = 'auto') {
   s.qualityIndex = 0;
+  const forced = forcedQualityIndex();
+  if (forced !== null) {
+    s.autoQuality = false;
+    s.frameIntervals = [];
+    s.lastDrawAt = null;
+    s.canvas.dataset.qualityMode = QUALITY_TIERS[forced].name;
+    applyQuality(s, forced);
+    return;
+  }
+  setQualityMode(s, mode);
+}
+
+/**
+ * 描画品質のモードを切り替える。'auto' なら端末に応じた初期段階から自動調整を再開し、
+ * 'high' / 'medium' / 'low' ならその段階に固定する(自動調整は止める)。
+ */
+export function setQualityMode(s, mode) {
+  const index = QUALITY_TIERS.findIndex((t) => t.name === mode);
+  s.autoQuality = index < 0;
   s.frameIntervals = [];
   s.lastDrawAt = null;
-  applyQuality(s, forced ?? initialQualityIndex(s.renderer));
+  s.canvas.dataset.qualityMode = index < 0 ? 'auto' : mode;
+  applyQuality(s, index < 0 ? initialQualityIndex(s.renderer) : index);
 }
 
 export function adaptQuality(s) {

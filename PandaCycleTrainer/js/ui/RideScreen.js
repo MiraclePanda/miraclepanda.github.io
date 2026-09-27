@@ -5,10 +5,14 @@ import { WakeLockManager } from '../utils/wakeLock.js';
 import { Dashboard } from './Dashboard.js';
 import { CityScene } from './CityScene.js';
 import { LandscapeScene } from './LandscapeScene.js';
+import { FullscreenHud } from './FullscreenHud.js';
+import { loadRenderQuality, saveRenderQuality } from '../storage/prefs.js';
 import { ConfirmDialog } from './Modal.js';
 import { fmtTime } from '../utils/format.js';
 
 const SAMPLE_INTERVAL_MS = 1000;
+
+const QUALITY_LABELS = { auto: '自動', high: '高', medium: '中', low: '低' };
 
 /**
  * 走行中画面。物理演算ループ・BLEデータ購読・記録・一時停止/終了/ゴール処理を統括する。
@@ -26,6 +30,19 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const [reconnectError, setReconnectError] = useState(null);
   const [communicationWarning, setCommunicationWarning] = useState(false);
   const [loadRatioPercent, setLoadRatioPercent] = useState(initialLoadRatioPercent);
+  // 描画品質: 'auto'(自動調整) か 'high' / 'medium' / 'low' の固定。activeTierは実際に適用中の段階。
+  const [qualityMode, setQualityMode] = useState(loadRenderQuality);
+  const [activeTier, setActiveTier] = useState(null);
+  // フルスクリーン: Fullscreen APIで全画面化できた場合(native)と、APIが無い/拒否された
+  // 場合のCSSによる全画面表示(pseudo)の2通り。
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const [pseudoFullscreen, setPseudoFullscreen] = useState(false);
+  const isFullscreen = nativeFullscreen || pseudoFullscreen;
+  const stageRef = useRef(null);
+  const hudRef = useRef(null);
+  const isFullscreenRef = useRef(false);
+  isFullscreenRef.current = isFullscreen;
+  const lastHudValuesRef = useRef(null);
 
   const dashboardRef = useRef(null);
   const cityRef = useRef(null);
@@ -156,24 +173,30 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       }
     }
 
-    // ダッシュボード更新 (高頻度、ref経由でDOM直接更新)
+    // ダッシュボード/フルスクリーンHUD更新 (高頻度、ref経由でDOM直接更新)
+    const values = {
+      power: fmtOrDash(latestPowerRef.current, 0),
+      cadence: fmtOrDash(latestCadenceRef.current, 0),
+      virtualSpeed: fmtOrDash(snapshot.speedKmh, 1),
+      realSpeed: fmtOrDash(latestRealSpeedRef.current, 1),
+      heartRate: fmtOrDash(latestHeartRateRef.current, 0),
+      courseGrade: fmtOrDash(snapshot.gradePercent, 1),
+      controlCalculated: fmtOrDash(lastControlCalculatedRef.current, 1),
+      controlActual: fmtOrDash(lastControlActualRef.current, 1),
+      distanceDone: fmtOrDash(distanceKm, 2),
+      distanceRemaining: fmtOrDash(courseEngine.remainingKm(distanceKm), 2),
+      elevation: fmtOrDash(snapshot.elevationM, 0),
+      elevationGain: fmtOrDash(snapshot.elevationGainM, 0),
+      elapsedTime: fmtTime(getElapsedTimeS()),
+      ridingTime: fmtTime(getRidingTimeS()),
+      loadRatio: String(loadRatioRef.current),
+    };
+    lastHudValuesRef.current = values;
     if (dashboardRef.current) {
-      dashboardRef.current.update({
-        power: fmtOrDash(latestPowerRef.current, 0),
-        cadence: fmtOrDash(latestCadenceRef.current, 0),
-        virtualSpeed: fmtOrDash(snapshot.speedKmh, 1),
-        realSpeed: fmtOrDash(latestRealSpeedRef.current, 1),
-        heartRate: fmtOrDash(latestHeartRateRef.current, 0),
-        courseGrade: fmtOrDash(snapshot.gradePercent, 1),
-        controlCalculated: fmtOrDash(lastControlCalculatedRef.current, 1),
-        controlActual: fmtOrDash(lastControlActualRef.current, 1),
-        distanceDone: fmtOrDash(distanceKm, 2),
-        distanceRemaining: fmtOrDash(courseEngine.remainingKm(distanceKm), 2),
-        elevation: fmtOrDash(snapshot.elevationM, 0),
-        elevationGain: fmtOrDash(snapshot.elevationGainM, 0),
-        elapsedTime: fmtTime(getElapsedTimeS()),
-        ridingTime: fmtTime(getRidingTimeS()),
-      });
+      dashboardRef.current.update(values);
+    }
+    if (isFullscreenRef.current && hudRef.current) {
+      hudRef.current.update(values);
     }
     if (cityRef.current) {
       cityRef.current.draw({ distanceKm, speedKmh: snapshot.speedKmh });
@@ -305,13 +328,113 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     }
   };
 
+  // ---- フルスクリーン ----
+  const enterFullscreen = async () => {
+    const stage = stageRef.current;
+    if (stage && stage.requestFullscreen) {
+      try {
+        await stage.requestFullscreen({ navigationUI: 'hide' });
+        return;
+      } catch (e) {
+        // 拒否された(埋め込み表示・ブラウザ設定等)場合はCSSによる全画面表示にする
+      }
+    }
+    setPseudoFullscreen(true);
+  };
+
+  const exitFullscreen = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    setPseudoFullscreen(false);
+  };
+
+  useEffect(() => {
+    const onChange = () => setNativeFullscreen(!!stageRef.current && document.fullscreenElement === stageRef.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      // 走行終了(画面遷移)時にフルスクリーンのまま残さない
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    // 表示サイズが変わったので3D描画の解像度を合わせ、HUDに最新値を入れておく
+    // (一時停止中は物理ループが止まっていてHUDが更新されないため)。
+    const id = requestAnimationFrame(() => {
+      cityRef.current?.resize();
+      if (isFullscreen && hudRef.current && lastHudValuesRef.current) hudRef.current.update(lastHudValuesRef.current);
+    });
+    return () => cancelAnimationFrame(id);
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    if (!pseudoFullscreen) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setPseudoFullscreen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pseudoFullscreen]);
+
+  // ダイアログはフルスクリーン要素の外に描かれて見えなくなるため、表示時は全画面を解除する。
+  useEffect(() => {
+    if (showEndConfirm || showGoalDialog || showReconnectDialog) exitFullscreen();
+  }, [showEndConfirm, showGoalDialog, showReconnectDialog]);
+
+  // ---- 描画品質 ----
+  const handleQualityChange = (e) => {
+    const mode = e.target.value;
+    setQualityMode(mode);
+    saveRenderQuality(mode);
+  };
+
+  const qualitySelect = (className) =>
+    h(
+      'label', { className },
+      h('span', null, '描画品質'),
+      h(
+        'select', { value: qualityMode, onChange: handleQualityChange, 'aria-label': '描画品質' },
+        ['auto', 'high', 'medium', 'low'].map((mode) =>
+          h('option', { key: mode, value: mode },
+            mode === 'auto' && activeTier ? `自動（現在: ${QUALITY_LABELS[activeTier]}）` : QUALITY_LABELS[mode])
+        )
+      )
+    );
+
+  const sceneProps = {
+    ref: cityRef,
+    courseEngine: courseEngineRef.current,
+    qualityMode,
+    onQualityChange: setActiveTier,
+  };
+
   return h(
     'div', { className: 'screen ride-screen' },
     communicationWarning && h('div', { className: 'banner banner-warning' }, '⚠ トレーナーとの通信が不安定です。'),
-    // 平坦コースは街並み、丘陵・山岳コースは湖畔/山岳の景観(どちらも同じdraw()契約)
-    !courseProfile.scenery || courseProfile.scenery === 'city'
-      ? h(CityScene, { ref: cityRef, courseEngine: courseEngineRef.current })
-      : h(LandscapeScene, { ref: cityRef, courseEngine: courseEngineRef.current, landscape: courseProfile.scenery }),
+    h(
+      'div',
+      {
+        ref: stageRef,
+        className: `ride-stage${isFullscreen ? ' is-fullscreen' : ''}${pseudoFullscreen ? ' is-pseudo-fullscreen' : ''}`,
+      },
+      // 平坦コースは街並み、丘陵・山岳コースは湖畔/山岳の景観(どちらも同じdraw()契約)
+      !courseProfile.scenery || courseProfile.scenery === 'city'
+        ? h(CityScene, sceneProps)
+        : h(LandscapeScene, { ...sceneProps, landscape: courseProfile.scenery }),
+      isFullscreen && h(FullscreenHud, { ref: hudRef, paused, communicationWarning }),
+      isFullscreen &&
+        h(
+          'div', { className: 'fs-toolbar' },
+          h('button', { className: 'btn', onClick: handlePauseButton }, paused ? '再開' : '一時停止'),
+          qualitySelect('fs-quality'),
+          h('button', { className: 'btn', onClick: exitFullscreen, 'aria-label': 'フルスクリーンを終了' }, '全画面を終了')
+        )
+    ),
+    h(
+      'div', { className: 'scene-toolbar' },
+      h('button', { className: 'btn btn-secondary', onClick: enterFullscreen }, '⛶ フルスクリーン'),
+      qualitySelect('quality-select')
+    ),
     h(Dashboard, { ref: dashboardRef, controlMode }),
     h(
       'div', { className: 'load-ratio-live' },
