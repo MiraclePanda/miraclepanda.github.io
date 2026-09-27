@@ -31,6 +31,11 @@ export class FtmsClient extends EventTarget {
     this.prePauseTarget = null; // { mode, value } 一時停止前の目標値
     this.isPaused = false;
 
+    // Simulation Parametersで送る転がり抵抗係数・空気抵抗係数。
+    // セットアップ画面の詳細設定から setSimulationCoefficients() で上書きされる。
+    this.crr = PhysicsConstants.CRR;
+    this.cdaM2 = PhysicsConstants.CDA;
+
     this._pendingControlResponse = null;
     this._lastValidSample = null;
 
@@ -274,9 +279,12 @@ export class FtmsClient extends EventTarget {
     view.setUint8(0, C.OP_SET_INDOOR_BIKE_SIMULATION_PARAMS);
     view.setInt16(1, Math.round(DeviceProfile.WIND_SPEED_MPS * 1000), true); // 0.001 m/s
     view.setInt16(3, Math.round(clamped * 100), true); // 0.01 %
-    // Crr: resolution 0.0001, Cw(CdA): resolution 0.01 kg/m
-    view.setUint8(5, Math.round(PhysicsConstants.CRR / 0.0001) & 0xff);
-    view.setUint8(6, Math.round(PhysicsConstants.CDA / 0.01) & 0xff);
+    // Crr: resolution 0.0001 (無次元)
+    // Cw: Wind Resistance Coefficient, resolution 0.01 kg/m。CdA(m^2)そのものではなく
+    //     空気抵抗 F = Cw × v² の係数なので Cw = 0.5 × 空気密度 × CdA に換算して送る。
+    const cwKgPerM = 0.5 * PhysicsConstants.AIR_DENSITY * this.cdaM2;
+    view.setUint8(5, clamp(Math.round(this.crr / 0.0001), 0, 0xff));
+    view.setUint8(6, clamp(Math.round(cwKgPerM / 0.01), 0, 0xff));
     await this._writeControlPointAndAwait(new Uint8Array(bytes), C.OP_SET_INDOOR_BIKE_SIMULATION_PARAMS);
     return clamped;
   }
@@ -289,6 +297,22 @@ export class FtmsClient extends EventTarget {
     view.setInt16(1, clamped, true);
     await this._writeControlPointAndAwait(new Uint8Array(bytes), C.OP_SET_TARGET_POWER);
     return clamped;
+  }
+
+  /**
+   * Simulation Parametersで送るCrr/CdAを設定する。Simulation Modeで接続中なら、
+   * 直近のgradeのまま新しい係数を即座に再送する(gradeが変化しない平坦路でも
+   * トレーナー側の係数が既定値のまま残らないように)。
+   * @param {{crr:number, cdaM2:number}} coefficients
+   */
+  setSimulationCoefficients({ crr, cdaM2 }) {
+    this.crr = crr;
+    this.cdaM2 = cdaM2;
+    if (this.controlMode !== 'simulation' || this.isPaused || !this.isConnected) return;
+    const grade = this.lastSentGradePercent ?? 0;
+    this.queue
+      .enqueueLatest('control-target', () => this._sendSimulationParams(grade), { name: 'set-sim-coefficients' })
+      .catch(() => {});
   }
 
   /**

@@ -42,7 +42,7 @@ index.html ─ React/ReactDOM (UMD, グローバル) ─ js/main.js ─ ui/App.j
 2. **importmap 禁止**。一部サンドボックス環境でブロックされるため。外部 CDN URL を直接 import してよいのは `js/three/three.js` だけ。
 3. **依存方向**: `ble / physics / three / storage / utils` から `ui/` を import しない。
 4. **実機依存値は `ble/deviceProfile.js` に集約**(TODO(要実機確認) 付きの暫定値)。他ファイルに実機固有の数値をハードコードしない。
-5. **物理定数は `physics/physicsConstants.js`**。ユーザー入力項目にしない。
+5. **物理定数は `physics/physicsConstants.js`**。ユーザー入力項目にしない。例外は上流でユーザー指示により追加された詳細設定の Crr/CdA のみ(既定値は同ファイル、入力範囲は `utils/validation.js` の `LIMITS`)。
 6. **TCX に GPS 座標 (`<Position>`) を入れない**(ダミー座標による偽装もしない)。
 7. `cityLayout.js` の生成は **seed による決定的生成** を維持する(同じ blockIndex → 同じ結果)。
 8. UI 文言・コメントは日本語。既存のコメント密度と文体に合わせる。

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTcx } from '../../PandaCycleTrainer/js/storage/tcx.js';
 import { fmt, fmtTime } from '../../PandaCycleTrainer/js/utils/format.js';
-import { validateWeight, validateBikeWeight, validateDistance } from '../../PandaCycleTrainer/js/utils/validation.js';
+import { validateWeight, validateBikeWeight, validateDistance, validateCrr, validateCda } from '../../PandaCycleTrainer/js/utils/validation.js';
 import { generateBlock, collectSceneObjects } from '../../PandaCycleTrainer/js/three/cityLayout.js';
 import { buildElevationProfile, interpolateElevation } from '../../PandaCycleTrainer/js/three/roadElevation.js';
 
@@ -38,6 +38,15 @@ test('validation: 範囲外・非数値を弾く', () => {
   assert.equal(validateWeight(500).valid, false);
   assert.equal(validateBikeWeight(8).valid, true);
   assert.equal(validateDistance(0).valid, false);
+});
+
+test('validation: 詳細設定のCrr/CdAは旧版DC1と同じ範囲を受け付ける', () => {
+  assert.equal(validateCrr(0.004).valid, true);
+  assert.equal(validateCrr(0.0005).valid, false);
+  assert.equal(validateCrr(0.03).valid, false);
+  assert.equal(validateCda('0.32').valid, true);
+  assert.equal(validateCda(0.1).valid, false);
+  assert.equal(validateCda('').valid, false);
 });
 
 test('街並み生成は決定的(同じblockIndexで同じ結果)', () => {
