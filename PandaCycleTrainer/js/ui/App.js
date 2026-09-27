@@ -76,6 +76,20 @@ export function App() {
     setScreen('riding');
   }, []);
 
+  // デモ: トレーナー接続不要。設定は保存せず、トレーナーにも何も送らない。
+  const handleDemo = useCallback((config) => {
+    setSessionConfig({
+      ...config,
+      courseProfile: getCourseProfile(config.courseId),
+      demo: true,
+    });
+    setScreen('riding');
+  }, []);
+
+  const handleDemoExit = useCallback(() => {
+    setScreen('setup');
+  }, []);
+
   const handleRideFinish = useCallback(async (record) => {
     setDeviceState({ connected: false, connecting: false, deviceName: null, controlMode: null, error: null });
     let id = null;
@@ -112,6 +126,7 @@ export function App() {
     onConnectDevice: handleConnectDevice,
     onDisconnectDevice: handleDisconnectDevice,
     onStart: handleStart,
+    onDemo: handleDemo,
     onOpenHistory: openHistory,
   };
 
@@ -132,6 +147,8 @@ export function App() {
       courseProfile: sessionConfig.courseProfile,
       goalDistanceKm: sessionConfig.distanceKm,
       initialLoadRatioPercent: sessionConfig.loadRatioPercent,
+      demo: !!sessionConfig.demo,
+      onExitDemo: handleDemoExit,
       onFinish: handleRideFinish,
     });
   }

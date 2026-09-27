@@ -63,12 +63,12 @@ test('道路標高プロファイル: 現在地で0、上り勾配で前方が�
   assert.ok(interpolateElevation(prof, -100) < 0);
 });
 
-test('湖畔・山岳の景観: コース対応、道路は常に水面/谷底より高い、配置は決定的で道路上に出ない', async () => {
+test('湖畔・山岳・熱海の景観: コース対応、道路は常に水面/谷底より高い、配置は決定的で道路上に出ない', async () => {
   const { CourseEngine } = await import('../../PandaCycleTrainer/js/physics/courseEngine.js');
   const { COURSE_PROFILES, getCourseProfile } = await import('../../PandaCycleTrainer/js/physics/courseProfiles.js');
   const LL = await import('../../PandaCycleTrainer/js/three/landscapeLayout.js');
-  assert.deepEqual(COURSE_PROFILES.map((p) => p.scenery), ['city', 'lakeside', 'mountain']);
-  for (const [courseId, id] of [['hilly', 'lakeside'], ['mountain', 'mountain']]) {
+  assert.deepEqual(COURSE_PROFILES.map((p) => p.scenery), ['city', 'lakeside', 'mountain', 'atami']);
+  for (const [courseId, id] of [['hilly', 'lakeside'], ['mountain', 'mountain'], ['atami', 'atami']]) {
     const p = getCourseProfile(courseId);
     const ce = new CourseEngine(p, 100);
     const elev = LL.createElevationSampler((km) => ce.gradeAtKm(km));
@@ -121,4 +121,29 @@ test('バイク種別の保存: bike/swan のみ復元し、不正値は未設�
   } finally {
     globalThis.localStorage = saved;
   }
+});
+
+test('熱海サンビーチ: ヤシ・ホテル・パラソルは道路の外、初島は沖、熱海城は1周に1つ', async () => {
+  const LL = await import('../../PandaCycleTrainer/js/three/landscapeLayout.js');
+  const L = LL.LANDSCAPES.atami;
+  const edge = LL.roadEdgeM(L);
+  const { town } = LL.collectLandscapeObjects(L, 3800, 4200, { farToM: 5000 });
+  assert.ok(town.palms.length > 30 && town.hotels.length > 0 && town.parasols.length > 0);
+  for (const o of [...town.palms, ...town.hotels, ...town.parasols, ...town.lamps]) assert.ok(Math.abs(o.d) > edge);
+  for (const ps of town.parasols) assert.ok(ps.d < -(edge + L.town.promenadeM), 'パラソルは砂浜(海側)');
+  assert.ok(town.islands.every((i) => i.d < -3000), '初島は沖合');
+  assert.equal(town.castles.filter((c) => c.s === 4500).length, 1);
+});
+
+test('デモ走行の仮想ライダー: 上りで踏み込み下りで緩め、値は範囲内', async () => {
+  const { demoRiderTarget, smoothDemoPower, DEMO_RIDER } = await import('../../PandaCycleTrainer/js/physics/demoRider.js');
+  const flat = demoRiderTarget(0, 0).targetPowerW;
+  assert.ok(demoRiderTarget(8, 0).targetPowerW > flat && demoRiderTarget(-8, 0).targetPowerW < flat);
+  for (const g of [-30, -5, 0, 5, 30]) {
+    const { targetPowerW, cadenceRpm } = demoRiderTarget(g, 42);
+    assert.ok(targetPowerW >= DEMO_RIDER.MIN_POWER_W && targetPowerW <= DEMO_RIDER.MAX_POWER_W);
+    assert.ok(cadenceRpm >= DEMO_RIDER.MIN_CADENCE_RPM && cadenceRpm <= DEMO_RIDER.MAX_CADENCE_RPM);
+  }
+  const p = smoothDemoPower(100, 200, 0.5);
+  assert.ok(p > 100 && p < 200);
 });
