@@ -2,11 +2,14 @@
 // 要件定義書4章「初期2〜3種類(平坦寄り／丘陵／山岳)ハードコードで用意」に対応。
 // 各points配列は [距離km, 勾配%] の制御点で、区間は線形補間する。
 // loopLengthKm はこのプロファイル自体の1周分の長さ(最後の制御点の距離)。
+// scenery は走行中の3D表示の景色: 'city'(街並み、CityScene)/'lakeside'(湖を見下ろす
+// 丘陵)/'mountain'(山岳)。後者2つはLandscapeScene(js/three/landscapeLayout.js)で描く。
 
 export const COURSE_PROFILES = [
   {
     id: 'flat',
     name: '平坦コース',
+    scenery: 'city',
     description: '起伏の少ない平坦基調のコース。ウォームアップや脚を回したい日向け。',
     loopLengthKm: 10,
     crossfadeKm: 0.15,
@@ -24,6 +27,7 @@ export const COURSE_PROFILES = [
   {
     id: 'hilly',
     name: '丘陵コース',
+    scenery: 'lakeside',
     description: '緩やかなアップダウンが連続する丘陵地帯のコース。',
     loopLengthKm: 15,
     crossfadeKm: 0.2,
@@ -46,6 +50,7 @@ export const COURSE_PROFILES = [
   {
     id: 'mountain',
     name: '山岳コース',
+    scenery: 'mountain',
     description: '長い上りを含む山岳コース。合計獲得標高を稼ぎたい日向け。',
     loopLengthKm: 20,
     crossfadeKm: 0.25,

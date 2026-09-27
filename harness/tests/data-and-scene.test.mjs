@@ -62,3 +62,23 @@ test('道路標高プロファイル: 現在地で0、上り勾配で前方が�
   assert.ok(interpolateElevation(prof, 200) > 9);
   assert.ok(interpolateElevation(prof, -100) < 0);
 });
+
+test('湖畔・山岳の景観: コース対応、道路は常に水面/谷底より高い、配置は決定的で道路上に出ない', async () => {
+  const { CourseEngine } = await import('../../PandaCycleTrainer/js/physics/courseEngine.js');
+  const { COURSE_PROFILES, getCourseProfile } = await import('../../PandaCycleTrainer/js/physics/courseProfiles.js');
+  const LL = await import('../../PandaCycleTrainer/js/three/landscapeLayout.js');
+  assert.deepEqual(COURSE_PROFILES.map((p) => p.scenery), ['city', 'lakeside', 'mountain']);
+  for (const [courseId, id] of [['hilly', 'lakeside'], ['mountain', 'mountain']]) {
+    const p = getCourseProfile(courseId);
+    const ce = new CourseEngine(p, 100);
+    const elev = LL.createElevationSampler((km) => ce.gradeAtKm(km));
+    const L = LL.LANDSCAPES[id];
+    const floor = LL.createFloorModel(elev, p.loopLengthKm * 1000, L.valley.minDropM);
+    for (let s = 0; s <= p.loopLengthKm * 2000; s += 50) {
+      assert.ok(elev.elevAt(s) - floor.floorAt(s) >= L.valley.minDropM - 0.5, `${id}: ${s}m`);
+    }
+    const a = LL.collectLandscapeObjects(L, 500, 900);
+    assert.deepEqual(a, LL.collectLandscapeObjects(L, 500, 900));
+    for (const t of a.trees) assert.ok(Math.abs(t.d) > LL.roadEdgeM(L));
+  }
+});
