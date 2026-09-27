@@ -7,6 +7,7 @@ import { CityScene } from './CityScene.js';
 import { LandscapeScene } from './LandscapeScene.js';
 import { FullscreenHud } from './FullscreenHud.js';
 import { loadRenderQuality, saveRenderQuality } from '../storage/prefs.js';
+import { demoRiderTarget, smoothDemoPower } from '../physics/demoRider.js';
 import { ConfirmDialog } from './Modal.js';
 import { fmtTime } from '../utils/format.js';
 
@@ -17,7 +18,7 @@ const QUALITY_LABELS = { auto: '自動', high: '高', medium: '中', low: '低' 
 /**
  * 走行中画面。物理演算ループ・BLEデータ購読・記録・一時停止/終了/ゴール処理を統括する。
  */
-export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderWeightKg, bikeWeightKg, crr, cdaM2, vehicle, courseProfile, goalDistanceKm, initialLoadRatioPercent, onFinish }) {
+export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderWeightKg, bikeWeightKg, crr, cdaM2, vehicle, courseProfile, goalDistanceKm, initialLoadRatioPercent, onFinish, demo = false, onExitDemo }) {
   const [paused, setPaused] = useState(false);
   // 表示用のcontrolMode。トレーナー再接続で変わりうるため、ftmsClientの
   // 'control-mode'イベントを購読して更新する(高頻度ループはcontrolModeRefを参照)。
@@ -69,6 +70,9 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const lastControlCalculatedRef = useRef(0);
   const lastControlActualRef = useRef(0);
   const goalHandledRef = useRef(false);
+  // デモ走行: トレーナーを使わず仮想ライダーのパワーで自動走行する(記録はしない)
+  const [demoLapNotice, setDemoLapNotice] = useState(false);
+  const demoLapTimerRef = useRef(null);
 
   useEffect(() => {
     loadRatioRef.current = loadRatioPercent;
@@ -109,17 +113,21 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       setControlMode(ev.detail.mode);
     };
 
-    ftmsClient.addEventListener('bike-data', onBikeData);
-    ftmsClient.addEventListener('communication-warning', onCommWarning);
-    ftmsClient.addEventListener('disconnected', onDisconnected);
-    ftmsClient.addEventListener('control-mode', onControlModeChanged);
+    // デモ中はトレーナーのデータ・切断を一切扱わない(接続済みのトレーナーがあっても無視する)
+    if (!demo) {
+      ftmsClient.addEventListener('bike-data', onBikeData);
+      ftmsClient.addEventListener('communication-warning', onCommWarning);
+      ftmsClient.addEventListener('disconnected', onDisconnected);
+      ftmsClient.addEventListener('control-mode', onControlModeChanged);
+    }
 
     startLoop();
-    startSampling();
+    if (!demo) startSampling(); // デモは走行記録を残さない
 
     return () => {
       stopLoop();
       stopSampling();
+      if (demoLapTimerRef.current) clearTimeout(demoLapTimerRef.current);
       wakeLockRef.current?.disable();
       ftmsClient.removeEventListener('control-mode', onControlModeChanged);
       ftmsClient.removeEventListener('bike-data', onBikeData);
@@ -150,13 +158,21 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const stepPhysics = (dt) => {
     const physics = physicsRef.current;
     const courseEngine = courseEngineRef.current;
+    if (demo) {
+      // 仮想ライダー: 現在の勾配に応じたパワー・ケイデンスを生成する
+      const target = demoRiderTarget(physics.currentGradePercent, getRidingTimeS());
+      latestPowerRef.current = smoothDemoPower(latestPowerRef.current, target.targetPowerW, dt);
+      latestCadenceRef.current = target.cadenceRpm;
+    }
     physics.setCurrentPower(latestPowerRef.current);
     const snapshot = physics.step(dt);
     const distanceKm = snapshot.distanceM / 1000;
 
     // トレーナーへの負荷指示 (負荷率は実負荷指示のみに影響)
     const ratio = loadRatioRef.current / 100;
-    if (controlModeRef.current === 'simulation') {
+    if (demo) {
+      // デモではトレーナーへ負荷指示を送らない
+    } else if (controlModeRef.current === 'simulation') {
       const calculated = snapshot.gradePercent * ratio;
       lastControlCalculatedRef.current = calculated;
       const result = ftmsClient.setGrade(calculated);
@@ -202,7 +218,13 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       cityRef.current.draw({ distanceKm, speedKmh: snapshot.speedKmh });
     }
 
-    if (!goalHandledRef.current && courseEngine.isGoalReached(distanceKm)) {
+    if (demo && courseEngine.isGoalReached(distanceKm)) {
+      // デモはゴールで止まらず、そのまま次の周回へ(自動走行を続ける)
+      courseEngine.extendGoal();
+      setDemoLapNotice(true);
+      if (demoLapTimerRef.current) clearTimeout(demoLapTimerRef.current);
+      demoLapTimerRef.current = setTimeout(() => setDemoLapNotice(false), 4000);
+    } else if (!goalHandledRef.current && courseEngine.isGoalReached(distanceKm)) {
       goalHandledRef.current = true;
       isRunningRef.current = false;
       ftmsClient.pause();
@@ -240,7 +262,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     if (!isRunningRef.current) return;
     isRunningRef.current = false;
     pauseStartedAtRef.current = Date.now();
-    ftmsClient.pause();
+    if (!demo) ftmsClient.pause();
     wakeLockRef.current?.disable();
     if (!silent) setPaused(true);
   }, [ftmsClient]);
@@ -253,7 +275,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     }
     lastFrameTimeRef.current = performance.now();
     isRunningRef.current = true;
-    ftmsClient.resume();
+    if (!demo) ftmsClient.resume();
     wakeLockRef.current?.enable();
     setPaused(false);
   }, [ftmsClient]);
@@ -263,7 +285,14 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     else doPause();
   };
 
-  const handleEndRequest = () => setShowEndConfirm(true);
+  const handleEndRequest = () => {
+    if (demo) {
+      // デモは記録を残さないので確認なしでセットアップ画面へ戻る
+      onExitDemo?.();
+      return;
+    }
+    setShowEndConfirm(true);
+  };
 
   const finalizeRide = () => {
     stopLoop();
@@ -411,6 +440,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
 
   return h(
     'div', { className: 'screen ride-screen' },
+    demo && h('div', { className: 'banner banner-info demo-banner' }, '▶ デモ走行中（トレーナー未接続・自動走行。走行記録は保存されません）'),
+    demo && demoLapNotice && h('div', { className: 'banner banner-info' }, '🏁 ゴール！ デモはそのまま次の周回を走ります。'),
     communicationWarning && h('div', { className: 'banner banner-warning' }, '⚠ トレーナーとの通信が不安定です。'),
     h(
       'div',
@@ -450,7 +481,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     h(
       'div', { className: 'ride-controls' },
       h('button', { className: 'btn btn-secondary btn-large', onClick: handlePauseButton }, paused ? '再開' : '一時停止'),
-      h('button', { className: 'btn btn-danger btn-large', onClick: handleEndRequest }, '終了')
+      h('button', { className: 'btn btn-danger btn-large', onClick: handleEndRequest }, demo ? 'デモを終了' : '終了')
     ),
     h('p', { className: 'guidance-note' }, '走行中はタブを閉じないでください。リロード・タブクローズ時のセッション復元機能はありません。'),
 

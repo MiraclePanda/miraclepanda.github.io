@@ -27,6 +27,7 @@ export function SetupScreen({
   onConnectDevice,
   onDisconnectDevice,
   onStart,
+  onDemo,
   onOpenHistory,
 }) {
   const [distanceKm, setDistanceKm] = useState(initialDistanceKm ?? '');
@@ -52,18 +53,27 @@ export function SetupScreen({
     distanceCheck.valid && weightCheck.valid && bikeWeightCheck.valid && advancedValid && !!courseId;
   const canStart = formValid && deviceState.connected;
 
+  // デモはトレーナー接続不要(入力内容が正しければ押せる)
+  const canDemo = formValid;
+  const buildConfig = () => ({
+    distanceKm: Number(distanceKm),
+    weightKg: Number(weightKg),
+    bikeWeightKg: Number(bikeWeightKg),
+    courseId,
+    loadRatioPercent,
+    vehicle,
+    crr: Number(crr),
+    cdaM2: Number(cdaM2),
+  });
+
   const handleStart = () => {
     if (!canStart) return;
-    onStart({
-      distanceKm: Number(distanceKm),
-      weightKg: Number(weightKg),
-      bikeWeightKg: Number(bikeWeightKg),
-      courseId,
-      loadRatioPercent,
-      vehicle,
-      crr: Number(crr),
-      cdaM2: Number(cdaM2),
-    });
+    onStart(buildConfig());
+  };
+
+  const handleDemo = () => {
+    if (!canDemo) return;
+    onDemo(buildConfig());
   };
 
   return h(
@@ -264,8 +274,13 @@ export function SetupScreen({
 
     h(
       'div', { className: 'start-bar' },
-      h('button', { className: 'btn btn-primary btn-large', disabled: !canStart, onClick: handleStart }, '開始'),
+      h(
+        'div', { className: 'start-buttons' },
+        h('button', { className: 'btn btn-primary btn-large', disabled: !canStart, onClick: handleStart }, '開始'),
+        h('button', { className: 'btn btn-secondary btn-large', disabled: !canDemo, onClick: handleDemo }, 'デモ')
+      ),
       !canStart && h('p', { className: 'muted small' }, '入力内容とデバイス接続が両方完了すると開始できます。'),
+      h('p', { className: 'muted small' }, 'デモはトレーナーに接続せず、選んだ設定・コース・オプションで自動走行します(走行記録は保存されません)。'),
       h('button', { className: 'btn btn-link', onClick: onOpenHistory }, '過去の走行記録を見る')
     )
   );

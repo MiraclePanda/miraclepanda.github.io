@@ -3,7 +3,8 @@
 // 各points配列は [距離km, 勾配%] の制御点で、区間は線形補間する。
 // loopLengthKm はこのプロファイル自体の1周分の長さ(最後の制御点の距離)。
 // scenery は走行中の3D表示の景色: 'city'(街並み、CityScene)/'lakeside'(湖を見下ろす
-// 丘陵)/'mountain'(山岳)。後者2つはLandscapeScene(js/three/landscapeLayout.js)で描く。
+// 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ)。city以外はLandscapeScene
+// (js/three/landscapeLayout.js)で描く。
 
 export const COURSE_PROFILES = [
   {
@@ -70,6 +71,26 @@ export const COURSE_PROFILES = [
       [18.5, 3],
       [19.5, -4],
       [20, 0],
+    ],
+  },
+  {
+    id: 'atami',
+    name: '熱海サンビーチコース',
+    scenery: 'atami',
+    description: '相模湾に面した熱海サンビーチ沿いの海岸通り。ヤシ並木の遊歩道と砂浜、ホテル街を眺めて走る平坦基調のコース。',
+    loopLengthKm: 6,
+    crossfadeKm: 0.15,
+    // 上り下りが打ち消し合い、1周で標高がほぼ変わらない(海岸線から離れない)ようにしている。
+    points: [
+      [0, 0],
+      [0.8, 1.0],
+      [1.6, 0],
+      [2.4, -1.0],
+      [3.2, 0],
+      [4.0, 0.8],
+      [4.8, -0.8],
+      [5.6, 0],
+      [6, 0],
     ],
   },
 ];
