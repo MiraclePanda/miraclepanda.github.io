@@ -25,11 +25,11 @@ Chrome / Edge(PC・Android)のみ対応、HTTPS か localhost が必須。
 ```
 index.html ─ React/ReactDOM (UMD, グローバル) ─ js/main.js ─ ui/App.js
                                                               │
-  ui/  (画面: Setup → Ride → Result / History, Dashboard, CityScene/LandscapeScene=3D描画)
+  ui/  (画面: Setup → Ride → Result / History, Dashboard, CityScene/LandscapeScene/PondScene=3D描画)
    │ 依存してよい ↓            ↑ 依存してはならない(verify が検査)
   ble/      FTMS クライアント, Control Point コマンドキュー, DeviceProfile(実機依存値)
   physics/  物理演算(力の釣り合い+時間積分), コース勾配エンジン, コースプロファイル
-  three/    Three.js 窓口(three.js), 街並み/湖畔・山岳の決定的生成(cityLayout/landscapeLayout), 道路標高, マテリアル, 共通部品(sceneKit)
+  three/    Three.js 窓口(three.js), 街並み/湖畔・山岳・熱海/不忍池の決定的生成(cityLayout/landscapeLayout/pondLayout), 道路標高, マテリアル, 共通部品(sceneKit)
   storage/  IndexedDB 履歴, prefs(localStorage), TCX 書き出し
   utils/    format, validation, wakeLock
 ```
@@ -68,8 +68,8 @@ python3 -m http.server 8000       # 実ブラウザ確認: http://localhost:8000
 |---|---|---|
 | `ble-ftms-engineer` | `PandaCycleTrainer/js/ble/**` | FTMS プロトコル, コマンドキュー, 接続シーケンス |
 | `physics-engineer` | `PandaCycleTrainer/js/physics/**` | 物理演算, コース勾配, コースプロファイル |
-| `scene3d-engineer` | `PandaCycleTrainer/js/three/**`, `js/ui/CityScene.js`, `js/ui/LandscapeScene.js` | 3D 街並み・湖畔/山岳の景観, 描画パフォーマンス |
-| `ui-engineer` | `PandaCycleTrainer/js/ui/**`(CityScene/LandscapeScene除く), `js/main.js`, `css/**`, `PandaCycleTrainer/index.html` | 画面・状態遷移・スタイル |
+| `scene3d-engineer` | `PandaCycleTrainer/js/three/**`, `js/ui/CityScene.js`, `js/ui/LandscapeScene.js`, `js/ui/PondScene.js` | 3D 街並み・湖畔/山岳/熱海・不忍池の景観, 描画パフォーマンス |
+| `ui-engineer` | `PandaCycleTrainer/js/ui/**`(CityScene/LandscapeScene/PondScene除く), `js/main.js`, `css/**`, `PandaCycleTrainer/index.html` | 画面・状態遷移・スタイル |
 | `data-engineer` | `PandaCycleTrainer/js/storage/**`, `js/utils/**` | 履歴保存, TCX, 入力検証, 表示フォーマット |
 | `legacy-dc1-maintainer` | ルート `index.html` | 旧版 DC1 Virtual Ride の保守 |
 | `harness-engineer` | `harness/**`, `.claude/**`, `AGENTS.md`, `CLAUDE.md` | 検証ハーネス・エージェント基盤 |

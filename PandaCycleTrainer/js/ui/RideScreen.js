@@ -5,6 +5,7 @@ import { WakeLockManager } from '../utils/wakeLock.js';
 import { Dashboard } from './Dashboard.js';
 import { CityScene } from './CityScene.js';
 import { LandscapeScene } from './LandscapeScene.js';
+import { PondScene } from './PondScene.js';
 import { FullscreenHud } from './FullscreenHud.js';
 import { loadRenderQuality, saveRenderQuality } from '../storage/prefs.js';
 import { demoRiderTarget, smoothDemoPower } from '../physics/demoRider.js';
@@ -433,7 +434,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const sceneProps = {
     ref: cityRef,
     courseEngine: courseEngineRef.current,
-    vehicle,
+    // コースで乗り物が決まっている場合(上野不忍池=スワンボート)はそちらを優先する
+    vehicle: courseProfile.fixedVehicle ?? vehicle,
     qualityMode,
     onQualityChange: setActiveTier,
   };
@@ -452,7 +454,9 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       // 平坦コースは街並み、丘陵・山岳コースは湖畔/山岳の景観(どちらも同じdraw()契約)
       !courseProfile.scenery || courseProfile.scenery === 'city'
         ? h(CityScene, sceneProps)
-        : h(LandscapeScene, { ...sceneProps, landscape: courseProfile.scenery }),
+        : courseProfile.scenery === 'ueno'
+          ? h(PondScene, sceneProps)
+          : h(LandscapeScene, { ...sceneProps, landscape: courseProfile.scenery }),
       isFullscreen && h(FullscreenHud, { ref: hudRef, paused, communicationWarning }),
       isFullscreen &&
         h(

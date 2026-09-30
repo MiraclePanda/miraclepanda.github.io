@@ -36,6 +36,10 @@ export function SetupScreen({
   const [courseId, setCourseId] = useState(COURSE_PROFILES[0].id);
   const [loadRatioPercent, setLoadRatioPercent] = useState(100);
   const [vehicle, setVehicle] = useState(initialVehicle ?? 'bike');
+  // コースで乗り物が固定されている場合(上野不忍池=スワンボート)。ユーザーの選択(vehicle)は
+  // 変えずに残し、他のコースへ切り替えたら元の選択に戻る。
+  const fixedVehicle = COURSE_PROFILES.find((c) => c.id === courseId)?.fixedVehicle ?? null;
+  const effectiveVehicle = fixedVehicle ?? vehicle;
   const [crr, setCrr] = useState(initialCrr ?? PhysicsConstants.CRR);
   const [cdaM2, setCdaM2] = useState(initialCdaM2 ?? PhysicsConstants.CDA);
 
@@ -61,7 +65,8 @@ export function SetupScreen({
     bikeWeightKg: Number(bikeWeightKg),
     courseId,
     loadRatioPercent,
-    vehicle,
+    vehicle: effectiveVehicle,
+    preferredVehicle: vehicle, // 記憶するのはユーザー自身の選択
     crr: Number(crr),
     cdaM2: Number(cdaM2),
   });
@@ -257,18 +262,20 @@ export function SetupScreen({
         VEHICLE_OPTIONS.map((v) =>
           h(
             'label',
-            { key: v.id, className: `vehicle-option ${vehicle === v.id ? 'selected' : ''}` },
+            { key: v.id, className: `vehicle-option ${effectiveVehicle === v.id ? 'selected' : ''}${fixedVehicle ? ' locked' : ''}` },
             h('input', {
               type: 'radio',
               name: 'vehicle',
               value: v.id,
-              checked: vehicle === v.id,
+              checked: effectiveVehicle === v.id,
+              disabled: !!fixedVehicle,
               onChange: () => setVehicle(v.id),
             }),
             h('div', null, h('strong', null, v.name), h('p', { className: 'muted small' }, v.description))
           )
         )
       ),
+      fixedVehicle && h('p', { className: 'vehicle-lock-note' }, '🦢 上野不忍池コースはスワンボートで池を周回するため、バイク種別はスワンボートに固定されます。'),
       h('p', { className: 'muted small' }, '※ 走行中の3D表示の見た目だけが変わります。速度・距離の計算やトレーナーの負荷は変わりません。')
     ),
 

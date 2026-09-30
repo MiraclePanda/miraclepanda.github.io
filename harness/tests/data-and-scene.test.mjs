@@ -67,7 +67,7 @@ test('湖畔・山岳・熱海の景観: コース対応、道路は常に水面
   const { CourseEngine } = await import('../../PandaCycleTrainer/js/physics/courseEngine.js');
   const { COURSE_PROFILES, getCourseProfile } = await import('../../PandaCycleTrainer/js/physics/courseProfiles.js');
   const LL = await import('../../PandaCycleTrainer/js/three/landscapeLayout.js');
-  assert.deepEqual(COURSE_PROFILES.map((p) => p.scenery), ['city', 'lakeside', 'mountain', 'atami']);
+  assert.deepEqual(COURSE_PROFILES.map((p) => p.scenery), ['city', 'lakeside', 'mountain', 'atami', 'ueno']);
   for (const [courseId, id] of [['hilly', 'lakeside'], ['mountain', 'mountain'], ['atami', 'atami']]) {
     const p = getCourseProfile(courseId);
     const ce = new CourseEngine(p, 100);
@@ -146,4 +146,29 @@ test('デモ走行の仮想ライダー: 上りで踏み込み下りで緩め、
   }
   const p = smoothDemoPower(100, 200, 0.5);
   assert.ok(p > 100 && p < 200);
+});
+
+test('上野不忍池: 1周1.2kmの反時計回りで常に左へ曲がる周回、岸から離れ、スワンボート固定', async () => {
+  const P = await import('../../PandaCycleTrainer/js/three/pondLayout.js');
+  const { getCourseProfile } = await import('../../PandaCycleTrainer/js/physics/courseProfiles.js');
+  const course = getCourseProfile('ueno');
+  assert.equal(course.fixedVehicle, 'swan');
+  assert.equal(course.loopLengthKm * 1000, P.ROUTE_LENGTH_M);
+  let len = 0;
+  let area = 0;
+  let prev = P.routeAt(0);
+  for (let s = 1; s <= P.ROUTE_LENGTH_M; s++) {
+    const p = P.routeAt(s);
+    len += Math.hypot(p.x - prev.x, p.y - prev.y);
+    area += prev.x * p.y - p.x * prev.y;
+    let dh = p.heading - prev.heading;
+    if (dh > Math.PI) dh -= 2 * Math.PI;
+    if (dh < -Math.PI) dh += 2 * Math.PI;
+    assert.ok(dh > 0, `左へ曲がり続ける(${s}m)`);
+    assert.ok(P.shoreR(p.theta) - P.routeR(p.theta) >= 15, `岸から離れている(${s}m)`);
+    prev = p;
+  }
+  assert.ok(Math.abs(len - P.ROUTE_LENGTH_M) < 1);
+  assert.ok(area > 0, '反時計回り');
+  assert.deepEqual(P.collectPondObjects(), P.collectPondObjects(), '配置は決定的');
 });

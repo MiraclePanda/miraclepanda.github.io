@@ -63,7 +63,7 @@ export function App() {
       bikeWeightKg: config.bikeWeightKg,
       crr: config.crr,
       cdaM2: config.cdaM2,
-      vehicle: config.vehicle,
+      vehicle: config.preferredVehicle ?? config.vehicle,
     });
     // 詳細設定のCrr/CdAはSimulation Modeでトレーナーにも送る(物理演算側はRideScreenへ渡す)。
     ftmsClientRef.current.setSimulationCoefficients({ crr: config.crr, cdaM2: config.cdaM2 });
