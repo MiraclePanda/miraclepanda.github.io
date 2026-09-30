@@ -3,7 +3,7 @@ import { h, useRef } from './h.js';
 const { forwardRef, useImperativeHandle } = React;
 
 /**
- * フルスクリーン表示時に3D風景の左端へ重ねる走行データ。
+ * フルスクリーン表示時に3D風景の右端へ重ねる走行データ。
  * Dashboardと同じく、高頻度更新はReactの再レンダリングを経由せず、
  * ref経由でtextContentを直接書き換える。
  */

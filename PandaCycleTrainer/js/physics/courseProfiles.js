@@ -3,8 +3,9 @@
 // 各points配列は [距離km, 勾配%] の制御点で、区間は線形補間する。
 // loopLengthKm はこのプロファイル自体の1周分の長さ(最後の制御点の距離)。
 // scenery は走行中の3D表示の景色: 'city'(街並み、CityScene)/'lakeside'(湖を見下ろす
-// 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ)。city以外はLandscapeScene
-// (js/three/landscapeLayout.js)で描く。
+// 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ)/'ueno'(上野不忍池)。lakeside・mountain・
+// atamiはLandscapeScene(js/three/landscapeLayout.js)、uenoはPondScene(js/three/pondLayout.js)で描く。
+// fixedVehicle があるコースは、オプションのバイク種別に関わらずその乗り物で走る。
 
 export const COURSE_PROFILES = [
   {
@@ -91,6 +92,21 @@ export const COURSE_PROFILES = [
       [4.8, -0.8],
       [5.6, 0],
       [6, 0],
+    ],
+  },
+  {
+    id: 'ueno',
+    name: '上野不忍池コース',
+    scenery: 'ueno',
+    // 池の上をスワンボートで周回するコースのため、バイク種別はスワンボートに固定
+    fixedVehicle: 'swan',
+    description: '上野・不忍池をスワンボートで反時計回りに周回する平坦なコース(1周1.2km)。柳の岸辺や弁天堂、蓮池を眺めて漕ぎます。',
+    // 1周の長さは周回ルート(js/three/pondLayout.js の ROUTE_LENGTH_M)と一致させている
+    loopLengthKm: 1.2,
+    crossfadeKm: 0,
+    points: [
+      [0, 0],
+      [1.2, 0],
     ],
   },
 ];
