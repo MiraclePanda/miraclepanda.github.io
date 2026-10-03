@@ -19,5 +19,5 @@ Web Bluetooth APIを使用するため、iOS Safariなど対応していない�
 [`PandaCycleTrainer/`](PandaCycleTrainer/) には、[MiraclePanda/PandaCycleTrainer](https://github.com/MiraclePanda/PandaCycleTrainer) の最新版（React + ESモジュール構成、Three.jsによるリアルな3D街並み表示）を配置しています。
 GitHub Pages上では `https://miraclepanda.github.io/PandaCycleTrainer/` から利用できます（HTTPS配信のためWeb Bluetoothがそのまま動作します）。
 
-- 反映元コミット: `f51564a`（2026-09-30「Add the Ueno Shinobazu pond course and move the fullscreen HUD right」まで。上野不忍池コース（スワンボート固定・反時計回りの周回）とフルスクリーン時の走行データの右端表示、熱海サンビーチコースとデモ走行（トレーナー不要の自動走行）、バイク種別（標準/スワンボートのパロディモード）、描画品質の手動選択（自動/高/中/低）とフルスクリーン表示、丘陵コースの湖畔・山岳コースの山岳の3D景観、詳細設定（転がり抵抗・空気抵抗係数）、前回走行設定の記憶を含む）
+- 反映元コミット: `556a812`（2026-10-03「カーブのある道路(PR1)を実装」まで。平坦・丘陵・山岳コースのカーブのある道路（街並み・湖畔・山岳の3D表示が道路形状に沿う）、上野不忍池コース（スワンボート固定・反時計回りの周回）とフルスクリーン時の走行データの右端表示、熱海サンビーチコースとデモ走行（トレーナー不要の自動走行）、バイク種別（標準/スワンボートのパロディモード）、描画品質の手動選択（自動/高/中/低）とフルスクリーン表示、丘陵コースの湖畔・山岳コースの山岳の3D景観、詳細設定（転がり抵抗・空気抵抗係数）、前回走行設定の記憶を含む）
 - アプリ本体（`index.html`, `css/`, `js/`）のみを配置しており、テスト・開発用設定は含みません。

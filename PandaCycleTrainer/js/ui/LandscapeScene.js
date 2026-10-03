@@ -7,6 +7,7 @@ import {
   createElevationSampler, createFloorModel, terrainHeightM, terrainColor, collectLandscapeObjects,
 } from '../three/landscapeLayout.js';
 import { createLandscapeTextures } from '../three/landscapeMaterials.js';
+import { createAnchoredRoute, headingAtM, lateralSigmaM } from '../three/routeLayout.js';
 import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
@@ -100,6 +101,12 @@ const MAX_BOATS = 16;
  * 地形・道路・配置物は絶対距離に固定した格子で生成し、REBUILD_Mごとに組み直す。
  * 組み直しの間は、ライダーを原点に保つよう世界全体のグループを平行移動し、
  * 道路のカーブの向きに合わせて回転させるだけで描画する。
+ *
+ * 道路のカーブは2通り(配置アダプター、createPlacement):
+ * - コースプロファイルに curve があるコース(丘陵・山岳)は routeLayout.js の
+ *   createAnchoredRoute で、組み直しのアンカー地点を原点とする平面上のカーブ道路に沿って置く。
+ * - curve がないコース(熱海)は従来どおり景色側の L.curves による横ずらしの蛇行
+ *   (lateralX/roadCenterX/roadSlopeX)。見た目を変えないため、計算式もそのまま使う。
  */
 export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange }, ref) {
   const canvasRef = useRef(null);
@@ -267,7 +274,9 @@ function initScene(canvas, courseEngine, L, vehicle) {
   scene.add(rider.group);
 
   const elev = createElevationSampler((km) => courseEngine.gradeAtKm(km));
-  const floor = createFloorModel(elev, courseEngine.profile.loopLengthKm * 1000, L.valley.minDropM);
+  const loopM = courseEngine.profile.loopLengthKm * 1000;
+  const floor = createFloorModel(elev, loopM, L.valley.minDropM);
+  const curve = courseEngine.profile.curve;
 
   return {
     L, atmo, canvas, renderer, scene, camera, sky, sunLight, textures: tex.all, waterNormal: tex.water,
@@ -279,7 +288,14 @@ function initScene(canvas, courseEngine, L, vehicle) {
     },
     town,
     rider, elev, floor,
+    // curve があるコースだけ平面カーブの道路(route モード)。null なら従来の L.curves(legacy モード)。
+    curve: Array.isArray(curve) && curve.length > 0 ? curve : null,
+    loopM,
+    cols: terrainColumns(L),
     anchorS: null, anchorElev: 0,
+    placement: null,
+    // route モードの水面の模様用: ライダーの道路中心の位置を、方位を積分して追う(さざ波を地面に固定する)
+    waterOdo: { s: null, x: 0, z: 0 },
     clock: new THREE.Clock(),
     startedAt: performance.now(),
   };
@@ -384,10 +400,91 @@ function ensureGrid(geometry, rowCount, colCount, withColor) {
 
 const _col = new THREE.Color();
 
+// 組み直し時のアンカー前後に、平面カーブの経路を積分しておく範囲(地形の行の範囲+余裕)。
+const ROUTE_BEHIND_M = FAR_BEHIND_M + 2 * REBUILD_M;
+const ROUTE_AHEAD_M = FAR_AHEAD_M + 2 * REBUILD_M;
+const ROUTE_STEP_M = 4;
+
+/**
+ * 配置アダプター。アンカー基準の座標(inner の中)で、絶対距離 s・道路中心から右へ d の点の
+ * 位置 {x, z} と、その点での道路の向き yaw(配置物の回転に足す。正 = 左向き)を返す place(s, d) と、
+ * ライダー・カメラ用の riderFrame / offset を持つ。
+ *
+ * - route モード: createAnchoredRoute。横に遠い点ほど中心線の位置を平滑化した経路に沿うので、
+ *   横 ±数km の地形格子もカーブの内側で折り重ならない(平滑化は絶対距離の格子上で行い、組み直しで跳ばない)。
+ * - legacy モード: 従来の lateralX/roadCenterX/roadSlopeX をそのまま使う(数値も従来と同一)。
+ */
+function createPlacement(st, anchorS) {
+  const { L, curve } = st;
+  if (!curve) {
+    // 向きは s だけで決まるので、同じ行(同じ s)の列をまとめて置く地形格子では1回だけ求める
+    let yawS = NaN;
+    let yaw = 0;
+    return {
+      route: null,
+      place: (s, d) => {
+        if (s !== yawS) {
+          yawS = s;
+          yaw = -Math.atan(roadSlopeX(L, s));
+        }
+        return { x: lateralX(L, s, d), z: -(s - anchorS), yaw };
+      },
+      placeAt: null,
+      // ライダー地点の道路中心(アンカー基準)と、進行方向を −Z に戻す root の回転
+      riderFrame: (dist) => ({ x: roadCenterX(L, dist), z: -(dist - anchorS), rot: Math.atan(roadSlopeX(L, dist)) }),
+      // 道路上の地点 (s, d) のライダー地点からの相対位置(回転前)
+      offset: (dist, s, d) => [roadCenterX(L, s) + d - roadCenterX(L, dist), -(s - dist)],
+    };
+  }
+  const route = createAnchoredRoute(curve, st.loopM, anchorS, { behindM: ROUTE_BEHIND_M, aheadM: ROUTE_AHEAD_M, stepM: ROUTE_STEP_M });
+  const cols = st.cols;
+  const last = cols.length - 2;
+  /**
+   * 任意の横距離 d の配置物用。平滑化の σ は d ごとに箱フィルタをかけ直すことになるので、
+   * 道路近く(σ = 0)以外は地形の列(σ が限られた種類)の間を線形補間する。
+   * 地形メッシュ自体も列の間は線形なので、配置物が地表の位置とずれない。
+   */
+  const placeAt = (s, d) => {
+    if (lateralSigmaM(d) === 0) return route.place(s, d);
+    let lo = 0;
+    let hi = last;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (cols[mid] <= d) lo = mid;
+      else hi = mid - 1;
+    }
+    const d0 = cols[lo];
+    const d1 = cols[lo + 1];
+    const a = route.place(s, d0);
+    if (d === d0) return a;
+    const b = route.place(s, d1);
+    const t = (d - d0) / (d1 - d0); // 列の外側は端の2列から外挿
+    return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t, yaw: a.yaw + (b.yaw - a.yaw) * t };
+  };
+  return {
+    route,
+    // アンカー地点の絶対方位 H(anchorS)。組み直しごとに1回だけ求め、水面の向きに使う
+    anchorHeading: headingAtM(curve, st.loopM, anchorS),
+    place: route.place,
+    placeAt,
+    riderFrame: (dist) => {
+      const p = route.place(dist, 0);
+      // 左カーブで向きが増えるので、ライダーの進行方向を −Z に戻すには逆向きに回す
+      return { x: p.x, z: p.z, rot: -route.headingAt(dist) };
+    },
+    offset: (dist, s, d) => {
+      const p = route.place(dist, 0);
+      const q = route.place(s, d);
+      return [q.x - p.x, q.z - p.z];
+    },
+  };
+}
+
 function rebuildWorld(st, anchorS) {
   const { L, elev } = st;
   st.anchorS = anchorS;
   st.anchorElev = elev.elevAt(anchorS);
+  st.placement = createPlacement(st, anchorS);
   const floorM = st.floor.floorAt(anchorS);
 
   buildTerrain(st, anchorS, floorM);
@@ -396,9 +493,10 @@ function rebuildWorld(st, anchorS) {
 }
 
 function buildTerrain(st, anchorS, floorM) {
-  const { L, elev, anchorElev } = st;
+  const { L, elev, anchorElev, placement } = st;
   const rows = terrainRows(anchorS);
-  const cols = terrainColumns(L);
+  const cols = st.cols;
+  const curved = placement.route !== null;
   const geometry = st.terrain.geometry;
   ensureGrid(geometry, rows.length, cols.length, true);
   const pos = geometry.attributes.position;
@@ -408,16 +506,16 @@ function buildTerrain(st, anchorS, floorM) {
   for (let r = 0; r < rows.length; r++) {
     const s = rows[r];
     const roadE = elev.elevAt(s);
-    const z = -(s - anchorS);
     const v = (vBase + (s - anchorS)) / TERRAIN_TILE_M;
     for (let c = 0; c < cols.length; c++) {
       const d = cols[c];
       const i = r * cols.length + c;
       const hgt = terrainHeightM(L, d, s, roadE, floorM);
       heights[i] = hgt;
-      const x = lateralX(L, s, d);
-      pos.setXYZ(i, x, hgt - anchorElev, z);
-      uv.setXY(i, x / TERRAIN_TILE_M, v);
+      const p = placement.place(s, d);
+      pos.setXYZ(i, p.x, hgt - anchorElev, p.z);
+      // route モードの x はアンカーごとに回転した座標なので、模様は横距離 d に固定する
+      uv.setXY(i, (curved ? d : p.x) / TERRAIN_TILE_M, v);
     }
   }
   pos.needsUpdate = true;
@@ -437,7 +535,7 @@ function buildTerrain(st, anchorS, floorM) {
 }
 
 function buildRoad(st, anchorS) {
-  const { L, elev, anchorElev } = st;
+  const { L, elev, anchorElev, placement } = st;
   const half = L.roadHalfWidthM;
   const edge = roadEdgeM(L);
   const roadCols = [{ x: -half, u: 0 }, { x: half, u: 1 }];
@@ -474,11 +572,12 @@ function buildRoad(st, anchorS) {
     for (let r = 0; r < rows.length; r++) {
       const s = rows[r];
       const y = elev.elevAt(s) - anchorElev + yOffset;
-      const cx = roadCenterX(L, s);
       const v = (vBase + (s - anchorS)) / tileM;
       for (let c = 0; c < cols.length; c++) {
         const i = r * cols.length + c;
-        pos.setXYZ(i, cx + cols[c].x, y, -(s - anchorS));
+        // legacy では lateralX = roadCenterX + 横距離(|d| ≤ 150m は完全追従)で従来と同じ値
+        const p = placement.place(s, cols[c].x);
+        pos.setXYZ(i, p.x, y, p.z);
         uv.setXY(i, cols[c].u, v);
       }
     }
@@ -497,15 +596,19 @@ function buildRoad(st, anchorS) {
 }
 
 function placeObjects(st, anchorS, floorM) {
-  const { L, elev, anchorElev, pools: p } = st;
+  const { L, elev, anchorElev, pools: p, placement } = st;
   const from = anchorS - NEAR_BEHIND_M;
   const to = anchorS + NEAR_AHEAD_M + REBUILD_M;
   const objects = collectLandscapeObjects(L, from, to, { farToM: anchorS + FAR_TREE_AHEAD_M });
   const edge = roadEdgeM(L);
 
   const groundAt = (s, d) => terrainHeightM(L, d, s, elev.elevAt(s), floorM);
-  const local = (s, d, hgt) => [lateralX(L, s, d), hgt - anchorElev, -(s - anchorS)];
-  const roadYaw = (s) => -Math.atan(roadSlopeX(L, s));
+  // [x, y, z, 道路の向き]。配置物の回転は「元の回転 + 道路の向き」にする。
+  const placeAt = placement.placeAt ?? placement.place;
+  const local = (s, d, hgt) => {
+    const q = placeAt(s, d);
+    return [q.x, hgt - anchorElev, q.z, q.yaw];
+  };
   const steepness = (s, d, hgt) => Math.abs(groundAt(s, d + Math.sign(d) * 1.5) - hgt) / 1.5;
   const treeOk = (s, d, hgt) => {
     if (hgt < floorM + 1.2) return false; // 水中・水際
@@ -570,9 +673,12 @@ function placeObjects(st, anchorS, floorM) {
   }
 
   for (const dl of objects.delineators) {
-    const [x, y, z] = local(dl.s, dl.d, elev.elevAt(dl.s));
+    const [x, y, z, yaw] = local(dl.s, dl.d, elev.elevAt(dl.s));
     pushInstance(p.delineatorPosts, x, y - 0.05, z, 1, 1.15, 1);
-    pushInstance(p.delineatorLens, x, y + 1.0, z + 0.05, 1, 1, 1, 0, roadYaw(dl.s) + Math.PI / 2);
+    // レンズは支柱の 5cm 手前(進行方向の逆側)。route モードは前方 (−sin yaw, 0, −cos yaw) の逆向きへずらす
+    const lx = placement.route ? 0.05 * Math.sin(yaw) : 0;
+    const lz = placement.route ? 0.05 * Math.cos(yaw) : 0.05;
+    pushInstance(p.delineatorLens, x + lx, y + 1.0, z + lz, 1, 1, 1, 0, yaw + Math.PI / 2);
   }
 
   // 擁壁(山側の路肩の外、切土面の前)
@@ -584,15 +690,19 @@ function placeObjects(st, anchorS, floorM) {
       const [, yMid] = local(mid, edge, elev.elevAt(mid));
       const dx = x1 - x0;
       const dz = z1 - z0;
-      pushInstanceYawPitch(p.walls, (x0 + x1) / 2 + 0.25, yMid - 0.4, (z0 + z1) / 2, 0.5, w.heightM + 0.4, Math.hypot(dx, y1 - y0, dz) + 0.02, Math.atan2(-dx, -dz), 0);
+      const yaw = Math.atan2(-dx, -dz);
+      // 壁厚の半分だけ山側(道路の右)へ。legacy は従来どおり x 方向にずらす
+      const ox = placement.route ? 0.25 * Math.cos(yaw) : 0.25;
+      const oz = placement.route ? -0.25 * Math.sin(yaw) : 0;
+      pushInstanceYawPitch(p.walls, (x0 + x1) / 2 + ox, yMid - 0.4, (z0 + z1) / 2 + oz, 0.5, w.heightM + 0.4, Math.hypot(dx, y1 - y0, dz) + 0.02, yaw, 0);
     }
   }
 
   for (const hs of objects.houses) {
     const hgt = groundAt(hs.s, hs.d);
     if (hgt < floorM + 2 || steepness(hs.s, hs.d, hgt) > 0.45) continue;
-    const [x, y, z] = local(hs.s, hs.d, hgt);
-    const yaw = roadYaw(hs.s) + hs.yaw;
+    const [x, y, z, roadYaw] = local(hs.s, hs.d, hgt);
+    const yaw = roadYaw + hs.yaw;
     pushInstance(p.houseBodies, x, y - 1.2, z, hs.depthM, hs.heightM + 1.2, hs.widthM, 0, yaw, hs.wall);
     pushInstance(p.houseRoofs, x, y + hs.heightM, z, hs.depthM + 0.9, 2.2, hs.widthM + 0.9, 0, yaw, hs.roof);
   }
@@ -605,7 +715,7 @@ function placeObjects(st, anchorS, floorM) {
     pushInstance(p.boatSails, x, y, z, b.scale, b.scale, b.scale, 0, b.yaw);
   }
 
-  if (objects.town) placeTownObjects(st, objects.town, floorM, { groundAt, local, roadYaw });
+  if (objects.town) placeTownObjects(st, objects.town, floorM, { groundAt, local });
 
   for (const pool of Object.values(p)) commitPool(pool);
 }
@@ -732,7 +842,7 @@ function buildCastleGeometries() {
   return { stone, walls, roofs };
 }
 
-function placeTownObjects(st, town, floorM, { groundAt, local, roadYaw }) {
+function placeTownObjects(st, town, floorM, { groundAt, local }) {
   const { L, elev, anchorElev, pools: p } = st;
 
   for (const pm of town.palms) {
@@ -743,9 +853,9 @@ function placeTownObjects(st, town, floorM, { groundAt, local, roadYaw }) {
     pushInstance(p.palmCrowns, x, y - 0.2 + height * Math.cos(pm.lean), z + height * Math.sin(pm.lean), pm.scale, pm.scale, pm.scale, 0, pm.yaw, 0x557f33);
   }
   for (const lp of town.lamps) {
-    const [x, y, z] = local(lp.s, lp.d, elev.elevAt(lp.s) + 0.15);
-    pushInstance(p.lampPoles, x, y, z, 1, 1, 1, 0, roadYaw(lp.s) + Math.PI / 2);
-    pushInstance(p.lampGlobes, x, y, z, 1, 1, 1, 0, roadYaw(lp.s) + Math.PI / 2);
+    const [x, y, z, yaw] = local(lp.s, lp.d, elev.elevAt(lp.s) + 0.15);
+    pushInstance(p.lampPoles, x, y, z, 1, 1, 1, 0, yaw + Math.PI / 2);
+    pushInstance(p.lampGlobes, x, y, z, 1, 1, 1, 0, yaw + Math.PI / 2);
   }
   // 遊歩道の手すり(白い支柱と2段の横桟)
   for (const run of town.railRuns) {
@@ -769,13 +879,12 @@ function placeTownObjects(st, town, floorM, { groundAt, local, roadYaw }) {
   }
   // ホテル: 坂に建つものは谷側の地面まで基礎を下ろす
   for (const ht of town.hotels) {
-    const yaw = roadYaw(ht.s);
     const groundC = groundAt(ht.s, ht.d);
     const base = ht.hillside
       ? Math.min(groundAt(ht.s, ht.d - ht.depthM / 2), groundC) - 1
       : groundC - FLOOR_HEIGHT_M;
     const top = groundC + ht.floors * FLOOR_HEIGHT_M;
-    const [x, , z] = local(ht.s, ht.d, 0);
+    const [x, , z, yaw] = local(ht.s, ht.d, 0);
     pushInstanceYawPitch(p[`hotel_${ht.style}`], x, base - anchorElev, z, ht.depthM, top - base, ht.widthM, yaw, 0, ht.tint);
     pushInstanceYawPitch(p.hotelRoofs, x, top - anchorElev, z, ht.depthM + 0.4, 0.7, ht.widthM + 0.4, yaw, 0);
   }
@@ -787,11 +896,11 @@ function placeTownObjects(st, town, floorM, { groundAt, local, roadYaw }) {
     pushInstance(p.parasolCanopies, x, y + 2.05, z - Math.sin(ps.tilt) * 2, 1, 1, 1, ps.tilt, 0, ps.color);
   }
   for (const g of town.groins) {
-    const [x0, , z0] = local(g.s, g.fromD, 0);
+    const [x0, , z0, yaw] = local(g.s, g.fromD, 0);
     const [x1, , z1] = local(g.s, g.toD, 0);
     const len = Math.hypot(x1 - x0, z1 - z0);
     const bottom = floorM - 8 - anchorElev;
-    pushInstanceYawPitch(p.groins, (x0 + x1) / 2, bottom, (z0 + z1) / 2, len, 8 + 1.8, 5, roadYaw(g.s), 0);
+    pushInstanceYawPitch(p.groins, (x0 + x1) / 2, bottom, (z0 + z1) / 2, len, 8 + 1.8, 5, yaw, 0);
   }
   for (const is of town.islands) {
     const [x, , z] = local(is.s, is.d, 0);
@@ -799,8 +908,7 @@ function placeTownObjects(st, town, floorM, { groundAt, local, roadYaw }) {
   }
   for (const c of town.castles) {
     const hgt = groundAt(c.s, c.d);
-    const [x, y, z] = local(c.s, c.d, hgt - 2);
-    const yaw = roadYaw(c.s);
+    const [x, y, z, yaw] = local(c.s, c.d, hgt - 2);
     // 遠く(数百m先)の山上でも天守と分かるよう、実物よりやや大きめに描く
     for (const pool of [p.castleStone, p.castleWalls, p.castleRoofs]) pushInstance(pool, x, y, z, CASTLE_SCALE, CASTLE_SCALE, CASTLE_SCALE, 0, yaw);
   }
@@ -817,19 +925,33 @@ function drawFrame(st, distanceKm, speedKmh) {
     rebuildWorld(st, Math.round(dist / ROW_STEP_NEAR_M) * ROW_STEP_NEAR_M);
   }
   const riderElev = elev.elevAt(dist);
-  const heading = Math.atan(roadSlopeX(L, dist));
+  // ライダー地点の道路中心を原点へ平行移動し、進行方向が −Z になるよう回す
+  const frame = st.placement.riderFrame(dist);
+  const heading = frame.rot;
   st.root.rotation.y = heading;
-  st.inner.position.set(-roadCenterX(L, dist), st.anchorElev - riderElev, dist - st.anchorS);
+  st.inner.position.set(-frame.x, st.anchorElev - riderElev, -frame.z);
 
   // 水面: 高さは毎フレーム(組み直し時点の地形とのずれは数cm)、さざ波の模様は絶対位置に固定
   st.water.position.y = st.floor.floorAt(dist) - riderElev;
   const t = (performance.now() - st.startedAt) / 1000;
-  st.waterNormal.offset.set((roadCenterX(L, dist) / WATER_TILE_M + t * 0.004) % 1, (-dist / WATER_TILE_M + t * 0.01) % 1);
+  if (st.placement.route) {
+    // 水面は root に置くので、アンカーの絶対方位だけ戻して向きを地面に固定し(組み直しで模様が回らない)、
+    // 模様のずれはライダーの道路中心の位置(方位の積分)で与える。
+    st.water.rotation.y = -st.placement.anchorHeading;
+    const w = advanceWaterOdometer(st, dist);
+    st.waterNormal.offset.set((w.x / WATER_TILE_M + t * 0.004) % 1, (w.z / WATER_TILE_M + t * 0.01) % 1);
+  } else {
+    st.waterNormal.offset.set((roadCenterX(L, dist) / WATER_TILE_M + t * 0.004) % 1, (-dist / WATER_TILE_M + t * 0.01) % 1);
+  }
 
-  // 空・太陽は地形と一緒に回す(カーブで向きが変わると太陽の方向も変わる)
-  st.scene.backgroundRotation.y = heading;
-  st.scene.environmentRotation.y = heading;
-  _sun.copy(st.atmo.sunDir).applyAxisAngle(THREE.Object3D.DEFAULT_UP, heading);
+  // 空・太陽は地形と一緒に回す(カーブで向きが変わると太陽の方向も変わる)。
+  // route モードの root の回転はアンカー基準(−(H(dist) − H(anchorS)))で、組み直しのたびに基準が変わるので、
+  // 空・環境・太陽にはライダーの絶対方位 −H(dist) を使う(= root の回転 − H(anchorS)。組み直しをまたいで連続)。
+  // legacy の root の回転はもともと絶対方位なので従来どおり。
+  const skyHeading = st.placement.route ? -headingAtM(st.curve, st.loopM, dist) : heading;
+  st.scene.backgroundRotation.y = skyHeading;
+  st.scene.environmentRotation.y = skyHeading;
+  _sun.copy(st.atmo.sunDir).applyAxisAngle(THREE.Object3D.DEFAULT_UP, skyHeading);
   st.sunLight.position.copy(st.sunLight.target.position).addScaledVector(_sun, 180);
 
   const pitch = Math.atan((elev.elevAt(dist + 1.5) - elev.elevAt(dist - 1.5)) / 3);
@@ -847,12 +969,27 @@ function drawFrame(st, distanceKm, speedKmh) {
   st.renderer.render(st.scene, st.camera);
 }
 
+/**
+ * route モードの水面の模様用に、ライダーの道路中心の位置(進行方向の絶対方位で積分した平面座標)を進める。
+ * 見た目だけの近似なので、大きな距離の飛び(ループの周回・巻き戻し)では位置を進めずに距離だけ合わせる。
+ */
+function advanceWaterOdometer(st, dist) {
+  const w = st.waterOdo;
+  const ds = w.s === null ? 0 : dist - w.s;
+  if (Math.abs(ds) <= 200) {
+    const hMid = headingAtM(st.curve, st.loopM, dist - ds / 2);
+    w.x -= Math.sin(hMid) * ds;
+    w.z -= Math.cos(hMid) * ds;
+  }
+  w.s = dist;
+  return w;
+}
+
 /** 道路上の地点(絶対距離s・中心からの横距離d・路面からの高さ)を、ライダー基準のワールド座標へ。 */
 function worldPoint(st, dist, s, d, heightM) {
-  const { L, elev } = st;
-  const px = roadCenterX(L, s) + d - roadCenterX(L, dist);
+  const { elev } = st;
+  const [px, pz] = st.placement.offset(dist, s, d);
   const py = elev.elevAt(s) - elev.elevAt(dist) + heightM;
-  const pz = -(s - dist);
   const a = st.root.rotation.y;
   const cos = Math.cos(a);
   const sin = Math.sin(a);

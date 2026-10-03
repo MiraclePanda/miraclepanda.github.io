@@ -6,10 +6,11 @@ import {
   CROSSWALK_LENGTH_M, CROSS_STREET_WIDTH_M, INTERSECTION_LENGTH_M,
 } from '../three/cityLayout.js';
 import { buildElevationProfile, interpolateElevation } from '../three/roadElevation.js';
+import { buildRouteFrame, toLocalInto, clampInsideOffset } from '../three/routeLayout.js';
 import { createCityTextures, createFacadeMaterial, createFacadeGeometry, FACADE_TILE } from '../three/cityMaterials.js';
 import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
-  makePool, pushInstance, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  makePool, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
 } from '../three/sceneKit.js';
 
 const { forwardRef, useImperativeHandle } = React;
@@ -18,6 +19,8 @@ const { forwardRef, useImperativeHandle } = React;
 const BEHIND_M = 20;
 const AHEAD_M = 300;
 const PROFILE_STEP_M = 6;
+// 標高プロファイルと道路フレームで共有するサンプル範囲(毎フレーム作り直さないよう定数にする)
+const WINDOW_OPTS = { behindM: BEHIND_M, aheadM: AHEAD_M, stepM: PROFILE_STEP_M };
 
 // 敷地(歩道の外側)を左右どこまで敷くか。奥の列の建物より十分外側まで。
 const GROUND_EXTENT_M = 120;
@@ -199,6 +202,8 @@ function initScene(canvas, vehicle) {
   });
   const lot = buildRibbon(LOT_SEGMENTS, new THREE.MeshStandardMaterial({ map: tex.lot, roughness: 0.9 }), {
     uScale: 1 / LOT_TILE_M, vTileM: LOT_TILE_M,
+    // 敷地は横に広いので、カーブ内側で曲率半径を超えて裏返らないよう横オフセットを丸める。
+    clampInside: true,
   });
   scene.add(road.mesh, sidewalk.mesh, lot.mesh);
 
@@ -252,14 +257,18 @@ function initScene(canvas, vehicle) {
   const rider = createAvatar(vehicle);
   scene.add(rider.group);
 
-  return {
+  const s = {
     canvas, renderer, scene, camera, sky, sunLight, textures: tex.all,
     road, sidewalk, lot, crossStreets, crosswalks,
     facades, storefronts, roofs, roofUnits,
     trunks, canopies, lamps, carBodies, carGlass, carWheels,
     rider,
     clock: new THREE.Clock(),
+    // 道路フレーム(buildRouteFrame の戻り値)。毎フレーム配列と要素を使い回して GC を抑える。
+    routeFrame: [],
   };
+  s.place = placer(s);
+  return s;
 }
 
 // ---- ジオメトリ生成ヘルパー ----
@@ -319,16 +328,20 @@ function buildCarGeometries() {
 
 // ---- 地面リボン ----
 
-function buildRibbon(segments, material, { uScale, vTileM }) {
+function buildRibbon(segments, material, { uScale, vTileM, clampInside = false }) {
   const geometry = new THREE.BufferGeometry();
   const mesh = new THREE.Mesh(geometry, material);
   mesh.receiveShadow = true;
   mesh.frustumCulled = false;
-  return { mesh, geometry, segments, uScale, vTileM, sampleCount: 0 };
+  return { mesh, geometry, segments, uScale, vTileM, sampleCount: 0, clampInside };
 }
 
-function updateRibbon(ribbon, profile, distanceM) {
-  const { geometry, segments, uScale, vTileM } = ribbon;
+/**
+ * リボンの頂点を道路の向き(frame)に沿って並べ直す。
+ * frame は profile と同じ opts で作るので、同じインデックスのサンプルが同じ alongM を指す。
+ */
+function updateRibbon(ribbon, profile, frame, distanceM) {
+  const { geometry, segments, uScale, vTileM, clampInside } = ribbon;
   const sampleCount = profile.length;
   const vertsPerSample = segments.length * 2;
   if (ribbon.sampleCount !== sampleCount) {
@@ -358,11 +371,18 @@ function updateRibbon(ribbon, profile, distanceM) {
   for (let i = 0; i < sampleCount; i++) {
     const { alongM, elevM } = profile[i];
     const v = (vBase + alongM) / vTileM;
+    // toLocal(frame, alongM, x) と同じ計算(道路中心 + 右ベクトル·x)をサンプルから直接行う。
+    // 直線フレームでは x = seg.x, z = −alongM となり、従来の頂点と一致する。
+    const f = frame[i];
+    const rx = Math.cos(f.yaw);
+    const rz = -Math.sin(f.yaw);
     for (let s = 0; s < segments.length; s++) {
       const seg = segments[s];
       const idx = i * vertsPerSample + s * 2;
-      pos.setXYZ(idx, seg.x0, elevM + seg.y0, -alongM);
-      pos.setXYZ(idx + 1, seg.x1, elevM + seg.y1, -alongM);
+      const x0 = clampInside ? clampInsideOffset(f.k, seg.x0) : seg.x0;
+      const x1 = clampInside ? clampInsideOffset(f.k, seg.x1) : seg.x1;
+      pos.setXYZ(idx, f.x + rx * x0, elevM + seg.y0, f.z + rz * x0);
+      pos.setXYZ(idx + 1, f.x + rx * x1, elevM + seg.y1, f.z + rz * x1);
       uv.setXY(idx, seg.u0 ?? seg.x0 * uScale, v);
       uv.setXY(idx + 1, seg.u1 ?? seg.x1 * uScale, v);
     }
@@ -374,60 +394,96 @@ function updateRibbon(ribbon, profile, distanceM) {
 
 // ---- 毎フレームの更新 ----
 
+// toLocalInto の出力先(配置ループ・カメラで使い回す)
+const _local = { x: 0, z: 0, yaw: 0 };
+
 function drawFrame(s, courseEngine, distanceKm, speedKmh) {
   const distanceM = distanceKm * 1000;
-  const profile = buildElevationProfile(
-    (km) => courseEngine.gradeAtKm(km),
-    distanceKm,
-    { behindM: BEHIND_M, aheadM: AHEAD_M, stepM: PROFILE_STEP_M }
-  );
+  const profile = buildElevationProfile((km) => courseEngine.gradeAtKm(km), distanceKm, WINDOW_OPTS);
+  // 平面上のカーブ。標高プロファイルと同じ opts で作り、同じインデックスが同じ alongM を指すようにする。
+  // curve のないコースでは直線フレームになり、配置は従来(x = xOffsetM, z = −alongM)と一致する。
+  const curve = courseEngine.profile.curve ?? [];
+  const loopM = courseEngine.profile.loopLengthKm * 1000;
+  const frame = buildRouteFrame(curve, loopM, distanceM, WINDOW_OPTS, s.routeFrame);
+  s.routeFrame = frame;
   const elevAt = (relAlongM) => interpolateElevation(profile, relAlongM);
   const pitchAt = (relAlongM) => Math.atan((elevAt(relAlongM + 1.5) - elevAt(relAlongM - 1.5)) / 3);
 
-  updateRibbon(s.road, profile, distanceM);
-  updateRibbon(s.sidewalk, profile, distanceM);
-  updateRibbon(s.lot, profile, distanceM);
+  updateRibbon(s.road, profile, frame, distanceM);
+  updateRibbon(s.sidewalk, profile, frame, distanceM);
+  updateRibbon(s.lot, profile, frame, distanceM);
 
+  // 配置物は cityLayout の alongM / xOffsetM のまま受け取り、place() でワールド座標へ変換する。
+  const { place } = s;
   const objects = collectSceneObjects(distanceM - BEHIND_M, distanceM + AHEAD_M);
-  updateIntersections(s, objects.intersections, distanceM, elevAt, pitchAt);
-  updateBuildings(s, objects.buildings, distanceM, elevAt);
-  updateStreetFurniture(s, objects, distanceM, elevAt, pitchAt);
+  updateIntersections(s, objects.intersections, distanceM, elevAt, pitchAt, place);
+  updateBuildings(s, objects.buildings, distanceM, elevAt, place);
+  updateStreetFurniture(s, objects, distanceM, elevAt, pitchAt, place);
   updateRiderAvatar(s.rider, s.clock, speedKmh, pitchAt(0));
-  updateCamera(s, elevAt);
+  updateCamera(s, elevAt, frame);
 
   s.renderer.render(s.scene, s.camera);
 }
 
-function updateIntersections(s, intersections, distanceM, elevAt, pitchAt) {
+/**
+ * 道路沿いの配置関数を作る。従来の pushInstance(pool, xOffsetM, y, −rel, sx, sy, sz, rotX, rotY, c) を
+ * place(pool, rel, xOffsetM, y, sx, sy, sz, rotX, rotY, c) に置き換え、
+ * toLocalInto で位置を、道路の向き(yaw)を rotY に足して向きを道路に沿わせる。
+ * フレームは毎フレーム更新される s.routeFrame を参照する(関数自体はシーン生成時に1回だけ作る)。
+ * ヨー→ピッチの順(YXZ)で回すので、坂の途中のカーブでも物体は道路の向きのまま前後に傾く
+ * (rotX と rotY の一方が 0 なら従来の XYZ 順と同じ行列になる)。
+ * 建物の屋上設備のように物体ローカルのオフセット(dx: 右, dz: 後ろ)を持つものは、
+ * 本体と同じ yaw で回してから足し、本体と一体で回るようにする。
+ */
+function placer(s) {
+  // 配置物ごとにオブジェクトを作らないよう、変換結果は使い回しの _local に受ける。
+  return function place(pool, rel, xOffsetM, y, sx, sy, sz, rotX = 0, rotY = 0, colorHex, dx = 0, dz = 0) {
+    const p = toLocalInto(s.routeFrame, rel, xOffsetM, _local);
+    let x = p.x;
+    let z = p.z;
+    if (dx !== 0 || dz !== 0) {
+      // Three.js の rotation.y = yaw と同じ回転(直線では yaw = 0 で従来の足し算と一致)
+      const c = Math.cos(p.yaw);
+      const sn = Math.sin(p.yaw);
+      x += dx * c + dz * sn;
+      z += -dx * sn + dz * c;
+    }
+    pushInstanceYawPitch(pool, x, y, z, sx, sy, sz, rotY + p.yaw, rotX, colorHex);
+  };
+}
+
+function updateIntersections(s, intersections, distanceM, elevAt, pitchAt, place) {
+  // 交差道路・横断歩道は中心の位置と向きで置く(道路に直交のまま)。
   for (const { alongM } of intersections) {
     const rel = alongM - distanceM;
     const streetCenter = rel + CROSSWALK_LENGTH_M + CROSS_STREET_WIDTH_M / 2;
-    pushInstance(s.crossStreets, 0, elevAt(streetCenter), -streetCenter, 1, 1, 1, pitchAt(streetCenter));
+    place(s.crossStreets, streetCenter, 0, elevAt(streetCenter), 1, 1, 1, pitchAt(streetCenter));
     for (const cwCenter of [rel + CROSSWALK_LENGTH_M / 2, rel + INTERSECTION_LENGTH_M - CROSSWALK_LENGTH_M / 2]) {
-      pushInstance(s.crosswalks, 0, elevAt(cwCenter) + 0.01, -cwCenter, 1, 1, 1, pitchAt(cwCenter));
+      place(s.crosswalks, cwCenter, 0, elevAt(cwCenter) + 0.01, 1, 1, 1, pitchAt(cwCenter));
     }
   }
   commitPool(s.crossStreets);
   commitPool(s.crosswalks);
 }
 
-function updateBuildings(s, buildings, distanceM, elevAt) {
+function updateBuildings(s, buildings, distanceM, elevAt, place) {
   for (const b of buildings) {
     const rel = b.alongM - distanceM;
-    const z = -rel;
     const groundY = elevAt(rel) + CURB_HEIGHT_M;
     const baseY = groundY - BUILDING_SINK_M;
 
     // 本体: X=奥行き, Z=間口(道路沿いの長さ)。外壁シェーダーがこのスケールから窓を並べる。
-    pushInstance(s.facades[b.style], b.xOffsetM, baseY, z, b.depth, b.height + BUILDING_SINK_M, b.width, 0, 0, b.tint);
+    // カーブでは道路の向き(yaw)で回り、間口が道路に沿う。
+    place(s.facades[b.style], rel, b.xOffsetM, baseY, b.depth, b.height + BUILDING_SINK_M, b.width, 0, 0, b.tint);
     if (b.storefront) {
-      pushInstance(s.storefronts, b.xOffsetM, baseY, z, b.depth + 0.3, FLOOR_HEIGHT_M + BUILDING_SINK_M, b.width + 0.3);
+      place(s.storefronts, rel, b.xOffsetM, baseY, b.depth + 0.3, FLOOR_HEIGHT_M + BUILDING_SINK_M, b.width + 0.3);
     }
     // 屋上のパラペット(外壁より少し張り出したスラブ)と屋上設備
     const roofY = groundY + b.height;
-    pushInstance(s.roofs, b.xOffsetM, roofY, z, b.depth + 0.35, ROOF_SLAB_M, b.width + 0.35);
+    place(s.roofs, rel, b.xOffsetM, roofY, b.depth + 0.35, ROOF_SLAB_M, b.width + 0.35);
     for (const u of b.roofUnits) {
-      pushInstance(s.roofUnits, b.xOffsetM + u.u * b.depth, roofY + ROOF_SLAB_M * 0.5, z + u.v * b.width, u.sizeX, u.sizeY, u.sizeZ);
+      // 屋上設備は建物ローカルのオフセットとして本体と同じ向きで回す。
+      place(s.roofUnits, rel, b.xOffsetM, roofY + ROOF_SLAB_M * 0.5, u.sizeX, u.sizeY, u.sizeZ, 0, 0, undefined, u.u * b.depth, u.v * b.width);
     }
   }
   for (const style of BUILDING_STYLES) commitPool(s.facades[style]);
@@ -436,12 +492,11 @@ function updateBuildings(s, buildings, distanceM, elevAt) {
   commitPool(s.roofUnits);
 }
 
-function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pitchAt) {
+function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pitchAt, place) {
   for (const t of trees) {
     const rel = t.alongM - distanceM;
     const groundY = elevAt(rel) + CURB_HEIGHT_M;
-    const z = -rel;
-    pushInstance(s.trunks, t.xOffsetM, groundY, z, t.scale, 3.4 * t.scale, t.scale);
+    place(s.trunks, rel, t.xOffsetM, groundY, t.scale, 3.4 * t.scale, t.scale);
     // 樹冠は複数の葉の塊で構成する。形は木ごとのseedで決定的に決める。
     const rand = mulberry32(t.seed);
     for (let i = 0; i < CANOPY_BLOBS_PER_TREE; i++) {
@@ -449,20 +504,21 @@ function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pit
       const ox = (rand() - 0.5) * 1.4 * t.scale;
       const oz = (rand() - 0.5) * 1.4 * t.scale;
       const oy = (3.6 + i * 0.7 + rand() * 0.4) * t.scale;
-      pushInstance(s.canopies, t.xOffsetM + ox, groundY + oy, z + oz, r, r, r, 0, rand() * Math.PI, t.leafColor);
+      // ぶれ(ox, oz)は小さいので道路沿いの座標のまま足す(z + oz は alongM − oz)。
+      place(s.canopies, rel - oz, t.xOffsetM + ox, groundY + oy, r, r, r, 0, rand() * Math.PI, t.leafColor);
     }
   }
   for (const l of lamps) {
     const rel = l.alongM - distanceM;
-    pushInstance(s.lamps, l.xOffsetM, elevAt(rel) + CURB_HEIGHT_M, -rel, 1, 1, 1, 0, l.side > 0 ? 0 : Math.PI);
+    place(s.lamps, rel, l.xOffsetM, elevAt(rel) + CURB_HEIGHT_M, 1, 1, 1, 0, l.side > 0 ? 0 : Math.PI);
   }
   for (const c of cars) {
     const rel = c.alongM - distanceM;
     const y = elevAt(rel);
     const pitch = pitchAt(rel);
-    pushInstance(s.carBodies, c.xOffsetM, y, -rel, 1, 1, 1, pitch, 0, c.color);
-    pushInstance(s.carGlass, c.xOffsetM, y, -rel, 1, 1, 1, pitch, 0);
-    pushInstance(s.carWheels, c.xOffsetM, y, -rel, 1, 1, 1, pitch, 0);
+    place(s.carBodies, rel, c.xOffsetM, y, 1, 1, 1, pitch, 0, c.color);
+    place(s.carGlass, rel, c.xOffsetM, y, 1, 1, 1, pitch, 0);
+    place(s.carWheels, rel, c.xOffsetM, y, 1, 1, 1, pitch, 0);
   }
   commitPool(s.trunks);
   commitPool(s.canopies);
@@ -472,12 +528,15 @@ function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pit
   commitPool(s.carWheels);
 }
 
-function updateCamera(s, elevAt) {
+function updateCamera(s, elevAt, frame) {
   // アバターごとの補正(スワンボートは斜め後ろ上から見る)
   const { sideM, raiseM, backM } = s.rider.camera;
   const camBack = CAM_BACK_M + backM;
   const camY = elevAt(-camBack) + CAM_HEIGHT_M + raiseM;
-  s.camera.position.set(RIDER_X_M + 0.4 + sideM, camY, camBack);
+  // カメラも道路に沿わせる(後方・前方の道路上の点から見る。直線では従来の位置と一致)。
+  const p = toLocalInto(frame, -camBack, RIDER_X_M + 0.4 + sideM, _local);
+  s.camera.position.set(p.x, camY, p.z);
   const lookY = elevAt(CAM_LOOKAHEAD_M) + CAM_LOOKAHEAD_HEIGHT_M;
-  s.camera.lookAt(RIDER_X_M * 0.4, lookY, -CAM_LOOKAHEAD_M);
+  const q = toLocalInto(frame, CAM_LOOKAHEAD_M, RIDER_X_M * 0.4, _local);
+  s.camera.lookAt(q.x, lookY, q.z);
 }

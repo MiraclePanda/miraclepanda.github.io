@@ -6,6 +6,12 @@
 // 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ)/'ueno'(上野不忍池)。lakeside・mountain・
 // atamiはLandscapeScene(js/three/landscapeLayout.js)、uenoはPondScene(js/three/pondLayout.js)で描く。
 // fixedVehicle があるコースは、オプションのバイク種別に関わらずその乗り物で走る。
+// curve: 平面上のカーブ(方位の揺らぎ)。[振幅(度), 1周あたりの周期数(整数), 位相(rad)] の配列。
+// 方位 heading(m) = Σ amp·(sin(2π·n·m/L + φ) − sin φ)。nが整数なのでループ境界で連続する。
+// 未指定(または空配列)のコースは従来どおりの直線。3D表示の見た目だけに使い、物理・勾配・
+// 距離・記録には影響しない(js/three/routeLayout.js で道路の平面形状に変換する)。
+// 熱海は海岸線沿いの直線(LandscapeScene 既存のゆるい蛇行)を維持するため、上野は PondScene が
+// 独自の周回ルートを持つため、どちらも指定しない。
 
 export const COURSE_PROFILES = [
   {
@@ -15,6 +21,7 @@ export const COURSE_PROFILES = [
     description: '起伏の少ない平坦基調のコース。ウォームアップや脚を回したい日向け。',
     loopLengthKm: 10,
     crossfadeKm: 0.15,
+    curve: [[25, 3, 0], [12, 8, 1.3], [6, 17, 2.1]],
     points: [
       [0, 0],
       [1.5, 0.5],
@@ -33,6 +40,7 @@ export const COURSE_PROFILES = [
     description: '緩やかなアップダウンが連続する丘陵地帯のコース。',
     loopLengthKm: 15,
     crossfadeKm: 0.2,
+    curve: [[35, 3, 0.4], [16, 9, 2.0], [6, 22, 0.7]],
     points: [
       [0, 0],
       [1, 3],
@@ -56,6 +64,7 @@ export const COURSE_PROFILES = [
     description: '長い上りを含む山岳コース。合計獲得標高を稼ぎたい日向け。',
     loopLengthKm: 20,
     crossfadeKm: 0.25,
+    curve: [[45, 4, 1.0], [22, 12, 0.2], [8, 30, 2.5]],
     points: [
       [0, 0],
       [1, 2],
