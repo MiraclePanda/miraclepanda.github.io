@@ -23,6 +23,11 @@ uniform vec3 uHorizon;
 uniform vec3 uGround;
 uniform vec3 uSunColor;
 uniform vec3 uSunDir;
+#ifdef SKY_WEATHER
+uniform vec3 uCloud;
+uniform float uCover;
+uniform float uNight;
+#endif
 varying vec3 vDir;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -50,9 +55,19 @@ void main() {
     // 空の高いところにある平面へ投影した、ゆるいfBmの積雲。
     vec2 cp = d.xz / (h + 0.1) * 1.3;
     float c = fbm(cp + vec2(4.3, 1.7));
+#ifdef SKY_WEATHER
+    // 時間帯・天候: 星(夜)と、雲量・雲の色。昼・晴れではこの分岐を使わない(従来の空と完全に同じにするため)。
+    vec3 sg = floor(d * 220.0);
+    float star = step(0.9965, hash(sg.xy + sg.z * 17.13)) * smoothstep(0.04, 0.3, h);
+    col += vec3(0.85, 0.9, 1.0) * star * uNight * (1.0 - uCover);
+    float cover = smoothstep(mix(0.5, 0.06, uCover), mix(0.78, 0.42, uCover), c) * smoothstep(0.02, 0.25, h);
+    vec3 cloud = mix(uCloud * 0.62, uCloud, smoothstep(0.55, 0.9, c) * 0.6 + s * 0.4 * (1.0 - uCover));
+    col = mix(col, cloud, cover * mix(0.9, 1.0, uCover));
+#else
     float cover = smoothstep(0.5, 0.78, c) * smoothstep(0.02, 0.25, h);
     vec3 cloud = mix(vec3(0.72, 0.75, 0.8), vec3(1.0, 0.99, 0.97), smoothstep(0.55, 0.9, c) * 0.6 + s * 0.4);
     col = mix(col, cloud, cover * 0.9);
+#endif
   }
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
@@ -65,22 +80,35 @@ const SKY_RADIUS_M = 700;
  * 空は静的(太陽・雲とも動かない)なので、シェーダーで描いた空を初期化時に1度だけ
  * キューブマップ(背景用)へ焼き込み、PMREM環境マップ(映り込み用)は必要時に生成する。
  * 毎フレーム空の全画素でノイズを計算するより大幅に軽い。
+ * 時間帯・天候(environmentPresets.js の resolveEnvironment)で空を変えるときは、
+ * 雲量 cloudCover・雲の色 cloud・太陽の輝き sunGlow・夜度 night を渡して焼き直す。
+ * これらが既定値(0 / - / 1 / 0)のときは従来と同じシェーダーで焼く(昼・晴れの見た目を変えないため)。
  * @param {THREE.WebGLRenderer} renderer
- * @param {{zenith:string, horizon:string, ground:string, sunColor:string, sunDir:THREE.Vector3}} colors
+ * @param {{zenith:string, horizon:string, ground:string, sunColor:string, sunDir:THREE.Vector3,
+ *   cloudCover?:number, cloud?:string, sunGlow?:number, night?:number}} colors
  */
-export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir }) {
+export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, cloudCover = 0, cloud = '#ffffff', sunGlow = 1, night = 0 }) {
   const backgroundTarget = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
   const cubeCamera = new THREE.CubeCamera(0.1, SKY_RADIUS_M * 2, backgroundTarget);
+  const weather = cloudCover !== 0 || sunGlow !== 1 || night !== 0;
+  const uniforms = {
+    uZenith: { value: new THREE.Color(zenith) },
+    uHorizon: { value: new THREE.Color(horizon) },
+    uGround: { value: new THREE.Color(ground) },
+    uSunColor: { value: new THREE.Color(sunColor) },
+    uSunDir: { value: sunDir.clone() },
+  };
+  if (weather) {
+    uniforms.uSunColor.value.multiplyScalar(sunGlow);
+    uniforms.uCloud = { value: new THREE.Color(cloud) };
+    uniforms.uCover = { value: cloudCover };
+    uniforms.uNight = { value: night };
+  }
   const material = new THREE.ShaderMaterial({
     vertexShader: SKY_VERTEX,
     fragmentShader: SKY_FRAGMENT,
-    uniforms: {
-      uZenith: { value: new THREE.Color(zenith) },
-      uHorizon: { value: new THREE.Color(horizon) },
-      uGround: { value: new THREE.Color(ground) },
-      uSunColor: { value: new THREE.Color(sunColor) },
-      uSunDir: { value: sunDir.clone() },
-    },
+    defines: weather ? { SKY_WEATHER: '' } : {},
+    uniforms,
     side: THREE.BackSide,
     depthWrite: false,
     fog: false,
@@ -166,6 +194,7 @@ export function buildRiderAvatar() {
   const frameMat = new THREE.MeshStandardMaterial({ color: 0xc8102e, roughness: 0.3, metalness: 0.5 });
   const darkMat = new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 0.6 });
   const jerseyMat = new THREE.MeshStandardMaterial({ color: 0x1f5fbf, roughness: 0.7 });
+  jerseyMat.userData.jersey = true; // 集団のライダーはこのマテリアルの色だけ変える(otherRiders.js)
   const shortsMat = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.8 });
   const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0b48f, roughness: 0.8 });
   const helmetMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.35 });
@@ -228,7 +257,7 @@ export function buildRiderAvatar() {
   group.add(head, helmet);
 
   group.position.x = RIDER_X_M;
-  return { group, spinners: [frontWheel, rearWheel], spinRadiusM: R, bobber: null, camera: { sideM: 0, raiseM: 0, backM: 0 } };
+  return { group, spinners: [frontWheel, rearWheel], spinRadiusM: R, bobber: null, camera: { sideM: 0, raiseM: 0, backM: 0, eyeM: 1.52 } };
 }
 
 // セットアップ画面「④ オプション」のバイク種別。見た目だけを切り替える(物理演算・負荷は同じ)。
@@ -255,6 +284,7 @@ export function buildSwanBoat() {
   const blackMat = new THREE.MeshStandardMaterial({ color: 0x121212, roughness: 0.3 });
   const paddleMat = new THREE.MeshStandardMaterial({ color: 0xd8412f, roughness: 0.5 });
   const jerseyMat = new THREE.MeshStandardMaterial({ color: 0x1f5fbf, roughness: 0.7 });
+  jerseyMat.userData.jersey = true; // 集団のライダーはこのマテリアルの色だけ変える(otherRiders.js)
   const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0b48f, roughness: 0.8 });
   const helmetMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.35 });
 
@@ -327,7 +357,7 @@ export function buildSwanBoat() {
   boat.scale.setScalar(1.2);
   group.position.x = RIDER_X_M;
   // カメラは少し右上の斜め後ろから: 真後ろだとS字の首と頭が胴体に隠れてしまう
-  return { group, spinners: [paddle], spinRadiusM: SWAN_PADDLE_RADIUS_M, bobber: boat, camera: { sideM: 2.4, raiseM: 1.0, backM: 1.2 } };
+  return { group, spinners: [paddle], spinRadiusM: SWAN_PADDLE_RADIUS_M, bobber: boat, camera: { sideM: 2.4, raiseM: 1.0, backM: 1.2, eyeM: 2.3 } };
 }
 
 /** バイク種別('bike' | 'swan')に応じたアバターを作る。 */
@@ -335,14 +365,19 @@ export function createAvatar(vehicle) {
   return vehicle === 'swan' ? buildSwanBoat() : buildRiderAvatar();
 }
 
-/** 車輪(外輪)の回転とアバターの前傾(路面の勾配)、スワンボートの揺れを更新する。 */
-export function updateRiderAvatar(rider, clock, speedKmh, pitch) {
+/**
+ * 車輪(外輪)の回転とアバターの前傾(路面の勾配)・カーブでの傾き(roll、正 = 左へ倒れる)、
+ * スワンボートの揺れを更新する。このフレームの経過時間(s)を rider.dt に残す(視点の揺れに使う)。
+ */
+export function updateRiderAvatar(rider, clock, speedKmh, pitch, roll = 0) {
   const dt = Math.min(clock.getDelta(), 0.1);
+  rider.dt = dt;
   const speedMps = speedKmh / 3.6;
   const delta = (speedMps / rider.spinRadiusM) * dt; // rad
   // 前進(-Z方向)で車輪の上端が前へ回る向き。
   for (const spinner of rider.spinners) spinner.rotation.x -= delta;
   rider.group.rotation.x = pitch;
+  rider.group.rotation.z = roll;
   if (rider.bobber) {
     // 水に浮いているかのように、ゆっくり上下しながら左右に揺れる(進むほど少し大きく)
     const t = clock.elapsedTime;
@@ -350,6 +385,28 @@ export function updateRiderAvatar(rider, clock, speedKmh, pitch) {
     rider.bobber.position.y = Math.sin(t * 1.7) * 0.025 * amp;
     rider.bobber.rotation.z = Math.sin(t * 1.1 + 0.6) * 0.03 * amp;
     rider.bobber.rotation.x = Math.sin(t * 1.3 + 1.9) * 0.015 * amp;
+  }
+}
+
+// ---- 視点(カメラ) ----
+// 視点の計算(傾き・揺れ・画角・cine のショット)は Three.js 非依存の cameraViews.js にある。
+
+/** 画角(度)を変える。変わったときだけ投影行列を作り直す。 */
+export function setCameraFov(camera, fovDeg) {
+  if (camera.fov === fovDeg) return;
+  camera.fov = fovDeg;
+  camera.updateProjectionMatrix();
+}
+
+/**
+ * 目線視点ではアバターを隠す。グループごと隠すと子のヘッドライト(夜)まで消えるので、
+ * ライト以外の子だけを切り替える。
+ */
+export function setAvatarVisible(rider, visible) {
+  if (rider.shown === visible) return;
+  rider.shown = visible;
+  for (const child of rider.group.children) {
+    if (!child.isLight) child.visible = visible;
   }
 }
 

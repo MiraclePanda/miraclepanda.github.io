@@ -7,11 +7,17 @@ import {
   createElevationSampler, createFloorModel, terrainHeightM, terrainColor, collectLandscapeObjects,
 } from '../three/landscapeLayout.js';
 import { createLandscapeTextures } from '../three/landscapeMaterials.js';
-import { createAnchoredRoute, headingAtM, lateralSigmaM } from '../three/routeLayout.js';
+import { createAnchoredRoute, headingAtM, lateralSigmaM, curvatureAtM } from '../three/routeLayout.js';
 import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  setCameraFov, setAvatarVisible,
 } from '../three/sceneKit.js';
+import {
+  createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+} from '../three/cameraViews.js';
+import { createEnvironmentController } from '../three/sceneEnvironment.js';
+import { createOtherRiders } from '../three/otherRiders.js';
 
 const { forwardRef, useImperativeHandle } = React;
 
@@ -37,6 +43,20 @@ const ATMOSPHERE = {
     hemiSky: 0xd4e6f7, hemiGround: 0x8a8272, fog: 0.00018, water: 0x2a6f93,
   },
 };
+
+// 光の強さ・露出(全景色共通)
+const SUN_INTENSITY = 2.6;
+const HEMI_INTENSITY = 0.6;
+const EXPOSURE = 1.05;
+
+/** 走行環境(時間帯・天候)の基準 = 「昼・晴れ」の値(environmentPresets.js の resolveEnvironment に渡す)。 */
+function baseAtmo(atmo) {
+  return {
+    zenith: atmo.zenith, horizon: atmo.horizon, ground: atmo.ground, sunColor: atmo.sunColor, sunDir: atmo.sunDir.toArray(),
+    sunIntensity: SUN_INTENSITY, hemiSky: atmo.hemiSky, hemiGround: atmo.hemiGround, hemiIntensity: HEMI_INTENSITY,
+    fogDensity: atmo.fog, exposure: EXPOSURE,
+  };
+}
 
 // 近景(道路・樹木・ガードレール)を描く範囲。地形はさらに遠く(FAR_AHEAD_M)まで敷く。
 const NEAR_BEHIND_M = 40;
@@ -73,6 +93,17 @@ const CAM_LOOKAHEAD_M = 26;
 const CAM_LOOKAHEAD_HEIGHT_M = 1.2;
 // 注視点をライダーより少し谷/湖側へ寄せ、見下ろす景色が画面に入るようにする。
 const CAM_LOOK_LATERAL_M = RIDER_X_M - 0.8;
+// 目線視点(fp): 少し前・目の高さから、20m先の路面より少し上を見る
+const FP_FORWARD_M = 0.25;
+const FP_LOOKAHEAD_M = 20;
+const FP_LOOK_HEIGHT_M = 1.25;
+// cine 視点: 沿道カメラは谷側の車道端から 0.2〜0.6m 外(路肩の上)、ヘリはライダーの後ろ16m・横12m。どちらも地形より上に置く
+const CINE_ROADSIDE_MIN_M = 0.2;
+const CINE_ROADSIDE_SPREAD_M = 0.4;
+const CINE_HELI_BACK_M = 16;
+const CINE_HELI_LATERAL_M = 12;
+const CINE_HELI_CLEARANCE_M = 4;
+const CINE_LOOK_HEIGHT_M = 1.0;
 
 const MAX_TREES = 500;
 const CANOPY_BLOBS_PER_TREE = 3;
@@ -108,7 +139,7 @@ const MAX_BOATS = 16;
  * - curve がないコース(熱海)は従来どおり景色側の L.curves による横ずらしの蛇行
  *   (lateralX/roadCenterX/roadSlopeX)。見た目を変えないため、計算式もそのまま使う。
  */
-export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange }, ref) {
+export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
@@ -117,12 +148,12 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
   onQualityChangeRef.current = onQualityChange;
 
   useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh }) {
+    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM }) {
       const s = sceneRef.current;
       if (!s) return;
       try {
         adaptQuality(s);
-        drawFrame(s, distanceKm, speedKmh ?? 0);
+        drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
         setRenderError(String(err));
@@ -147,6 +178,21 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
       return;
     }
 
+    // 走行環境(時間帯・天候)。昼・晴れなら何もしない(従来の見た目のまま)。
+    const pools = scene3d.pools;
+    scene3d.env = createEnvironmentController(scene3d, {
+      base: baseAtmo(scene3d.atmo), hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
+      wetMaterials: [scene3d.road.material, ...(scene3d.town ? [scene3d.town.promenade.material] : [])],
+      // 夜はデリニエーター(視線誘導標)の反射と、熱海の遊歩道の街灯を明るくする
+      glowMaterials: [
+        { material: pools.delineatorLens.mesh.material, night: 4 },
+        ...(pools.lampGlobes ? [{ material: pools.lampGlobes.mesh.material, night: 6 }] : []),
+      ],
+      headlightParent: scene3d.rider.group,
+    });
+    scene3d.env.set(environment, { immediate: true });
+    scene3d.cam.view = normalizeCameraView(cameraView);
+
     const resize = () => resizeScene(scene3d);
     scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
     scene3d.appliedQualityMode = qualityMode;
@@ -168,6 +214,16 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
     setQualityMode(s, qualityMode);
   }, [qualityMode]);
 
+  // 走行中に時間帯・天候が変わったら、空を焼き直し、光・霧などを約1.5秒かけて切り替える。
+  useEffect(() => {
+    sceneRef.current?.env?.set(environment);
+  }, [environment?.time, environment?.weather]);
+
+  // 視点の切り替え(即時)。次の draw() から反映される。
+  useEffect(() => {
+    if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView);
+  }, [cameraView]);
+
   return h(
     'div', { className: 'city-scene-wrap' },
     h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': getLandscape(landscape).id, 'data-vehicle': vehicle }),
@@ -186,7 +242,7 @@ function initScene(canvas, courseEngine, L, vehicle) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -198,8 +254,8 @@ function initScene(canvas, courseEngine, L, vehicle) {
   scene.background = sky.background;
   scene.environmentIntensity = 0.8;
 
-  const hemiLight = new THREE.HemisphereLight(atmo.hemiSky, atmo.hemiGround, 0.6);
-  const sunLight = new THREE.DirectionalLight(new THREE.Color(atmo.sunColor), 2.6);
+  const hemiLight = new THREE.HemisphereLight(atmo.hemiSky, atmo.hemiGround, HEMI_INTENSITY);
+  const sunLight = new THREE.DirectionalLight(new THREE.Color(atmo.sunColor), SUN_INTENSITY);
   sunLight.target.position.set(0, 0, -60);
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(2048, 2048);
@@ -279,7 +335,7 @@ function initScene(canvas, courseEngine, L, vehicle) {
   const curve = courseEngine.profile.curve;
 
   return {
-    L, atmo, canvas, renderer, scene, camera, sky, sunLight, textures: tex.all, waterNormal: tex.water,
+    L, atmo, canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures: tex.all, waterNormal: tex.water,
     root, inner, terrain, road, shoulder, water,
     pools: {
       trunks, canopies, conifers, farCones, farBlobs, rocks, railPosts, railBeams,
@@ -288,6 +344,8 @@ function initScene(canvas, courseEngine, L, vehicle) {
     },
     town,
     rider, elev, floor,
+    // 他のライダー(ゴースト・集団)。世界と一緒に動くよう inner に置く。プールは初めて描画範囲に入ったときに作る
+    others: createOtherRiders(inner, vehicle, tex.all),
     // curve があるコースだけ平面カーブの道路(route モード)。null なら従来の L.curves(legacy モード)。
     curve: Array.isArray(curve) && curve.length > 0 ? curve : null,
     loopM,
@@ -296,6 +354,8 @@ function initScene(canvas, courseEngine, L, vehicle) {
     placement: null,
     // route モードの水面の模様用: ライダーの道路中心の位置を、方位を積分して追う(さざ波を地面に固定する)
     waterOdo: { s: null, x: 0, z: 0 },
+    // 視点: view = 'chase' | 'fp' | 'cine'、crankRad = 目線の揺れ用のクランク角、director = cine のショット切り替え
+    cam: { view: 'chase', crankRad: 0, director: createCineDirector() },
     clock: new THREE.Clock(),
     startedAt: performance.now(),
   };
@@ -918,7 +978,7 @@ function placeTownObjects(st, town, floorM, { groundAt, local }) {
 
 const _sun = new THREE.Vector3();
 
-function drawFrame(st, distanceKm, speedKmh) {
+function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM) {
   const { L, elev } = st;
   const dist = distanceKm * 1000;
   if (st.anchorS === null || Math.abs(dist - st.anchorS) > REBUILD_M) {
@@ -951,22 +1011,113 @@ function drawFrame(st, distanceKm, speedKmh) {
   const skyHeading = st.placement.route ? -headingAtM(st.curve, st.loopM, dist) : heading;
   st.scene.backgroundRotation.y = skyHeading;
   st.scene.environmentRotation.y = skyHeading;
-  _sun.copy(st.atmo.sunDir).applyAxisAngle(THREE.Object3D.DEFAULT_UP, skyHeading);
+  // 太陽の向きは走行環境の時間帯で変わる(昼は景色ごとの atmo.sunDir と同じ値)
+  _sun.copy(st.env.sunDir).applyAxisAngle(THREE.Object3D.DEFAULT_UP, skyHeading);
   st.sunLight.position.copy(st.sunLight.target.position).addScaledVector(_sun, 180);
 
   const pitch = Math.atan((elev.elevAt(dist + 1.5) - elev.elevAt(dist - 1.5)) / 3);
-  const riderPos = worldPoint(st, dist, dist, RIDER_X_M, 0);
+  // 自分のアバターの横移動(集団を避ける)。0 なら従来の位置
+  const riderX = RIDER_X_M + myLaneM;
+  const riderPos = worldPoint(st, dist, dist, riderX, 0);
   st.rider.group.position.set(riderPos[0], riderPos[1], riderPos[2]);
-  updateRiderAvatar(st.rider, st.clock, speedKmh, pitch);
+  // カーブでは内側へ傾ける(curve のない熱海・直線では k = 0 で従来どおり)
+  const roll = riderRollRad(st.curve ? curvatureAtM(st.curve, st.loopM, dist) : 0, speedKmh / 3.6);
+  updateRiderAvatar(st.rider, st.clock, speedKmh, pitch, roll);
+  updateOthers(st, others, dist);
+  updateCamera(st, dist, { speedKmh, cadenceRpm, roll, riderX });
 
+  // 走行環境の補間と雨粒(カメラ位置を使うのでカメラの後)
+  st.env.update();
+  st.renderer.render(st.scene, st.camera);
+}
+
+/**
+ * 他のライダー(ゴースト・集団)を inner(アンカー基準の座標)に置く。地形・配置物と同じ placement で、
+ * 向き・標高・坂・カーブでの傾きを道路に合わせる。
+ */
+function updateOthers(st, others, dist) {
+  const { elev, placement } = st;
+  st.others.update(others, dist, {
+    dt: st.rider.dt ?? 0,
+    qualityIndex: st.qualityIndex ?? 0,
+    riderX: RIDER_X_M,
+    // 道路は組み直しのアンカーの後方 NEAR_BEHIND_M(40m)から作るので、その手前(道路のある所)までに抑える
+    // (アンカーは自分の前後 16m 以内でずれるため、自分基準の後方範囲は 24〜56m の間で変わる。上限 40m)
+    behindM: dist - (st.anchorS - NEAR_BEHIND_M),
+    place(gapM, lateralM, speedMps, out) {
+      const s = dist + gapM;
+      const p = placement.place(s, lateralM);
+      out.x = p.x;
+      out.z = p.z;
+      out.yaw = p.yaw;
+      out.y = elev.elevAt(s) - st.anchorElev;
+      out.pitch = Math.atan((elev.elevAt(s + 1.5) - elev.elevAt(s - 1.5)) / 3);
+      out.roll = riderRollRad(st.curve ? curvatureAtM(st.curve, st.loopM, s) : 0, speedMps);
+      return out;
+    },
+  });
+  const { pack, ghosts, labels } = st.others.stats;
+  const tag = `${pack}/${ghosts}/${labels}`;
+  if (st.canvas.dataset.others !== tag) st.canvas.dataset.others = tag;
+}
+
+function updateCamera(st, dist, { speedKmh, cadenceRpm, roll, riderX }) {
+  const { view } = st.cam;
+  setAvatarVisible(st.rider, view !== 'fp');
+  if (view === 'fp') {
+    // 目線視点: ケイデンスで上下に揺れ、カーブでは傾きの半分だけ傾く
+    const bob = fpBobM(st.cam, cadenceRpm ?? estimateCadenceRpm(speedKmh), st.rider.dt ?? 0);
+    const eye = worldPoint(st, dist, dist + FP_FORWARD_M, riderX, st.rider.camera.eyeM + bob);
+    st.camera.position.set(eye[0], eye[1], eye[2]);
+    const look = worldPoint(st, dist, dist + FP_LOOKAHEAD_M, riderX, FP_LOOK_HEIGHT_M);
+    st.camera.lookAt(look[0], look[1], look[2]);
+    st.camera.rotateZ(fpCameraRollRad(roll));
+    setCameraFov(st.camera, fpFovDeg(speedKmh / 3.6));
+    return;
+  }
+  if (view === 'cine') {
+    updateCineCamera(st, dist, riderX);
+    return;
+  }
+  setCameraFov(st.camera, CHASE_FOV_DEG);
   // アバターごとの補正(スワンボートは斜め後ろ上から見る)
   const { sideM, raiseM, backM } = st.rider.camera;
-  const cam = worldPoint(st, dist, dist - CAM_BACK_M - backM, RIDER_X_M + 0.4 + sideM, CAM_HEIGHT_M + raiseM);
+  // 自分のアバターの横移動に追従する(myLaneOffsetM = 0 なら riderX = RIDER_X_M で従来と同じ)
+  const cam = worldPoint(st, dist, dist - CAM_BACK_M - backM, riderX + 0.4 + sideM, CAM_HEIGHT_M + raiseM);
   st.camera.position.set(cam[0], cam[1], cam[2]);
-  const look = worldPoint(st, dist, dist + CAM_LOOKAHEAD_M, CAM_LOOK_LATERAL_M, CAM_LOOKAHEAD_HEIGHT_M);
+  const look = worldPoint(st, dist, dist + CAM_LOOKAHEAD_M, CAM_LOOK_LATERAL_M + (riderX - RIDER_X_M), CAM_LOOKAHEAD_HEIGHT_M);
   st.camera.lookAt(look[0], look[1], look[2]);
+}
 
-  st.renderer.render(st.scene, st.camera);
+/** 道路上の地点 (s, d) の地表の、路面からの高さ(m)。谷側(路面より低い)は 0 とする。 */
+function groundAboveRoadM(st, s, d) {
+  const roadE = st.elev.elevAt(s);
+  return Math.max(0, terrainHeightM(st.L, d, s, roadE, st.floor.floorAt(s)) - roadE);
+}
+
+/** cine 視点: 沿道の固定カメラとヘリ視点から、ライダーを追って映す(山側の斜面に埋もれないよう地形より上に置く)。 */
+function updateCineCamera(st, dist, riderX) {
+  const shot = st.cam.director.update(performance.now() / 1000, dist);
+  let s;
+  let d;
+  let up;
+  if (shot.type === 'heli') {
+    s = dist - CINE_HELI_BACK_M;
+    d = RIDER_X_M + shot.side * CINE_HELI_LATERAL_M;
+    up = Math.max(shot.heightM, groundAboveRoadM(st, s, d) + CINE_HELI_CLEARANCE_M);
+  } else {
+    // 沿道カメラは谷側(湖・海側。d < 0)の路肩の上に置く: 山側は擁壁や斜面に、路肩の外は
+    // ガードレール・ヤシ並木に遮られてライダーが見えないことが多い
+    s = shot.s;
+    d = -(st.L.roadHalfWidthM + CINE_ROADSIDE_MIN_M + shot.lateralU * CINE_ROADSIDE_SPREAD_M);
+    up = groundAboveRoadM(st, s, d) + shot.heightM;
+  }
+  const cam = worldPoint(st, dist, s, d, up);
+  st.camera.position.set(cam[0], cam[1], cam[2]);
+  const look = worldPoint(st, dist, dist, riderX, CINE_LOOK_HEIGHT_M);
+  st.camera.lookAt(look[0], look[1], look[2]);
+  setCameraFov(st.camera, shot.fovDeg);
+  st.canvas.dataset.cineShot = `${shot.index}:${shot.type}`;
 }
 
 /**

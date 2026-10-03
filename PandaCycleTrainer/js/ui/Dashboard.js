@@ -23,6 +23,7 @@ export const Dashboard = forwardRef(function Dashboard({ controlMode }, ref) {
     elevationGain: useRef(null),
     elapsedTime: useRef(null),
     ridingTime: useRef(null),
+    ghostSummary: useRef(null),
   };
 
   useImperativeHandle(ref, () => ({
@@ -41,6 +42,7 @@ export const Dashboard = forwardRef(function Dashboard({ controlMode }, ref) {
       setText(refs.elevationGain, v.elevationGain);
       setText(refs.elapsedTime, v.elapsedTime);
       setText(refs.ridingTime, v.ridingTime);
+      if (refs.ghostSummary.current) refs.ghostSummary.current.textContent = v.ghostSummary ?? '';
     },
   }));
 
@@ -64,7 +66,8 @@ export const Dashboard = forwardRef(function Dashboard({ controlMode }, ref) {
       tile('獲得標高', refs.elevationGain, 'm'),
       tile('経過時間(休憩含む)', refs.elapsedTime, ''),
       tile('走行時間(休憩除く)', refs.ridingTime, '')
-    )
+    ),
+    h('p', { className: 'dash-ghost', ref: refs.ghostSummary }) // ゴースト差の1行(ゴーストなしなら空で非表示)
   );
 });
 

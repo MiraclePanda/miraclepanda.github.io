@@ -9,6 +9,43 @@ import { PhysicsConstants } from './physicsConstants.js';
  *  - 速度は0未満にクランプ(逆走なし)
  *  - 標高は明示的な状態として保持する
  */
+/**
+ * 走行中のライダーに働く力(N)を求める。PhysicsEngine.step() と仮想ライダー
+ * (physics/virtualRider.js)が同じ式を使うための共通関数。
+ *  - 重力: m·g·sinθ、転がり抵抗: Crr·m·g·cosθ(θ = atan(勾配))
+ *  - 空気抵抗: ½·ρ·(CdA×draftFactor)·v²(屋内のため風速は PhysicsConstants.WIND_SPEED_MPS)
+ *  - 駆動力: P / max(v, MIN_SPEED_FOR_DRIVE_FORCE)(v=0 の特異点回避)
+ * @param {object} p
+ * @param {number} p.speedMps
+ * @param {number} p.gradePercent
+ * @param {number} p.massKg 体重+自転車重量
+ * @param {number} p.crr
+ * @param {number} p.cdaM2
+ * @param {number} p.powerW
+ * @param {number} [p.draftFactor=1] ドラフティング時のCdA倍率
+ * @returns {{theta:number, fGravity:number, fRolling:number, fAir:number, fDrive:number, netForce:number}}
+ */
+export function computeForces({ speedMps, gradePercent, massKg, crr, cdaM2, powerW, draftFactor = 1 }) {
+  const grade = gradePercent / 100;
+  const theta = Math.atan(grade);
+
+  const g = PhysicsConstants.GRAVITY;
+  const mass = massKg;
+
+  const fGravity = mass * g * Math.sin(theta);
+  const fRolling = crr * mass * g * Math.cos(theta);
+  const relativeAirSpeed = Math.max(0, speedMps - PhysicsConstants.WIND_SPEED_MPS);
+  // draftFactor=1 のとき cdaM2 * 1 は cdaM2 と完全に一致する(切り出し前と同じ値になる)。
+  const cda = cdaM2 * draftFactor;
+  const fAir = 0.5 * PhysicsConstants.AIR_DENSITY * cda * relativeAirSpeed * relativeAirSpeed;
+
+  const effectiveSpeedForDrive = Math.max(speedMps, PhysicsConstants.MIN_SPEED_FOR_DRIVE_FORCE);
+  const fDrive = powerW / effectiveSpeedForDrive;
+
+  const netForce = fDrive - fGravity - fRolling - fAir;
+  return { theta, fGravity, fRolling, fAir, fDrive, netForce };
+}
+
 export class PhysicsEngine {
   /**
    * @param {object} opts
@@ -33,6 +70,18 @@ export class PhysicsEngine {
     this.currentGradePercent = this.courseEngine.gradeAtKm(0);
     this.currentPowerW = 0;
     this._lastForces = { fGravity: 0, fRolling: 0, fAir: 0 };
+    // ドラフティング係数(CdAに掛ける倍率)。1.0=単独走行。集団の後ろについたとき
+    // ui が PhysicsConstants.DRAFT_CDA_FACTOR を渡す。
+    this.draftFactor = 1;
+  }
+
+  /**
+   * ドラフティングによる空気抵抗の倍率をセットする(既定1.0)。
+   * fAir に掛かるため、ERGモードの目標W(computeErgTargetWatts)も自然に下がる。
+   * 不正値(NaN/Infinity/0以下)は1.0(単独走行)として扱う。
+   */
+  setDraftFactor(f) {
+    this.draftFactor = Number.isFinite(f) && f > 0 ? f : 1;
   }
 
   /** 直近のBLE受信パワー値をセットする(ティックごとに使い回される)。 */
@@ -56,21 +105,17 @@ export class PhysicsEngine {
     const distanceKm = this.distanceM / 1000;
     const gradePercent = this.courseEngine.gradeAtKm(distanceKm);
     this.currentGradePercent = gradePercent;
-    const grade = gradePercent / 100;
-    const theta = Math.atan(grade);
-
-    const g = PhysicsConstants.GRAVITY;
     const mass = this.totalMassKg;
-
-    const fGravity = mass * g * Math.sin(theta);
-    const fRolling = this.crr * mass * g * Math.cos(theta);
-    const relativeAirSpeed = Math.max(0, this.speedMps - PhysicsConstants.WIND_SPEED_MPS);
-    const fAir = 0.5 * PhysicsConstants.AIR_DENSITY * this.cdaM2 * relativeAirSpeed * relativeAirSpeed;
-
-    const effectiveSpeedForDrive = Math.max(this.speedMps, PhysicsConstants.MIN_SPEED_FOR_DRIVE_FORCE);
-    const fDrive = this.currentPowerW / effectiveSpeedForDrive;
-
-    const netForce = fDrive - fGravity - fRolling - fAir;
+    // 力の釣り合いはゴースト・集団(virtualRider.js)と共通の computeForces() で求める。
+    const { theta, fGravity, fRolling, fAir, netForce } = computeForces({
+      speedMps: this.speedMps,
+      gradePercent,
+      massKg: mass,
+      crr: this.crr,
+      cdaM2: this.cdaM2,
+      powerW: this.currentPowerW,
+      draftFactor: this.draftFactor,
+    });
     const acceleration = netForce / mass;
     this._lastForces = { fGravity, fRolling, fAir };
 

@@ -10,7 +10,10 @@ import {
 import {
   bakeSky, mergeGeometries, buildCanopyGeometry, buildSwanBoat, createAvatar, updateRiderAvatar,
   makePool, pushInstance, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  setCameraFov, setAvatarVisible,
 } from '../three/sceneKit.js';
+import { normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG } from '../three/cameraViews.js';
+import { createEnvironmentController } from '../three/sceneEnvironment.js';
 
 const { forwardRef, useImperativeHandle } = React;
 
@@ -20,6 +23,17 @@ const ATMO = {
   sunDir: new THREE.Vector3(-0.5, 0.62, 0.4).normalize(),
 };
 const FOG_DENSITY = 0.00055;
+const SUN_INTENSITY = 2.5;
+const HEMI_SKY = 0xd0e2f4;
+const HEMI_GROUND = 0x7a7564;
+const HEMI_INTENSITY = 0.6;
+const EXPOSURE = 1.05;
+// 走行環境の基準 = 「昼」の値(environmentPresets.js の resolveEnvironment に渡す)。池は時間帯のみ反映する
+const BASE_ATMO = {
+  zenith: ATMO.zenith, horizon: ATMO.horizon, ground: ATMO.ground, sunColor: ATMO.sunColor, sunDir: ATMO.sunDir.toArray(),
+  sunIntensity: SUN_INTENSITY, hemiSky: HEMI_SKY, hemiGround: HEMI_GROUND, hemiIntensity: HEMI_INTENSITY,
+  fogDensity: FOG_DENSITY, exposure: EXPOSURE,
+};
 const WATER_COLOR = 0x46705f; // 都心の池らしい緑がかった水
 const WATER_SIZE_M = 8000;
 const WATER_TILE_M = 14;
@@ -30,6 +44,9 @@ const CAM_LOOKAHEAD_M = 26;
 const CAM_LOOKAHEAD_HEIGHT_M = 1.2;
 // 注視点は進路の正面(池の中央=左手と、柳の岸=右手の両方が画面に入る)
 const CAM_LOOK_LEFT_M = 0;
+// 目線視点(fp): 操縦席の目の高さから、20m先の水面より少し上を見る
+const FP_LOOKAHEAD_M = 20;
+const FP_LOOK_HEIGHT_M = 1.25;
 
 // 地面(池の周り)の極座標グリッド: 岸からの距離(m)
 const GROUND_OFFSETS_M = [0, 0.8, 1.2, 6.5, 7.5, 12, 20, 32, 48, 70, 100, 140, 190, 260, 350, 480, 650, 900, 1300, 1900];
@@ -48,7 +65,7 @@ const world = (x, y, hgt = 0) => new THREE.Vector3(x, hgt, -y);
  * スカイツリー)は1周1.2kmの小さな世界なので、初期化時に1度だけ組み立てて固定し、
  * 毎フレームはボート・カメラ・影の範囲・他のスワンボートだけを動かす。
  */
-export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle = 'swan', qualityMode = 'auto', onQualityChange }, ref) {
+export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle = 'swan', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
@@ -56,12 +73,12 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
   onQualityChangeRef.current = onQualityChange;
 
   useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh }) {
+    draw({ distanceKm, speedKmh, cadenceRpm }) {
       const s = sceneRef.current;
       if (!s) return;
       try {
         adaptQuality(s);
-        drawFrame(s, distanceKm, speedKmh ?? 0);
+        drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
         setRenderError(String(err));
@@ -86,6 +103,15 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
       return;
     }
 
+    // 走行環境は時間帯のみ(天候は晴れ固定)。昼なら何もしない(従来の見た目のまま)。
+    scene3d.env = createEnvironmentController(scene3d, {
+      base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
+      headlightParent: scene3d.rider.group, weather: false,
+    });
+    scene3d.env.set(environment, { immediate: true });
+    // 池は chase と fp のみ(cine は chase 扱い)
+    scene3d.cam.view = normalizeCameraView(cameraView, false);
+
     const resize = () => resizeScene(scene3d);
     scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
     scene3d.appliedQualityMode = qualityMode;
@@ -107,6 +133,16 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
     setQualityMode(s, qualityMode);
   }, [qualityMode]);
 
+  // 走行中に時間帯が変わったら、空を焼き直し、光・霧などを約1.5秒かけて切り替える。
+  useEffect(() => {
+    sceneRef.current?.env.set(environment);
+  }, [environment?.time]);
+
+  // 視点の切り替え(即時)。池は chase と fp のみ(cine は chase 扱い)。
+  useEffect(() => {
+    if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView, false);
+  }, [cameraView]);
+
   return h(
     'div', { className: 'city-scene-wrap' },
     h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': 'ueno', 'data-vehicle': vehicle }),
@@ -124,7 +160,7 @@ function initScene(canvas, vehicle) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -136,8 +172,8 @@ function initScene(canvas, vehicle) {
   scene.background = sky.background;
   scene.environmentIntensity = 0.8;
 
-  const hemiLight = new THREE.HemisphereLight(0xd0e2f4, 0x7a7564, 0.6);
-  const sunLight = new THREE.DirectionalLight(new THREE.Color(ATMO.sunColor), 2.5);
+  const hemiLight = new THREE.HemisphereLight(HEMI_SKY, HEMI_GROUND, HEMI_INTENSITY);
+  const sunLight = new THREE.DirectionalLight(new THREE.Color(ATMO.sunColor), SUN_INTENSITY);
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(2048, 2048);
   Object.assign(sunLight.shadow.camera, { left: -90, right: 90, top: 90, bottom: -90, near: 10, far: 420 });
@@ -197,8 +233,10 @@ function initScene(canvas, vehicle) {
   scene.add(rider.group);
 
   return {
-    canvas, renderer, scene, camera, sky, sunLight, textures, waterNormal,
+    canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures, waterNormal,
     moored, others, rider,
+    // 視点: view = 'chase' | 'fp'、crankRad = 目線の揺れ用のクランク角
+    cam: { view: 'chase', crankRad: 0 },
     clock: new THREE.Clock(),
     startedAt: performance.now(),
   };
@@ -472,7 +510,7 @@ function routeWorld(s) {
   return { pos: world(r.x, r.y, 0), heading: r.heading };
 }
 
-function drawFrame(st, distanceKm, speedKmh) {
+function drawFrame(st, distanceKm, speedKmh, cadenceRpm) {
   const dist = distanceKm * 1000;
   const here = routeWorld(dist);
 
@@ -481,20 +519,33 @@ function drawFrame(st, distanceKm, speedKmh) {
   st.rider.group.rotation.y = yawFromHeading(here.heading);
   updateRiderAvatar(st.rider, st.clock, speedKmh, 0);
 
-  // カメラ: 斜め後ろ上から(アバターごとの補正込み)。池の中心側(左)を少し多めに見る
-  const { sideM, raiseM, backM } = st.rider.camera;
-  const behind = routeWorld(dist - CAM_BACK_M - backM);
-  _right.set(Math.sin(behind.heading), 0, Math.cos(behind.heading));
-  st.camera.position.copy(behind.pos).addScaledVector(_right, 0.4 + sideM);
-  st.camera.position.y = CAM_HEIGHT_M + raiseM;
-  const ahead = routeWorld(dist + CAM_LOOKAHEAD_M);
-  _right.set(Math.sin(ahead.heading), 0, Math.cos(ahead.heading));
-  const look = ahead.pos.clone().addScaledVector(_right, -CAM_LOOK_LEFT_M);
-  st.camera.lookAt(look.x, CAM_LOOKAHEAD_HEIGHT_M, look.z);
+  setAvatarVisible(st.rider, st.cam.view !== 'fp');
+  if (st.cam.view === 'fp') {
+    // 目線視点: 操縦席から前方を見る。漕ぐリズムで上下に揺れる(池の周回は緩やかなので傾けない)
+    const bob = fpBobM(st.cam, cadenceRpm ?? estimateCadenceRpm(speedKmh), st.rider.dt ?? 0);
+    st.camera.position.copy(here.pos);
+    st.camera.position.y = st.rider.camera.eyeM + bob;
+    const ahead = routeWorld(dist + FP_LOOKAHEAD_M);
+    st.camera.lookAt(ahead.pos.x, FP_LOOK_HEIGHT_M, ahead.pos.z);
+    setCameraFov(st.camera, fpFovDeg(speedKmh / 3.6));
+  } else {
+    setCameraFov(st.camera, CHASE_FOV_DEG);
+    // カメラ: 斜め後ろ上から(アバターごとの補正込み)。池の中心側(左)を少し多めに見る
+    const { sideM, raiseM, backM } = st.rider.camera;
+    const behind = routeWorld(dist - CAM_BACK_M - backM);
+    _right.set(Math.sin(behind.heading), 0, Math.cos(behind.heading));
+    st.camera.position.copy(behind.pos).addScaledVector(_right, 0.4 + sideM);
+    st.camera.position.y = CAM_HEIGHT_M + raiseM;
+    const ahead = routeWorld(dist + CAM_LOOKAHEAD_M);
+    _right.set(Math.sin(ahead.heading), 0, Math.cos(ahead.heading));
+    const look = ahead.pos.clone().addScaledVector(_right, -CAM_LOOK_LEFT_M);
+    st.camera.lookAt(look.x, CAM_LOOKAHEAD_HEIGHT_M, look.z);
+  }
 
   // 影はボートの周りだけ描けばよいので、影カメラごとボートに付いていく
   st.sunLight.target.position.copy(here.pos);
-  st.sunLight.position.copy(here.pos).addScaledVector(ATMO.sunDir, 180);
+  // 太陽の向きは走行環境の時間帯で変わる(昼は ATMO.sunDir と同じ値)
+  st.sunLight.position.copy(here.pos).addScaledVector(st.env.sunDir, 180);
 
   // 他のスワンボート(ゆっくり反時計回り)と、係留中のボートの揺れ
   const t = (performance.now() - st.startedAt) / 1000;
@@ -507,6 +558,7 @@ function drawFrame(st, distanceKm, speedKmh) {
   st.moored.forEach((boat, i) => bob(boat, t + i * 1.7, 0.6));
 
   st.waterNormal.offset.set((t * 0.004) % 1, (t * 0.007) % 1);
+  st.env.update();
   st.renderer.render(st.scene, st.camera);
 }
 
