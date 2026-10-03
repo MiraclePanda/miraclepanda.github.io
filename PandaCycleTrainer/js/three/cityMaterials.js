@@ -406,20 +406,27 @@ export function createFacadeMaterial({ map, ormMap, bayM, floorM, tileBays, tile
     roughness: 1,
     metalness: 1,
   });
+  // 夜度(0〜1)。走行環境の時間帯に合わせて各シーンが毎フレーム書き換え、窓に明かりを灯す。
+  // 0(昼)では発光に0を足すだけなので、従来の見た目と同じになる。
+  material.userData.night = { value: 0 };
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uFacade = { value: new THREE.Vector4(bayM, floorM, tileBays, tileFloors) };
     shader.uniforms.uFacadeSink = { value: sinkM };
+    shader.uniforms.uNight = material.userData.night;
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
-        '#include <common>\nattribute float facadeAxis;\nuniform vec4 uFacade;\nuniform float uFacadeSink;'
+        '#include <common>\nattribute float facadeAxis;\nuniform vec4 uFacade;\nuniform float uFacadeSink;\nvarying float vFacadeSeed;'
       )
       .replace(
         '#include <uv_vertex>',
         `#include <uv_vertex>
+vFacadeSeed = 0.0;
 #ifdef USE_INSTANCING
 {
   vec3 fs = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+  // 建物ごとに点灯する窓を変えるための種(建物の寸法から作る。位置は毎フレーム動くので使わない)
+  vFacadeSeed = floor(fract(fs.x * 0.731 + fs.y * 0.377 + fs.z * 0.519) * 97.0);
   float faceW = facadeAxis > 0.5 ? fs.z : fs.x;
   // 建物の幅に収まる整数個のベイに合わせて少しだけ伸縮させ、角で窓が切れないようにする。
   float bays = max(1.0, floor(faceW / uFacade.x + 0.5));
@@ -433,6 +440,27 @@ export function createFacadeMaterial({ map, ormMap, bayM, floorM, tileBays, tile
   #ifdef USE_METALNESSMAP
   vMetalnessMapUv = fuv;
   #endif
+}
+#endif`
+      );
+    // 夜の窓明かり: 粗さ/金属度マップでガラス(低粗さ・高金属度)の部分を見分け、
+    // 窓1枚(ベイ×階のセル)ごとに約半数を暖色に光らせる。
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nuniform vec4 uFacade;\nuniform float uNight;\nvarying float vFacadeSeed;'
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+#ifdef USE_METALNESSMAP
+{
+  vec4 orm = texture2D(metalnessMap, vMetalnessMapUv);
+  float glassMask = smoothstep(0.35, 0.6, orm.b) * (1.0 - smoothstep(0.2, 0.35, orm.g));
+  vec2 cell = floor(vMetalnessMapUv * uFacade.zw);
+  // 種は整数(補間の誤差で窓の中がちらつかないよう丸める)
+  float lit = step(0.45, fract(sin(dot(cell + floor(vFacadeSeed + 0.5), vec2(12.9898, 78.233))) * 43758.5453));
+  totalEmissiveRadiance += uNight * glassMask * lit * vec3(1.0, 0.76, 0.46) * 0.75;
 }
 #endif`
       );

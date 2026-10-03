@@ -21,6 +21,13 @@ export const PhysicsConstants = {
   ERG_REFERENCE_SPEED_MPS: 6.0,
   // 明らかに非現実的な値を弾くための速度上限 (m/s, 約110km/h)。
   MAX_SPEED_MPS: 30,
+  // ドラフティング(集団の後ろについて風よけにする)の判定と効果。
+  // 前のライダー(集団のみ。ゴーストは対象外)との車間が MIN〜MAX(両端含む)で、
+  // 横のずれが MAX_LATERAL 未満のとき、空気抵抗の CdA に DRAFT_CDA_FACTOR を掛ける。
+  DRAFT_MIN_GAP_M: 0.5,
+  DRAFT_MAX_GAP_M: 6.0,
+  DRAFT_MAX_LATERAL_M: 1.0,
+  DRAFT_CDA_FACTOR: 0.66,
 };
 
 // BLE受信値の異常値バリデーション用の上限(簡易チェック)。

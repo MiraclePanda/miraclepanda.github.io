@@ -6,12 +6,18 @@ import {
   CROSSWALK_LENGTH_M, CROSS_STREET_WIDTH_M, INTERSECTION_LENGTH_M,
 } from '../three/cityLayout.js';
 import { buildElevationProfile, interpolateElevation } from '../three/roadElevation.js';
-import { buildRouteFrame, toLocalInto, clampInsideOffset } from '../three/routeLayout.js';
+import { buildRouteFrame, toLocalInto, clampInsideOffset, curvatureAtM } from '../three/routeLayout.js';
 import { createCityTextures, createFacadeMaterial, createFacadeGeometry, FACADE_TILE } from '../three/cityMaterials.js';
 import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  setCameraFov, setAvatarVisible,
 } from '../three/sceneKit.js';
+import {
+  createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+} from '../three/cameraViews.js';
+import { createEnvironmentController } from '../three/sceneEnvironment.js';
+import { createOtherRiders } from '../three/otherRiders.js';
 
 const { forwardRef, useImperativeHandle } = React;
 
@@ -33,6 +39,17 @@ const CAM_BACK_M = 6.5;
 const CAM_HEIGHT_M = 2.6;
 const CAM_LOOKAHEAD_M = 24;
 const CAM_LOOKAHEAD_HEIGHT_M = 1.4;
+// 目線視点(fp): 少し前・目の高さから、20m先の路面より少し上を見る
+const FP_FORWARD_M = 0.25;
+const FP_LOOKAHEAD_M = 20;
+const FP_LOOK_HEIGHT_M = 1.25;
+// cine 視点: 沿道カメラは左側の車道端(縁石から 0.3〜0.7m 内側)、ヘリは歩道の上空(建物に入らないよう)
+const CINE_CURB_INSET_M = 0.3;
+const CINE_CURB_SPREAD_M = 0.4;
+const CINE_MAX_HEIGHT_M = 3.0;
+const CINE_HELI_BACK_M = 16;
+const CINE_HELI_LATERAL_M = 6;
+const CINE_LOOK_HEIGHT_M = 1.0;
 
 // 空と大気。フォグ色は空シェーダーの地平線色と揃え、遠景が空に溶け込むようにする。
 const SKY_ZENITH = '#3f78c2';
@@ -41,6 +58,17 @@ const SKY_GROUND = '#9aa3a8';
 const SUN_COLOR = '#fff1dc';
 const SUN_DIR = new THREE.Vector3(-0.55, 0.72, 0.42).normalize(); // 左後方の高い太陽
 const FOG_DENSITY = 0.0055;
+const SUN_INTENSITY = 2.6;
+const HEMI_SKY = 0xcfe0f5;
+const HEMI_GROUND = 0x77736a;
+const HEMI_INTENSITY = 0.55;
+const EXPOSURE = 1.05;
+// 走行環境(時間帯・天候)の基準 = 「昼・晴れ」の値(environmentPresets.js の resolveEnvironment に渡す)
+const BASE_ATMO = {
+  zenith: SKY_ZENITH, horizon: SKY_HORIZON, ground: SKY_GROUND, sunColor: SUN_COLOR, sunDir: SUN_DIR.toArray(),
+  sunIntensity: SUN_INTENSITY, hemiSky: HEMI_SKY, hemiGround: HEMI_GROUND, hemiIntensity: HEMI_INTENSITY,
+  fogDensity: FOG_DENSITY, exposure: EXPOSURE,
+};
 
 // InstancedMeshの最大インスタンス数(描画ウィンドウに収まりうる数+余裕)。
 const MAX_FACADES_PER_STYLE = 120;
@@ -83,7 +111,7 @@ const ASPHALT_TILE_M = 8;
  * ref経由のdraw()呼び出しで直接Three.jsシーンを更新・描画する
  * (Dashboardと同じ設計方針)。
  */
-export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange }, ref) {
+export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
@@ -92,12 +120,12 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
   onQualityChangeRef.current = onQualityChange;
 
   useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh }) {
+    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM }) {
       const s = sceneRef.current;
       if (!s || !courseEngine) return;
       try {
         adaptQuality(s);
-        drawFrame(s, courseEngine, distanceKm, speedKmh ?? 0);
+        drawFrame(s, courseEngine, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を
         // 巻き込んでクラッシュさせない。
@@ -123,6 +151,15 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
       return;
     }
 
+    // 走行環境(時間帯・天候)。昼・晴れなら何もしない(従来の見た目のまま)。
+    scene3d.env = createEnvironmentController(scene3d, {
+      base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
+      wetMaterials: [scene3d.road.mesh.material, scene3d.crossStreets.mesh.material],
+      headlightParent: scene3d.rider.group,
+    });
+    scene3d.env.set(environment, { immediate: true });
+    scene3d.cam.view = normalizeCameraView(cameraView);
+
     const resize = () => resizeScene(scene3d);
     scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
     scene3d.appliedQualityMode = qualityMode;
@@ -144,6 +181,16 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
     setQualityMode(s, qualityMode);
   }, [qualityMode]);
 
+  // 走行中に時間帯・天候が変わったら、空を焼き直し、光・霧などを約1.5秒かけて切り替える。
+  useEffect(() => {
+    sceneRef.current?.env.set(environment);
+  }, [environment?.time, environment?.weather]);
+
+  // 視点の切り替え(即時)。次の draw() から反映される。
+  useEffect(() => {
+    if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView);
+  }, [cameraView]);
+
   return h(
     'div', { className: 'city-scene-wrap' },
     h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-vehicle': vehicle }),
@@ -161,7 +208,7 @@ function initScene(canvas, vehicle) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -178,8 +225,8 @@ function initScene(canvas, vehicle) {
   scene.environmentIntensity = 0.8;
   // 環境マップ(PMREM)は、それを使う品質段階になったときに初めて生成する(applyQuality)。
 
-  const hemiLight = new THREE.HemisphereLight(0xcfe0f5, 0x77736a, 0.55);
-  const sunLight = new THREE.DirectionalLight(new THREE.Color(SUN_COLOR), 2.6);
+  const hemiLight = new THREE.HemisphereLight(HEMI_SKY, HEMI_GROUND, HEMI_INTENSITY);
+  const sunLight = new THREE.DirectionalLight(new THREE.Color(SUN_COLOR), SUN_INTENSITY);
   // 世界はライダー中心で毎フレーム組み直すため、太陽と影カメラは固定でよい。
   sunLight.target.position.set(0, 0, -60);
   sunLight.position.copy(sunLight.target.position).addScaledVector(SUN_DIR, 180);
@@ -258,16 +305,20 @@ function initScene(canvas, vehicle) {
   scene.add(rider.group);
 
   const s = {
-    canvas, renderer, scene, camera, sky, sunLight, textures: tex.all,
+    canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures: tex.all,
     road, sidewalk, lot, crossStreets, crosswalks,
     facades, storefronts, roofs, roofUnits,
     trunks, canopies, lamps, carBodies, carGlass, carWheels,
     rider,
+    // 視点: view = 'chase' | 'fp' | 'cine'、crankRad = 目線の揺れ用のクランク角、director = cine のショット切り替え
+    cam: { view: 'chase', crankRad: 0, director: createCineDirector() },
     clock: new THREE.Clock(),
     // 道路フレーム(buildRouteFrame の戻り値)。毎フレーム配列と要素を使い回して GC を抑える。
     routeFrame: [],
   };
   s.place = placer(s);
+  // 他のライダー(ゴースト・集団)。プールは初めて描画範囲に入ったときに作る
+  s.others = createOtherRiders(scene, vehicle, s.textures);
   return s;
 }
 
@@ -397,7 +448,7 @@ function updateRibbon(ribbon, profile, frame, distanceM) {
 // toLocalInto の出力先(配置ループ・カメラで使い回す)
 const _local = { x: 0, z: 0, yaw: 0 };
 
-function drawFrame(s, courseEngine, distanceKm, speedKmh) {
+function drawFrame(s, courseEngine, distanceKm, speedKmh, cadenceRpm, others, myLaneM) {
   const distanceM = distanceKm * 1000;
   const profile = buildElevationProfile((km) => courseEngine.gradeAtKm(km), distanceKm, WINDOW_OPTS);
   // 平面上のカーブ。標高プロファイルと同じ opts で作り、同じインデックスが同じ alongM を指すようにする。
@@ -419,8 +470,16 @@ function drawFrame(s, courseEngine, distanceKm, speedKmh) {
   updateIntersections(s, objects.intersections, distanceM, elevAt, pitchAt, place);
   updateBuildings(s, objects.buildings, distanceM, elevAt, place);
   updateStreetFurniture(s, objects, distanceM, elevAt, pitchAt, place);
-  updateRiderAvatar(s.rider, s.clock, speedKmh, pitchAt(0));
-  updateCamera(s, elevAt, frame);
+  // カーブでは内側へ傾ける(直線・curve のないコースでは k = 0 で従来どおり)
+  const roll = riderRollRad(curvatureAtM(curve, loopM, distanceM), speedKmh / 3.6);
+  // 自分のアバターの横移動(集団を避ける)。0 なら従来の位置
+  s.rider.group.position.x = RIDER_X_M + myLaneM;
+  updateRiderAvatar(s.rider, s.clock, speedKmh, pitchAt(0), roll);
+  updateOthers(s, others, distanceM, elevAt, pitchAt, curve, loopM);
+  updateCamera(s, elevAt, frame, { distanceM, speedKmh, cadenceRpm, roll, riderX: RIDER_X_M + myLaneM });
+  // 走行環境の補間と雨粒(カメラ位置を使うのでカメラの後)。太陽の向きは時間帯で変わる(昼は初期化時と同じ値)。
+  s.env.update();
+  s.sunLight.position.copy(s.sunLight.target.position).addScaledVector(s.env.sunDir, 180);
 
   s.renderer.render(s.scene, s.camera);
 }
@@ -528,15 +587,86 @@ function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pit
   commitPool(s.carWheels);
 }
 
-function updateCamera(s, elevAt, frame) {
+// 他のライダーの配置の出力先(使い回し)
+const _otherLocal = { x: 0, z: 0, yaw: 0 };
+
+/** 他のライダー(ゴースト・集団)を道路に沿って置く。向き・標高・坂・カーブでの傾きも道路に合わせる。 */
+function updateOthers(s, others, distanceM, elevAt, pitchAt, curve, loopM) {
+  s.others.update(others, distanceM, {
+    dt: s.rider.dt ?? 0,
+    qualityIndex: s.qualityIndex ?? 0,
+    riderX: RIDER_X_M,
+    // 道路(標高プロファイル・道路フレーム)は後方 BEHIND_M までしか作らないので、それより後ろの人は描かない
+    behindM: BEHIND_M,
+    place(gapM, lateralM, speedMps, out) {
+      const p = toLocalInto(s.routeFrame, gapM, lateralM, _otherLocal);
+      out.x = p.x;
+      out.z = p.z;
+      out.yaw = p.yaw;
+      out.y = elevAt(gapM);
+      out.pitch = pitchAt(gapM);
+      out.roll = riderRollRad(curvatureAtM(curve, loopM, distanceM + gapM), speedMps);
+      return out;
+    },
+  });
+  const { pack, ghosts, labels } = s.others.stats;
+  const tag = `${pack}/${ghosts}/${labels}`;
+  if (s.canvas.dataset.others !== tag) s.canvas.dataset.others = tag;
+}
+
+function updateCamera(s, elevAt, frame, motion) {
+  const { view } = s.cam;
+  setAvatarVisible(s.rider, view !== 'fp');
+  if (view === 'fp') {
+    updateFirstPersonCamera(s, elevAt, frame, motion);
+    return;
+  }
+  if (view === 'cine') {
+    updateCineCamera(s, elevAt, frame, motion);
+    return;
+  }
+  setCameraFov(s.camera, CHASE_FOV_DEG);
   // アバターごとの補正(スワンボートは斜め後ろ上から見る)
   const { sideM, raiseM, backM } = s.rider.camera;
   const camBack = CAM_BACK_M + backM;
   const camY = elevAt(-camBack) + CAM_HEIGHT_M + raiseM;
   // カメラも道路に沿わせる(後方・前方の道路上の点から見る。直線では従来の位置と一致)。
-  const p = toLocalInto(frame, -camBack, RIDER_X_M + 0.4 + sideM, _local);
+  // 自分のアバターの横移動に追従する(myLaneOffsetM = 0 なら riderX = RIDER_X_M で従来と同じ)
+  const p = toLocalInto(frame, -camBack, motion.riderX + 0.4 + sideM, _local);
   s.camera.position.set(p.x, camY, p.z);
   const lookY = elevAt(CAM_LOOKAHEAD_M) + CAM_LOOKAHEAD_HEIGHT_M;
-  const q = toLocalInto(frame, CAM_LOOKAHEAD_M, RIDER_X_M * 0.4, _local);
+  const q = toLocalInto(frame, CAM_LOOKAHEAD_M, RIDER_X_M * 0.4 + (motion.riderX - RIDER_X_M), _local);
   s.camera.lookAt(q.x, lookY, q.z);
+}
+
+/** 目線視点: ライダーの目の位置から前方を見る。ケイデンスで上下に揺れ、カーブでは傾きの半分だけ傾く。 */
+function updateFirstPersonCamera(s, elevAt, frame, { speedKmh, cadenceRpm, roll, riderX }) {
+  const cadence = cadenceRpm ?? estimateCadenceRpm(speedKmh);
+  const bob = fpBobM(s.cam, cadence, s.rider.dt ?? 0);
+  const p = toLocalInto(frame, FP_FORWARD_M, riderX, _local);
+  s.camera.position.set(p.x, elevAt(FP_FORWARD_M) + s.rider.camera.eyeM + bob, p.z);
+  const q = toLocalInto(frame, FP_LOOKAHEAD_M, riderX, _local);
+  s.camera.lookAt(q.x, elevAt(FP_LOOKAHEAD_M) + FP_LOOK_HEIGHT_M, q.z);
+  s.camera.rotateZ(fpCameraRollRad(roll));
+  setCameraFov(s.camera, fpFovDeg(speedKmh / 3.6));
+}
+
+/** cine 視点: 沿道の固定カメラ(歩道の上)とヘリ視点から、ライダーを追って映す。 */
+function updateCineCamera(s, elevAt, frame, { distanceM, riderX }) {
+  const shot = s.cam.director.update(performance.now() / 1000, distanceM);
+  if (shot.type === 'heli') {
+    const p = toLocalInto(frame, -CINE_HELI_BACK_M, shot.side * CINE_HELI_LATERAL_M, _local);
+    s.camera.position.set(p.x, elevAt(-CINE_HELI_BACK_M) + shot.heightM, p.z);
+  } else {
+    const rel = shot.s - distanceM;
+    // ライダーと同じ左側の車道端(縁石の内側)。歩道の上は街灯・街路樹に、右側は駐車車両に遮られやすい
+    const x = -(ROAD_HALF_WIDTH_M - CINE_CURB_INSET_M - shot.lateralU * CINE_CURB_SPREAD_M);
+    const p = toLocalInto(frame, rel, x, _local);
+    // 街路樹の樹冠(地上約3.6m〜)より下に抑え、高い沿道カメラでも葉越しにならないようにする
+    s.camera.position.set(p.x, elevAt(rel) + Math.min(shot.heightM, CINE_MAX_HEIGHT_M), p.z);
+  }
+  const q = toLocalInto(frame, 0, riderX, _local);
+  s.camera.lookAt(q.x, elevAt(0) + CINE_LOOK_HEIGHT_M, q.z);
+  setCameraFov(s.camera, shot.fovDeg);
+  s.canvas.dataset.cineShot = `${shot.index}:${shot.type}`;
 }

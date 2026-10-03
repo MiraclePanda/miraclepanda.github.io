@@ -26,11 +26,16 @@ export class CourseEngine {
   /** 指定した走行距離(km)における勾配(%)を返す。 */
   gradeAtKm(distanceKm) {
     const L = this.profile.loopLengthKm;
-    const points = this.profile.points;
-    const crossfade = this.profile.crossfadeKm ?? 0;
     let m = distanceKm % L;
     if (m < 0) m += L;
+    return this._gradeInLoop(m);
+  }
 
+  /** 1周内の位置 m(0〜L km)における勾配(%)。gradeAtKm とループ積分の共通部分。 */
+  _gradeInLoop(m) {
+    const L = this.profile.loopLengthKm;
+    const points = this.profile.points;
+    const crossfade = this.profile.crossfadeKm ?? 0;
     const rawGrade = interpolate(points, m);
     if (crossfade > 0 && m > L - crossfade) {
       const t = (m - (L - crossfade)) / crossfade;
@@ -38,6 +43,61 @@ export class CourseEngine {
       return rawGrade * (1 - t) + startGrade * t;
     }
     return rawGrade;
+  }
+
+  /**
+   * fromKm → toKm の標高差(m)。gradeAtKm を距離で積分する(ループ・クロスフェード込み)。
+   * fromKm > toKm なら符号が反転した負方向の値を返す。次の500mの平均勾配
+   * (= elevationDeltaM(d, d+0.5) / 500 × 100)などに使う。
+   * 勾配は制御点間で線形、クロスフェード区間で2次式なので、それらの折れ点で区間を
+   * 分け、各区間をシンプソン則(台形則の2次精度版。2次式まで厳密)で積分する。
+   * 注: PhysicsEngine の標高は走行距離×sinθ の積算なので、急勾配ではごくわずかに異なる。
+   */
+  elevationDeltaM(fromKm, toKm) {
+    if (!Number.isFinite(fromKm) || !Number.isFinite(toKm) || fromKm === toKm) return 0;
+    if (fromKm > toKm) return -this.elevationDeltaM(toKm, fromKm);
+    const L = this.profile.loopLengthKm;
+    const firstLoop = Math.floor(fromKm / L);
+    const lastLoop = Math.floor(toKm / L);
+    const a = fromKm - firstLoop * L;
+    const b = toKm - lastLoop * L;
+    // 勾配[%]×距離[km] の積分値。×10 で m になる(% /100 × km×1000)。
+    let integral;
+    if (firstLoop === lastLoop) {
+      integral = this._integrateInLoop(a, b);
+    } else {
+      integral = this._integrateInLoop(a, L) + this._integrateInLoop(0, b);
+      const fullLoops = lastLoop - firstLoop - 1;
+      if (fullLoops > 0) integral += fullLoops * this._integrateInLoop(0, L);
+    }
+    return integral * 10;
+  }
+
+  /** 1周内 [a, b](0 ≤ a ≤ b ≤ L)の勾配の積分(%·km)。 */
+  _integrateInLoop(a, b) {
+    if (!(b > a)) return 0;
+    const L = this.profile.loopLengthKm;
+    const crossfade = this.profile.crossfadeKm ?? 0;
+    const breaks = [a, b];
+    for (const [km] of this.profile.points) {
+      if (km > a && km < b) breaks.push(km);
+    }
+    if (crossfade > 0) {
+      const cf = L - crossfade;
+      if (cf > a && cf < b) breaks.push(cf);
+    }
+    breaks.sort((x, y) => x - y);
+    let sum = 0;
+    for (let i = 0; i < breaks.length - 1; i++) {
+      const x0 = breaks[i];
+      const x1 = breaks[i + 1];
+      if (x1 <= x0) continue;
+      const g0 = this._gradeInLoop(x0);
+      const gm = this._gradeInLoop((x0 + x1) / 2);
+      const g1 = this._gradeInLoop(x1);
+      sum += ((x1 - x0) / 6) * (g0 + 4 * gm + g1);
+    }
+    return sum;
   }
 
   remainingKm(distanceKm) {

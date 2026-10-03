@@ -1,4 +1,4 @@
-import { h, useState } from './h.js';
+import { h, useState, useEffect, useMemo } from './h.js';
 import { COURSE_PROFILES } from '../physics/courseProfiles.js';
 import { PhysicsConstants } from '../physics/physicsConstants.js';
 import {
@@ -7,14 +7,32 @@ import {
   validateDistance,
   validateCrr,
   validateCda,
+  validateFtp,
   LIMITS,
 } from '../utils/validation.js';
+import {
+  DEFAULT_FTP_W,
+  loadEnvironment,
+  saveEnvironment,
+  loadGhostSelection,
+  saveGhostSelection,
+  loadFriendGhosts,
+  loadPackEnabled,
+  savePackEnabled,
+  PB_GHOST_ID,
+  MAX_GHOSTS,
+} from '../storage/prefs.js';
+import { getAllRides } from '../storage/db.js';
+import { bestRecordFor, fromRecord } from '../storage/ghostTrack.js';
+import { GHOST_COLORS } from './ghostRace.js';
+import { TIME_OPTIONS, WEATHER_OPTIONS, supportsWeather } from './rideOptions.js';
 
 /**
  * 初期セットアップ画面。
  * 要件定義書5章「初期セットアップ: 走行距離・体重・自転車重量・コース選択の入力と、
  * デバイス接続は任意の順序で実施可能。両方揃った時点で「開始」ボタンが活性化する」に対応。
- * 走行距離・体重・自転車重量・詳細設定(Crr/CdA)は前回値(prefs.js)を初期値にする。
+ * 走行距離・体重・自転車重量・詳細設定(Crr/CdA/FTP)は前回値(prefs.js)を初期値にする。
+ * 景観(時間帯・天候)は選んだ時点で保存する(描画品質と同じく、走行開始を待たない)。
  */
 export function SetupScreen({
   initialDistanceKm,
@@ -23,6 +41,7 @@ export function SetupScreen({
   initialCrr,
   initialCdaM2,
   initialVehicle,
+  initialFtpW,
   deviceState,
   onConnectDevice,
   onDisconnectDevice,
@@ -42,16 +61,67 @@ export function SetupScreen({
   const effectiveVehicle = fixedVehicle ?? vehicle;
   const [crr, setCrr] = useState(initialCrr ?? PhysicsConstants.CRR);
   const [cdaM2, setCdaM2] = useState(initialCdaM2 ?? PhysicsConstants.CDA);
+  const [ftpW, setFtpW] = useState(initialFtpW ?? DEFAULT_FTP_W);
+  const [environment, setEnvironment] = useState(loadEnvironment);
+  const courseProfile = COURSE_PROFILES.find((c) => c.id === courseId);
+  // ゴースト対戦: 過去の記録(自己ベストの候補)と、読み込んだ友人のゴースト(コース一致のみ)
+  const [rides, setRides] = useState(null);
+  const [ghostSelection, setGhostSelection] = useState(loadGhostSelection);
+  const [packEnabled, setPackEnabled] = useState(loadPackEnabled);
+  useEffect(() => {
+    let alive = true;
+    getAllRides().then((list) => alive && setRides(list)).catch(() => alive && setRides([]));
+    return () => { alive = false; };
+  }, []);
+  const changeEnvironment = (patch) => {
+    const next = { ...environment, ...patch };
+    setEnvironment(next);
+    saveEnvironment(next);
+  };
 
   const distanceCheck = validateDistance(distanceKm);
   const weightCheck = validateWeight(weightKg);
   const bikeWeightCheck = validateBikeWeight(bikeWeightKg);
   const crrCheck = validateCrr(crr);
   const cdaCheck = validateCda(cdaM2);
-  const advancedValid = crrCheck.valid && cdaCheck.valid;
+  const ftpCheck = validateFtp(ftpW);
+  const advancedValid = crrCheck.valid && cdaCheck.valid && ftpCheck.valid;
   const isDefaultCoefficients = Number(crr) === PhysicsConstants.CRR && Number(cdaM2) === PhysicsConstants.CDA;
   // 既定値から変えている(または範囲外の)場合は最初から開いておき、閉じたまま気付かないのを防ぐ。
   const [advancedOpen, setAdvancedOpen] = useState(!isDefaultCoefficients || !advancedValid);
+
+  // 上野不忍池は集団・ゴーストの対象外(周回の短いスワンボートコースのため)
+  const ghostsSupported = courseId !== 'ueno';
+  const pbRecord = useMemo(
+    () => (rides && distanceCheck.valid ? bestRecordFor(rides, courseId, Number(distanceKm)) : null),
+    [rides, courseId, distanceKm, distanceCheck.valid]
+  );
+  const friendGhosts = useMemo(() => (ghostsSupported ? loadFriendGhosts(courseId) : []), [courseId, ghostsSupported]);
+  const pbReason = rides === null
+    ? '記録を読み込み中...'
+    : !distanceCheck.valid
+      ? '走行距離を入力すると選べます。'
+      : pbRecord
+        ? null
+        : `このコースで${Number(distanceKm)}km以上走った記録がありません。`;
+  const toggleGhost = (id) => {
+    // このコースで使えるものを基準に切り替える(別コース用の古い選択はここで外れる)
+    const next = activeGhostIds.includes(id)
+      ? activeGhostIds.filter((x) => x !== id)
+      : [...activeGhostIds, id].slice(0, MAX_GHOSTS);
+    setGhostSelection(next);
+    saveGhostSelection(next);
+  };
+  // 実際に使えるものだけを選択順に並べる(自己ベストがない・別コースの友人は除く)
+  const activeGhostIds = ghostsSupported
+    ? ghostSelection.filter((id) => (id === PB_GHOST_ID ? !!pbRecord : friendGhosts.some((g) => g.id === id)))
+    : [];
+  const buildGhostTracks = () =>
+    activeGhostIds.map((id) => {
+      if (id === PB_GHOST_ID) return { ...fromRecord(pbRecord), id, color: GHOST_COLORS.pb };
+      const g = friendGhosts.find((x) => x.id === id);
+      return { id: g.id, name: g.name, courseId: g.courseId, points: g.points, color: GHOST_COLORS.friend };
+    });
 
   const formValid =
     distanceCheck.valid && weightCheck.valid && bikeWeightCheck.valid && advancedValid && !!courseId;
@@ -69,6 +139,10 @@ export function SetupScreen({
     preferredVehicle: vehicle, // 記憶するのはユーザー自身の選択
     crr: Number(crr),
     cdaM2: Number(cdaM2),
+    ftpW: Number(ftpW),
+    environment,
+    ghosts: buildGhostTracks(),
+    packEnabled: ghostsSupported && packEnabled, // 上野は集団なし
   });
 
   const handleStart = () => {
@@ -178,7 +252,7 @@ export function SetupScreen({
           open: advancedOpen,
           onToggle: (e) => setAdvancedOpen(e.currentTarget.open),
         },
-        h('summary', null, '詳細設定（転がり抵抗・空気抵抗係数）'),
+        h('summary', null, '詳細設定（転がり抵抗・空気抵抗係数・FTP）'),
         h(
           'div', { className: 'advanced-grid' },
           h(
@@ -208,7 +282,25 @@ export function SetupScreen({
               onChange: (e) => setCdaM2(e.target.value),
             }),
             !cdaCheck.valid && h('span', { className: 'error-text' }, cdaCheck.message)
+          ),
+          h(
+            'label', { className: 'field' },
+            h('span', null, `FTP (W) — ${LIMITS.ftpW.min}〜${LIMITS.ftpW.max}`),
+            h('input', {
+              type: 'number',
+              inputMode: 'numeric',
+              min: LIMITS.ftpW.min,
+              max: LIMITS.ftpW.max,
+              step: '1',
+              value: ftpW,
+              onChange: (e) => setFtpW(e.target.value),
+            }),
+            !ftpCheck.valid && h('span', { className: 'error-text' }, ftpCheck.message)
           )
+        ),
+        h(
+          'p', { className: 'muted small' },
+          `FTP(既定 ${DEFAULT_FTP_W}W)は、フルスクリーン表示のパワーゾーン(7段)の基準にだけ使います。`
         ),
         h(
           'p', { className: 'muted small' },
@@ -276,7 +368,61 @@ export function SetupScreen({
         )
       ),
       fixedVehicle && h('p', { className: 'vehicle-lock-note' }, '🦢 上野不忍池コースはスワンボートで池を周回するため、バイク種別はスワンボートに固定されます。'),
-      h('p', { className: 'muted small' }, '※ 走行中の3D表示の見た目だけが変わります。速度・距離の計算やトレーナーの負荷は変わりません。')
+      h('p', { className: 'field-title' }, '景観'),
+      segmented('時間帯', 'envTime', TIME_OPTIONS, environment.time, (id) => changeEnvironment({ time: id })),
+      supportsWeather(courseProfile)
+        ? segmented('天候', 'envWeather', WEATHER_OPTIONS, environment.weather, (id) => changeEnvironment({ weather: id }))
+        : h('p', { className: 'muted small' }, '上野不忍池コースは時間帯だけが反映されます(天候は変わりません)。'),
+      h('p', { className: 'muted small' }, '※ 走行中の3D表示の見た目だけが変わります。速度・距離の計算やトレーナーの負荷は変わりません。景観は走行中にも切り替えられます。'),
+
+      h('p', { className: 'field-title' }, '集団走行'),
+      ghostsSupported
+        ? h(
+            'label', { className: `ghost-option pack-option${packEnabled ? ' selected' : ''}` },
+            h('input', {
+              type: 'checkbox',
+              name: 'pack',
+              checked: packEnabled,
+              onChange: (e) => {
+                setPackEnabled(e.target.checked);
+                savePackEnabled(e.target.checked);
+              },
+            }),
+            h('div', null,
+              h('strong', null, '仮想の集団(5人)と走る'),
+              h('p', { className: 'muted small' }, '前のライダーの後ろ(0.5〜6m)につくと「ドラフティング中」になり、空気抵抗が約3分の1減って同じパワーでも速く進みます。トレーナーへ送る勾配は変わりません。'))
+          )
+        : h('p', { className: 'muted small' }, '上野不忍池コースでは集団走行はできません。'),
+
+      h('p', { className: 'field-title' }, 'ゴースト対戦'),
+      ghostsSupported
+        ? h(
+            'div', { className: 'ghost-select' },
+            ghostOption({
+              id: PB_GHOST_ID,
+              name: '自己ベスト',
+              color: GHOST_COLORS.pb,
+              checked: activeGhostIds.includes(PB_GHOST_ID),
+              disabled: !pbRecord || (!activeGhostIds.includes(PB_GHOST_ID) && activeGhostIds.length >= MAX_GHOSTS),
+              note: pbReason ?? `この距離で一番速かった記録(${new Date(pbRecord.startTime).toLocaleDateString('ja-JP')})と走ります。`,
+              onToggle: toggleGhost,
+            }),
+            friendGhosts.map((g) =>
+              ghostOption({
+                id: g.id,
+                name: g.name,
+                color: GHOST_COLORS.friend,
+                checked: activeGhostIds.includes(g.id),
+                disabled: !activeGhostIds.includes(g.id) && activeGhostIds.length >= MAX_GHOSTS,
+                note: `読み込んだ友人のゴースト(${(g.points[g.points.length - 1] / 1000).toFixed(2)}km)`,
+                onToggle: toggleGhost,
+              })
+            ),
+            friendGhosts.length === 0 &&
+              h('p', { className: 'muted small' }, '友人のゴーストは「過去の走行記録」画面で TCX ファイルから読み込めます(コースごとに最大3件)。'),
+            h('p', { className: 'muted small' }, `最大${MAX_GHOSTS}人まで選べます。選ばなければゴーストなしで走ります。ゴーストは記録どおりのペースで走るだけで、負荷には影響しません。`)
+          )
+        : h('p', { className: 'muted small' }, '上野不忍池コースではゴースト対戦はできません。')
     ),
 
     h(
@@ -289,6 +435,34 @@ export function SetupScreen({
       !canStart && h('p', { className: 'muted small' }, '入力内容とデバイス接続が両方完了すると開始できます。'),
       h('p', { className: 'muted small' }, 'デモはトレーナーに接続せず、選んだ設定・コース・オプションで自動走行します(走行記録は保存されません)。'),
       h('button', { className: 'btn btn-link', onClick: onOpenHistory }, '過去の走行記録を見る')
+    )
+  );
+}
+
+/** ゴーストの選択肢(チェックボックス)。 */
+function ghostOption({ id, name, color, checked, disabled, note, onToggle }) {
+  return h(
+    'label', { key: id, className: `ghost-option${checked ? ' selected' : ''}${disabled && !checked ? ' disabled' : ''}` },
+    h('input', { type: 'checkbox', name: 'ghost', value: id, checked, disabled: disabled && !checked, onChange: () => onToggle(id) }),
+    h('span', { className: 'ghost-dot', style: { boxShadow: `inset 0 0 0 2px ${color}` } }),
+    h('div', null, h('strong', null, name), h('p', { className: 'muted small' }, note))
+  );
+}
+
+/** 小さな選択肢の横並び(ラジオボタン)。 */
+function segmented(title, name, options, value, onChange) {
+  return h(
+    'div', { className: 'segmented-field', role: 'radiogroup', 'aria-label': title },
+    h('span', { className: 'segmented-title' }, title),
+    h(
+      'div', { className: 'segmented' },
+      options.map((o) =>
+        h(
+          'label', { key: o.id, className: `segmented-option${value === o.id ? ' selected' : ''}` },
+          h('input', { type: 'radio', name, value: o.id, checked: value === o.id, onChange: () => onChange(o.id) }),
+          h('span', null, o.label)
+        )
+      )
     )
   );
 }

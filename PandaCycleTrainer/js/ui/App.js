@@ -64,6 +64,7 @@ export function App() {
       crr: config.crr,
       cdaM2: config.cdaM2,
       vehicle: config.preferredVehicle ?? config.vehicle,
+      ftpW: config.ftpW,
     });
     // 詳細設定のCrr/CdAはSimulation Modeでトレーナーにも送る(物理演算側はRideScreenへ渡す)。
     ftmsClientRef.current.setSimulationCoefficients({ crr: config.crr, cdaM2: config.cdaM2 });
@@ -122,6 +123,7 @@ export function App() {
     initialCrr: prefs.crr,
     initialCdaM2: prefs.cdaM2,
     initialVehicle: prefs.vehicle,
+    initialFtpW: prefs.ftpW,
     deviceState,
     onConnectDevice: handleConnectDevice,
     onDisconnectDevice: handleDisconnectDevice,
@@ -147,6 +149,10 @@ export function App() {
       courseProfile: sessionConfig.courseProfile,
       goalDistanceKm: sessionConfig.distanceKm,
       initialLoadRatioPercent: sessionConfig.loadRatioPercent,
+      ftpW: sessionConfig.ftpW,
+      initialEnvironment: sessionConfig.environment,
+      ghosts: sessionConfig.ghosts,
+      packEnabled: !!sessionConfig.packEnabled,
       demo: !!sessionConfig.demo,
       onExitDemo: handleDemoExit,
       onFinish: handleRideFinish,
