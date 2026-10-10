@@ -5,6 +5,8 @@
 // scenery は走行中の3D表示の景色: 'city'(街並み、CityScene)/'lakeside'(湖を見下ろす
 // 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ)/'ueno'(上野不忍池)。lakeside・mountain・
 // atamiはLandscapeScene(js/three/landscapeLayout.js)、uenoはPondScene(js/three/pondLayout.js)で描く。
+// fixedLength: true のコース(GPX から読み込んだ実在コース、js/physics/realCourse.js)は
+// ループせず、走行距離をコース長(loopLengthKm)以下に制限する。
 // fixedVehicle があるコースは、オプションのバイク種別に関わらずその乗り物で走る。
 // curve: 平面上のカーブ(方位の揺らぎ)。[振幅(度), 1周あたりの周期数(整数), 位相(rad)] の配列。
 // 方位 heading(m) = Σ amp·(sin(2π·n·m/L + φ) − sin φ)。nが整数なのでループ境界で連続する。

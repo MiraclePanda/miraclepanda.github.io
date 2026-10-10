@@ -21,8 +21,25 @@ export function validateBikeWeight(value) {
   return inRange(value, LIMITS.bikeWeightKg, '自転車重量は3〜30kgの範囲で入力してください。');
 }
 
-export function validateDistance(value) {
+/**
+ * @param {number} [maxKm] コース長で上限を絞る場合(GPX の実在コース)。LIMITS の上限より小さいときだけ効く。
+ */
+export function validateDistance(value, maxKm) {
+  if (Number.isFinite(maxKm) && maxKm < LIMITS.distanceKm.max) {
+    const max = maxDistanceForCourse(maxKm);
+    return inRange(value, { min: LIMITS.distanceKm.min, max }, `このコースの走行距離は${LIMITS.distanceKm.min}〜${max}km(コース全長)の範囲で入力してください。`);
+  }
   return inRange(value, LIMITS.distanceKm, '走行距離は0.1〜300kmの範囲で入力してください。');
+}
+
+/** コース全長を走行距離の入力値にするときの丸め(0.01km 単位で切り捨て、全長を超えないように)。 */
+export function floorTo2(km) {
+  return Math.floor(km * 100 + 1e-9) / 100;
+}
+
+/** 実在コースで入力できる走行距離の上限(コース全長。ただし LIMITS の上限は超えない)。 */
+export function maxDistanceForCourse(courseKm) {
+  return Math.min(LIMITS.distanceKm.max, floorTo2(courseKm));
 }
 
 export function validateCrr(value) {
