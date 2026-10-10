@@ -21,7 +21,7 @@ test('prefs: existing pct_prefs_v1 data keeps loading; ftpW defaults to 200', ()
     JSON.stringify({ distanceKm: 20, weightKg: 65, bikeWeightKg: 9, crr: 0.004, cdaM2: 0.32, vehicle: 'swan' }),
   );
   const p = prefs.loadPrefs();
-  assert.deepEqual(p, { distanceKm: 20, weightKg: 65, bikeWeightKg: 9, crr: 0.004, cdaM2: 0.32, vehicle: 'swan', ftpW: 200 });
+  assert.deepEqual(p, { distanceKm: 20, weightKg: 65, bikeWeightKg: 9, crr: 0.004, cdaM2: 0.32, vehicle: 'swan', ftpW: 200, courseId: undefined, loadRatioPercent: undefined });
   assert.equal(prefs.loadPrefs().ftpW, 200);
   localStorage.clear();
   assert.equal(prefs.loadPrefs().ftpW, 200);
@@ -42,6 +42,30 @@ test('prefs: ftpW round-trips, invalid values fall back to the default, legacy s
   }
   localStorage.setItem('pct_prefs_v1', '{broken');
   assert.equal(prefs.loadPrefs().ftpW, 200);
+});
+
+test('prefs: partial saves merge (choices are saved as soon as they change); course and load ratio are remembered', () => {
+  prefs.savePrefs({ distanceKm: 20, weightKg: 65, bikeWeightKg: 9, vehicle: 'swan', ftpW: 250 });
+  prefs.savePrefs({ vehicle: 'bike' });
+  prefs.savePrefs({ courseId: 'gpx-3', loadRatioPercent: 60 });
+  let p = prefs.loadPrefs();
+  assert.equal(p.vehicle, 'bike', 'the latest vehicle choice wins');
+  assert.equal(p.distanceKm, 20, 'other fields are kept');
+  assert.equal(p.ftpW, 250);
+  assert.equal(p.courseId, 'gpx-3');
+  assert.equal(p.loadRatioPercent, 60);
+  // 不正な値は保存しない(保存済みの値が残る)
+  prefs.savePrefs({ vehicle: 'tank', courseId: '<script>', loadRatioPercent: 150, ftpW: 9999, weightKg: NaN });
+  p = prefs.loadPrefs();
+  assert.equal(p.vehicle, 'bike');
+  assert.equal(p.courseId, 'gpx-3');
+  assert.equal(p.loadRatioPercent, 60);
+  assert.equal(p.ftpW, 250);
+  assert.equal(p.weightKg, 65);
+  localStorage.setItem('pct_prefs_v1', JSON.stringify({ courseId: 'BAD ID', loadRatioPercent: 33.5 }));
+  p = prefs.loadPrefs();
+  assert.equal(p.courseId, undefined);
+  assert.equal(p.loadRatioPercent, undefined);
 });
 
 test('prefs: environment / camera view / pack toggle defaults and validation', () => {

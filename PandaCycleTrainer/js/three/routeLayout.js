@@ -7,12 +7,17 @@
 // と定義する。n が整数なのでループ境界(m = L → 0)で方位が連続する。curve が空/未定義の
 // コースは従来どおりの直線で、各関数は直線のときの値を厳密に返す(見た目を一切変えないため)。
 //
+// GPX の実在コース(realCourse.js)の curve は、フーリエ級数ではなく方位の表
+//   { type: 'table', stepM, headings: [h0 = 0, h1, …] }(距離 i·stepM での累積方位 rad)
+// で、交差点の直角コーナーやヘアピンもそのまま表せる。表はループせず(fixedLength のコース)、
+// 始点より手前・終点より先は端の方位のまま直進する。曲率は表の中心差分。
+//
 // 座標の約束(既存シーンと同じ): 進行方向が −Z、道路中心からの右方向が +X。
 //   yaw(rel) = heading(cur + rel) − heading(cur)(正 = 左へ曲がる、上から見て反時計回り)
 //   前方 f = (−sin yaw, 0, −cos yaw)、右 r = (cos yaw, 0, −sin yaw)
 // yaw = 0 で f = (0,0,−1)、r = (+1,0,0)。Three.js の rotation.y = yaw で −Z を向く
 // オブジェクトが f を向く。
-// (あくまで見た目の配置用。物理・勾配・距離・記録には一切使わない。)
+// (見た目の配置用。ただし方位の表は js/physics/cornering.js がコーナーの減速にも使う。)
 
 const DEG = Math.PI / 180;
 
@@ -28,12 +33,83 @@ const INSIDE_CLAMP_RATIO = 0.8;
 export const LATERAL_SMOOTH_START_M = 20;
 export const LATERAL_SMOOTH_RATIO = 0.5;
 
-function isStraight(curve) {
-  return !Array.isArray(curve) || curve.length === 0;
+/** curve が方位の表(GPX の実在コース)か。 */
+export function isHeadingTable(curve) {
+  return !!curve && !Array.isArray(curve) && curve.type === 'table' && Array.isArray(curve.headings) &&
+    curve.headings.length >= 2 && curve.stepM > 0;
 }
 
-/** curve を計算しやすい形(amp: rad, ω: rad/m, φ, sin φ)に直す。 */
+/** 道路にカーブがあるか(フーリエ級数の項がある、または方位の表)。 */
+export function hasCurve(curve) {
+  return isHeadingTable(curve) || (Array.isArray(curve) && curve.length > 0);
+}
+
+function isStraight(curve) {
+  return !hasCurve(curve);
+}
+
+const tableModels = new WeakMap();
+
+/** 方位の表 → 方位・曲率の関数(表ごとに1回だけ作ってキャッシュする)。 */
+function tableModel(curve) {
+  let model = tableModels.get(curve);
+  if (model) return model;
+  const step = curve.stepM;
+  const h = Float64Array.from(curve.headings);
+  const n = h.length;
+  const k = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = Math.max(0, i - 1);
+    const b = Math.min(n - 1, i + 1);
+    k[i] = (h[b] - h[a]) / ((b - a) * step);
+  }
+  const endM = (n - 1) * step;
+  const lerp = (arr, m) => {
+    const x = m / step;
+    if (!(x > 0)) return arr[0];
+    if (x >= n - 1) return arr[n - 1];
+    const i = Math.floor(x);
+    return arr[i] + (arr[i + 1] - arr[i]) * (x - i);
+  };
+  model = {
+    heading(m, sigmaM) {
+      if (!(sigmaM > 0)) return lerp(h, m);
+      // ガウス平滑(±3σ を表の間隔で離散化)
+      const half = Math.max(1, Math.ceil((3 * sigmaM) / step));
+      let sw = 0;
+      let sh = 0;
+      for (let j = -half; j <= half; j++) {
+        const d = (j * 3 * sigmaM) / half;
+        const w = Math.exp(-0.5 * (d / sigmaM) ** 2);
+        sw += w;
+        sh += w * lerp(h, m + d);
+      }
+      return sh / sw;
+    },
+    curvature(m) {
+      if (m < 0 || m > endM) return 0; // 表の外は直進
+      return lerp(k, m);
+    },
+  };
+  tableModels.set(curve, model);
+  return model;
+}
+
+/** 項が無い(直線)か。方位の表は項の配列を持たないので table で判定する。 */
+function isEmptyTerms(terms) {
+  return terms.length === 0 && !terms.table;
+}
+
+/**
+ * curve を計算しやすい形(amp: rad, ω: rad/m, φ, sin φ)に直す。
+ * 方位の表は空配列に table(方位・曲率の関数)を付けて返す。
+ */
 function toTerms(curve, loopLengthM) {
+  if (isHeadingTable(curve)) {
+    const terms = [];
+    terms.table = tableModel(curve);
+    return terms;
+  }
   if (isStraight(curve)) return [];
   return curve.map(([ampDeg, cycles, phase]) => ({
     amp: ampDeg * DEG,
@@ -52,6 +128,7 @@ function wrapM(loopLengthM, distanceM) {
 
 /** 平滑化済み方位を terms から求める。sigmaM = 0 では headingAtM と同じ演算になる。 */
 function headingFromTerms(terms, loopLengthM, distanceM, sigmaM) {
+  if (terms.table) return terms.table.heading(distanceM, sigmaM); // 表はループしない
   if (terms.length === 0) return 0;
   const m = wrapM(loopLengthM, distanceM);
   let h = 0;
@@ -72,6 +149,7 @@ export function headingAtM(curve, loopLengthM, distanceM) {
 /** 曲率(1/m) = 方位の距離微分。正 = 左カーブ。curve が空なら 0。 */
 export function curvatureAtM(curve, loopLengthM, distanceM) {
   const terms = toTerms(curve, loopLengthM);
+  if (terms.table) return terms.table.curvature(distanceM);
   if (terms.length === 0) return 0;
   const m = wrapM(loopLengthM, distanceM);
   let k = 0;
@@ -180,7 +258,8 @@ function setSample(frame, i, alongM, x, z, yaw, k) {
  */
 export function buildRouteFrame(curve, loopLengthM, currentDistanceM, { behindM, aheadM, stepM }, out) {
   const terms = toTerms(curve, loopLengthM);
-  const straight = terms.length === 0;
+  const straight = isEmptyTerms(terms);
+  const table = terms.table ?? null;
   const nT = terms.length;
   const frame = Array.isArray(out) ? out : [];
 
@@ -201,6 +280,11 @@ export function buildRouteFrame(curve, loopLengthM, currentDistanceM, { behindM,
   const fill = (i, alongM) => {
     if (straight) {
       setSample(frame, i, alongM, 0, 0 - alongM, 0, 0);
+      return;
+    }
+    if (table) {
+      const s = currentDistanceM + alongM;
+      setSample(frame, i, alongM, 0, 0, i === originIndex ? 0 : table.heading(s) - h0, table.curvature(s));
       return;
     }
     const m = wrapM(loopLengthM, currentDistanceM + alongM);
@@ -405,7 +489,7 @@ function boxPass(src, off, len, h, dst) {
  */
 export function createAnchoredRoute(curve, loopLengthM, anchorS, { behindM, aheadM, stepM }) {
   const terms = toTerms(curve, loopLengthM);
-  if (terms.length === 0) {
+  if (isEmptyTerms(terms)) {
     return {
       anchorS,
       place: (s, d) => ({ x: d, z: -(s - anchorS), yaw: 0 }),

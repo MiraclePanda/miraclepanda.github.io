@@ -28,6 +28,12 @@ export const PhysicsConstants = {
   DRAFT_MAX_GAP_M: 6.0,
   DRAFT_MAX_LATERAL_M: 1.0,
   DRAFT_CDA_FACTOR: 0.66,
+  // コーナーでの減速(GPX の実在コースのみ。js/physics/cornering.js)。
+  // 横方向の加速度の上限 (m/s^2, 約0.3G)。一般のサイクリストが無理なく曲がれる程度で、
+  // GPX の直角の交差点(方位の平滑化で半径20m前後になる)で25〜30km/h、ヘアピンで20〜25km/h になる。
+  CORNER_LATERAL_ACCEL_MPS2: 3.0,
+  // コーナー手前のブレーキの減速度 (m/s^2)。急ブレーキではない普通の減速。
+  CORNER_BRAKE_DECEL_MPS2: 2.5,
 };
 
 // BLE受信値の異常値バリデーション用の上限(簡易チェック)。

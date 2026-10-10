@@ -686,7 +686,7 @@ p { line-height: 1.6; }
   font-size: 11.5px;
   color: var(--hud-text);
 }
-.fs-chip.is-accent { box-shadow: 0 0 0 1px var(--hud-accent); color: var(--hud-accent-xlt); }
+.fs-chip.is-accent, .fs-chip.is-corner { box-shadow: 0 0 0 1px var(--hud-accent); color: var(--hud-accent-xlt); }
 .fs-grade {
   padding: 10px 14px 11px;
   background: var(--hud-bg-strong);

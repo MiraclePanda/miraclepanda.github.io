@@ -9,6 +9,8 @@
 //    制限されるので物理には効かず、3D 表示が終点の先・始点の手前を描くときにだけ使われる
 //    (ループさせると終点の先に始点の起伏が現れてしまうため)。
 
+import { buildCornerSpeedLimits, cornerSpeedLimitAt } from './cornering.js';
+
 export class CourseEngine {
   /**
    * @param {object} profile courseProfiles.js の要素
@@ -25,6 +27,17 @@ export class CourseEngine {
   /** ゴールに到達し「続行」が選ばれた時に呼ぶ。目標距離を1周分延長する。 */
   extendGoal() {
     this.effectiveGoalKm += this.profile.loopLengthKm;
+  }
+
+  /**
+   * 指定した走行距離(km)でコーナーを曲がるための上限速度(m/s)。コーナーの減速は
+   * 方位の表を持つ GPX の実在コース(ループしない)だけ。それ以外・コーナーの無い地点は Infinity。
+   */
+  speedLimitMpsAt(distanceKm) {
+    if (this._cornerLimits === undefined) {
+      this._cornerLimits = this.profile.fixedLength ? buildCornerSpeedLimits(this.profile.curve) : null;
+    }
+    return cornerSpeedLimitAt(this._cornerLimits, distanceKm * 1000);
   }
 
   /** 指定した走行距離(km)における勾配(%)を返す。 */

@@ -150,34 +150,47 @@ test('missing elevation on some points is interpolated from neighbours', () => {
   assert.ok(Math.abs(engine.gradeAtKm(1.0) - 3) < 0.1);
 });
 
-test('curve reproduces the route heading changes (left turn = positive)', () => {
+test('curve is a heading table that reproduces the route heading changes (left turn = positive)', () => {
   const L = 6000;
   const truth = (m) => 30 * DEG * Math.sin((2 * Math.PI * 3 * m) / L);
   const pts = synthTrack(L, 5, (m) => 0.7 + truth(m), (m) => 10);
   const { profile } = buildRealCourse(pts);
+  assert.equal(profile.curve.type, 'table');
+  assert.equal(profile.curve.stepM, 10);
+  assert.equal(profile.curve.headings.length, Math.floor(profile.loopLengthKm * 100 + 1e-9) + 1);
   const loopM = profile.loopLengthKm * 1000;
   for (let m = 200; m < loopM - 200; m += 250) {
     const got = headingAtM(profile.curve, loopM, m);
-    assert.ok(Math.abs(got - truth(m)) < 3 * DEG, `at ${m} m: ${got / DEG}° vs ${truth(m) / DEG}°`);
+    assert.ok(Math.abs(got - truth(m)) < 1.5 * DEG, `at ${m} m: ${got / DEG}° vs ${truth(m) / DEG}°`);
   }
 });
 
 test('a straight track gets an effectively straight road', () => {
   const pts = synthTrack(3000, 10, () => 1.2, (m) => 0);
   const { profile } = buildRealCourse(pts);
-  assert.deepEqual(profile.curve, []);
+  assert.ok(profile.curve.headings.every((h) => Math.abs(h) < 1e-3));
 });
 
-test('net turning (e.g. an out-and-around route) is dropped and the curve stays bounded', () => {
-  // 半周の大きな弧(正味 180° 左旋回)
+test('net turning (e.g. a long sweeping arc) is kept as it is', () => {
+  // 半周の大きな弧(正味 180° 左旋回)。フーリエ級数の頃は消えていた正味の旋回もそのまま残る
   const L = 4000;
   const pts = synthTrack(L, 10, (m) => (Math.PI * m) / L, () => 0);
   const { profile } = buildRealCourse(pts);
   const loopM = profile.loopLengthKm * 1000;
-  for (let m = 0; m <= loopM; m += 100) {
-    assert.ok(Math.abs(headingAtM(profile.curve, loopM, m)) < 10 * DEG);
+  for (let m = 100; m <= loopM - 100; m += 100) {
+    assert.ok(Math.abs(headingAtM(profile.curve, loopM, m) - (Math.PI * m) / L) < 1.5 * DEG, `at ${m}`);
   }
-  assert.ok(profile.curve.length <= 60);
+});
+
+test('a right-angle junction stays a sharp corner (not smeared over hundreds of metres)', () => {
+  // 500 m 東へ → 交差点で左折(90°)→ 500 m 北へ
+  const pts = synthTrack(1000, 2, (m) => (m < 500 ? 0 : Math.PI / 2), () => 0);
+  const { profile } = buildRealCourse(pts);
+  const h = (m) => headingAtM(profile.curve, 1000, m);
+  assert.ok(Math.abs(h(460)) < 2 * DEG, `before the corner: ${h(460) / DEG}°`);
+  assert.ok(Math.abs(h(540) - Math.PI / 2) < 2 * DEG, `after the corner: ${h(540) / DEG}°`);
+  // 終点より先は直進(方位一定)
+  assert.equal(h(1000 + 300), h(1000));
 });
 
 test('courses shorter than the minimum are rejected', () => {
@@ -231,7 +244,7 @@ test('odd course lengths (tiny or long final remainder) give sane grades and cur
     const engine = new CourseEngine({ ...profile, crossfadeKm: 0 }, profile.loopLengthKm);
     for (const [km, g] of profile.points) assert.ok(Math.abs(g - 4) < 0.2, `${totalM} m @ ${km}: ${g}`);
     assert.ok(Math.abs(engine.elevationDeltaM(0, profile.loopLengthKm) - totalM * 0.04) < 2);
-    assert.deepEqual(profile.curve, []);
+    assert.ok(profile.curve.headings.every((x) => Math.abs(x) < 1e-3), `${totalM} m: straight`);
   }
 });
 
