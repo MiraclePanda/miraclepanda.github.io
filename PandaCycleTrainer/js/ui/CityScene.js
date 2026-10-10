@@ -18,6 +18,8 @@ import {
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
 import { createOtherRiders } from '../three/otherRiders.js';
+import { createRoadsideActors } from '../three/roadsideActors.js';
+import { clearZones, inClearZone } from '../three/roadsideLayout.js';
 
 const { forwardRef, useImperativeHandle } = React;
 
@@ -120,12 +122,12 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
   onQualityChangeRef.current = onQualityChange;
 
   useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM }) {
+    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
       const s = sceneRef.current;
       if (!s || !courseEngine) return;
       try {
         adaptQuality(s);
-        drawFrame(s, courseEngine, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0);
+        drawFrame(s, courseEngine, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を
         // 巻き込んでクラッシュさせない。
@@ -319,6 +321,10 @@ function initScene(canvas, vehicle) {
   s.place = placer(s);
   // 他のライダー(ゴースト・集団)。プールは初めて描画範囲に入ったときに作る
   s.others = createOtherRiders(scene, vehicle, s.textures);
+  // 沿道のハプニング・名所(猫・パンダ・応援団・給水所・鹿・大鳥居・五重塔)。模型は初めて出るときに作る
+  s.actors = createRoadsideActors(scene, s.textures);
+  s.actorPlace = actorPlacer(s);
+  s.actorGround = (gapM, lateralM) => (Math.abs(lateralM) > ROAD_HALF_WIDTH_M ? CURB_HEIGHT_M : 0);
   return s;
 }
 
@@ -448,7 +454,7 @@ function updateRibbon(ribbon, profile, frame, distanceM) {
 // toLocalInto の出力先(配置ループ・カメラで使い回す)
 const _local = { x: 0, z: 0, yaw: 0 };
 
-function drawFrame(s, courseEngine, distanceKm, speedKmh, cadenceRpm, others, myLaneM) {
+function drawFrame(s, courseEngine, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors) {
   const distanceM = distanceKm * 1000;
   const profile = buildElevationProfile((km) => courseEngine.gradeAtKm(km), distanceKm, WINDOW_OPTS);
   // 平面上のカーブ。標高プロファイルと同じ opts で作り、同じインデックスが同じ alongM を指すようにする。
@@ -467,15 +473,18 @@ function drawFrame(s, courseEngine, distanceKm, speedKmh, cadenceRpm, others, my
   // 配置物は cityLayout の alongM / xOffsetM のまま受け取り、place() でワールド座標へ変換する。
   const { place } = s;
   const objects = collectSceneObjects(distanceM - BEHIND_M, distanceM + AHEAD_M);
+  // 名所・テントのある所には建物・街路樹・街灯を置かない(actors がなければ空で、従来どおり)
+  const zones = clearZones(actors, ROAD_HALF_WIDTH_M);
   updateIntersections(s, objects.intersections, distanceM, elevAt, pitchAt, place);
-  updateBuildings(s, objects.buildings, distanceM, elevAt, place);
-  updateStreetFurniture(s, objects, distanceM, elevAt, pitchAt, place);
+  updateBuildings(s, objects.buildings, distanceM, elevAt, place, zones);
+  updateStreetFurniture(s, objects, distanceM, elevAt, pitchAt, place, zones);
   // カーブでは内側へ傾ける(直線・curve のないコースでは k = 0 で従来どおり)
   const roll = riderRollRad(curvatureAtM(curve, loopM, distanceM), speedKmh / 3.6);
   // 自分のアバターの横移動(集団を避ける)。0 なら従来の位置
   s.rider.group.position.x = RIDER_X_M + myLaneM;
   updateRiderAvatar(s.rider, s.clock, speedKmh, pitchAt(0), roll);
   updateOthers(s, others, distanceM, elevAt, pitchAt, curve, loopM);
+  updateActors(s, actors, distanceM, elevAt, pitchAt);
   updateCamera(s, elevAt, frame, { distanceM, speedKmh, cadenceRpm, roll, riderX: RIDER_X_M + myLaneM });
   // 走行環境の補間と雨粒(カメラ位置を使うのでカメラの後)。太陽の向きは時間帯で変わる(昼は初期化時と同じ値)。
   s.env.update();
@@ -525,8 +534,10 @@ function updateIntersections(s, intersections, distanceM, elevAt, pitchAt, place
   commitPool(s.crosswalks);
 }
 
-function updateBuildings(s, buildings, distanceM, elevAt, place) {
+function updateBuildings(s, buildings, distanceM, elevAt, place, zones) {
   for (const b of buildings) {
+    // 五重塔の敷地にかかる建物は建てない(更地にする)
+    if (zones.length > 0 && inClearZone(zones, b.alongM, b.xOffsetM, b.width / 2, b.depth / 2)) continue;
     const rel = b.alongM - distanceM;
     const groundY = elevAt(rel) + CURB_HEIGHT_M;
     const baseY = groundY - BUILDING_SINK_M;
@@ -551,8 +562,10 @@ function updateBuildings(s, buildings, distanceM, elevAt, place) {
   commitPool(s.roofUnits);
 }
 
-function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pitchAt, place) {
+function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pitchAt, place, zones) {
   for (const t of trees) {
+    // 大鳥居の柱・給水所のテント・応援団に重なる街路樹は植えない
+    if (zones.length > 0 && inClearZone(zones, t.alongM, t.xOffsetM, 1.5 * t.scale, 1.5 * t.scale)) continue;
     const rel = t.alongM - distanceM;
     const groundY = elevAt(rel) + CURB_HEIGHT_M;
     place(s.trunks, rel, t.xOffsetM, groundY, t.scale, 3.4 * t.scale, t.scale);
@@ -568,6 +581,7 @@ function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pit
     }
   }
   for (const l of lamps) {
+    if (zones.length > 0 && inClearZone(zones, l.alongM, l.xOffsetM, 0.3, 0.3)) continue;
     const rel = l.alongM - distanceM;
     place(s.lamps, rel, l.xOffsetM, elevAt(rel) + CURB_HEIGHT_M, 1, 1, 1, 0, l.side > 0 ? 0 : Math.PI);
   }
@@ -612,6 +626,41 @@ function updateOthers(s, others, distanceM, elevAt, pitchAt, curve, loopM) {
   const { pack, ghosts, labels } = s.others.stats;
   const tag = `${pack}/${ghosts}/${labels}`;
   if (s.canvas.dataset.others !== tag) s.canvas.dataset.others = tag;
+}
+
+/**
+ * 沿道のハプニング・名所の配置関数(他のライダーの place と同じ形。傾き roll は使わない)。
+ * 標高はフレームごとに変わるので、drawFrame が s.actorElevAt / s.actorPitchAt に入れた関数を使う。
+ */
+function actorPlacer(s) {
+  const local = { x: 0, z: 0, yaw: 0 };
+  return function placeActor(gapM, lateralM, speedMps, out) {
+    const p = toLocalInto(s.routeFrame, gapM, lateralM, local);
+    out.x = p.x;
+    out.z = p.z;
+    out.yaw = p.yaw;
+    out.y = s.actorElevAt(gapM);
+    out.pitch = s.actorPitchAt(gapM);
+    out.roll = 0;
+    return out;
+  };
+}
+
+/** 沿道のハプニング・名所を道路に沿って置く。歩道の上は縁石の高さ。 */
+function updateActors(s, actors, distanceM, elevAt, pitchAt) {
+  s.actorElevAt = elevAt;
+  s.actorPitchAt = pitchAt;
+  s.actors.update(actors, distanceM, {
+    place: s.actorPlace,
+    groundAboveRoadM: s.actorGround,
+    roadHalfWidthM: ROAD_HALF_WIDTH_M,
+    dt: s.rider.dt ?? 0,
+    qualityIndex: s.qualityIndex ?? 0,
+    // 道路(標高プロファイル・道路フレーム)は後方 BEHIND_M までしか作らない
+    behindM: BEHIND_M,
+  });
+  const tag = String(s.actors.stats.count);
+  if (s.canvas.dataset.actors !== tag) s.canvas.dataset.actors = tag;
 }
 
 function updateCamera(s, elevAt, frame, motion) {

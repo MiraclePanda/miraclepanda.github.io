@@ -32,6 +32,8 @@ import { getAllRides, getAllCourses, saveCourse, deleteCourse, updateCourseScene
 import { bestRecordFor, fromRecord } from '../storage/ghostTrack.js';
 import { GHOST_COLORS } from './ghostRace.js';
 import { TIME_OPTIONS, WEATHER_OPTIONS, supportsWeather } from './rideOptions.js';
+import { JourneyCard } from './JourneyCard.js';
+import { journeyTotalKm } from '../utils/journey.js';
 
 /**
  * 初期セットアップ画面。
@@ -464,7 +466,9 @@ export function SetupScreen({
               checked: courseId === c.id,
               onChange: () => selectCourse(c),
             }),
-            h('div', null, h('strong', null, c.name), h('p', { className: 'muted small' }, c.description))
+            h('div', null,
+              h('strong', null, c.name, c.tag && h('span', { className: 'gpx-badge tour-badge' }, c.tag)),
+              h('p', { className: 'muted small' }, c.description))
           )
         ),
         (savedCourses ?? []).map((r) =>
@@ -607,6 +611,9 @@ export function SetupScreen({
           )
         : h('p', { className: 'muted small' }, '上野不忍池コースではゴースト対戦はできません。')
     ),
+
+    // バーチャル日本縦断(これまでの走行記録の合計距離)
+    h(JourneyCard, { totalKm: rides === null ? null : journeyTotalKm(rides) }),
 
     h(
       'div', { className: 'start-bar' },

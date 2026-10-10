@@ -2,6 +2,7 @@ import { h, useState, useEffect } from './h.js';
 import { getAllRides, deleteRide } from '../storage/db.js';
 import { downloadTcx } from '../storage/tcx.js';
 import { fmtTime } from '../utils/format.js';
+import { recordKcal } from '../utils/gourmet.js';
 import { ConfirmDialog } from './Modal.js';
 import { COURSE_PROFILES } from '../physics/courseProfiles.js';
 import { fromTcx, trackEndS, DEFAULT_FRIEND_GHOST_NAME } from '../storage/ghostTrack.js';
@@ -56,7 +57,8 @@ export function HistoryScreen({ onBack }) {
               'div', { className: 'ride-list-stats' },
               h('span', null, `${(r.totalDistanceM / 1000).toFixed(2)} km`),
               h('span', null, fmtTime(r.ridingTimeS)),
-              h('span', null, `平均${Math.round(r.avgPowerW)}W`)
+              h('span', null, `平均${Math.round(r.avgPowerW)}W`),
+              h('span', null, `${Math.round(recordKcal(r))}kcal`)
             ),
             h(
               'div', { className: 'ride-list-actions' },

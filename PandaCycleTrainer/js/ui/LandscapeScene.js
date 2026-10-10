@@ -18,6 +18,10 @@ import {
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
 import { createOtherRiders } from '../three/otherRiders.js';
+import { createRoadsideActors } from '../three/roadsideActors.js';
+import { clearZones, inClearZone } from '../three/roadsideLayout.js';
+import { landmarkActors } from '../three/happeningsLayout.js';
+import { createBackdrop } from '../three/backdrops.js';
 
 const { forwardRef, useImperativeHandle } = React;
 
@@ -148,12 +152,12 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
   onQualityChangeRef.current = onQualityChange;
 
   useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM }) {
+    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
       const s = sceneRef.current;
       if (!s) return;
       try {
         adaptQuality(s);
-        drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0);
+        drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
         setRenderError(String(err));
@@ -334,7 +338,11 @@ function initScene(canvas, courseEngine, L, vehicle) {
   const floor = createFloorModel(elev, loopM, L.valley.minDropM, { fixedLength: !!courseEngine.profile.fixedLength });
   const curve = courseEngine.profile.curve;
 
-  return {
+  // 空と一緒に回る遠景(富士山など)。コースプロファイルの backdrop で選ぶ。シーンに入れるので disposeScene で解放される
+  const backdrop = createBackdrop(courseEngine.profile.backdrop);
+  if (backdrop) scene.add(backdrop.object);
+
+  const st = {
     L, atmo, canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures: tex.all, waterNormal: tex.water,
     root, inner, terrain, road, shoulder, water,
     pools: {
@@ -358,7 +366,14 @@ function initScene(canvas, courseEngine, L, vehicle) {
     cam: { view: 'chase', crankRad: 0, director: createCineDirector() },
     clock: new THREE.Clock(),
     startedAt: performance.now(),
+    profile: courseEngine.profile,
+    // 沿道のハプニング・名所。他のライダーと同じく inner に置く。模型は初めて出るときに作る
+    actors: createRoadsideActors(inner, tex.all),
+    backdrop,
   };
+  st.actorPlace = actorPlacer(st);
+  st.actorGround = (gapM, lateralM) => groundOffsetM(st, st.actorDist + gapM, lateralM);
+  return st;
 }
 
 // ---- ジオメトリ生成ヘルパー ----
@@ -661,6 +676,9 @@ function placeObjects(st, anchorS, floorM) {
   const to = anchorS + NEAR_AHEAD_M + REBUILD_M;
   const objects = collectLandscapeObjects(L, from, to, { farToM: anchorS + FAR_TREE_AHEAD_M });
   const edge = roadEdgeM(L);
+  // 名所(大鳥居の柱・五重塔の基壇)のある所には木・岩・家を置かない(名所のないコースでは空)
+  const zones = clearZones(landmarkActors(st.profile, anchorS, NEAR_BEHIND_M + REBUILD_M, FAR_TREE_AHEAD_M), L.roadHalfWidthM);
+  const blocked = (s, d, r) => zones.length > 0 && inClearZone(zones, s, d, r, r);
 
   const groundAt = (s, d) => terrainHeightM(L, d, s, elev.elevAt(s), floorM);
   // [x, y, z, 道路の向き]。配置物の回転は「元の回転 + 道路の向き」にする。
@@ -677,6 +695,7 @@ function placeObjects(st, anchorS, floorM) {
   };
 
   for (const t of objects.trees) {
+    if (blocked(t.s, t.d, 2 * t.scale)) continue;
     const hgt = groundAt(t.s, t.d);
     if (!treeOk(t.s, t.d, hgt)) continue;
     const [x, y, z] = local(t.s, t.d, hgt);
@@ -697,6 +716,7 @@ function placeObjects(st, anchorS, floorM) {
   }
 
   for (const t of objects.farTrees) {
+    if (blocked(t.s, t.d, 3 * t.scale)) continue;
     const hgt = groundAt(t.s, t.d);
     if (!treeOk(t.s, t.d, hgt)) continue;
     const [x, y, z] = local(t.s, t.d, hgt);
@@ -708,6 +728,7 @@ function placeObjects(st, anchorS, floorM) {
   }
 
   for (const r of objects.rocks) {
+    if (blocked(r.s, r.d, r.size)) continue;
     const hgt = groundAt(r.s, r.d);
     if (hgt < floorM + 0.5) continue;
     const [x, y, z] = local(r.s, r.d, hgt);
@@ -759,6 +780,7 @@ function placeObjects(st, anchorS, floorM) {
   }
 
   for (const hs of objects.houses) {
+    if (blocked(hs.s, hs.d, Math.max(hs.widthM, hs.depthM) / 2)) continue;
     const hgt = groundAt(hs.s, hs.d);
     if (hgt < floorM + 2 || steepness(hs.s, hs.d, hgt) > 0.45) continue;
     const [x, y, z, roadYaw] = local(hs.s, hs.d, hgt);
@@ -978,7 +1000,7 @@ function placeTownObjects(st, town, floorM, { groundAt, local }) {
 
 const _sun = new THREE.Vector3();
 
-function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM) {
+function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors) {
   const { L, elev } = st;
   const dist = distanceKm * 1000;
   if (st.anchorS === null || Math.abs(dist - st.anchorS) > REBUILD_M) {
@@ -1024,10 +1046,18 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM) {
   const roll = riderRollRad(st.curve ? curvatureAtM(st.curve, st.loopM, dist) : 0, speedKmh / 3.6);
   updateRiderAvatar(st.rider, st.clock, speedKmh, pitch, roll);
   updateOthers(st, others, dist);
+  updateActors(st, actors, dist);
   updateCamera(st, dist, { speedKmh, cadenceRpm, roll, riderX });
 
   // 走行環境の補間と雨粒(カメラ位置を使うのでカメラの後)
   st.env.update();
+  // 遠景は空と同じだけ回し、麓を湖面の高さに置く。色は走行環境を反映した後の光・フォグから決める
+  if (st.backdrop) {
+    st.backdrop.update({
+      skyHeading, baseY: st.water.position.y, sunDir: st.env.sunDir,
+      hemiLight: st.hemiLight, sunLight: st.sunLight, fog: st.scene.fog,
+    });
+  }
   st.renderer.render(st.scene, st.camera);
 }
 
@@ -1059,6 +1089,59 @@ function updateOthers(st, others, dist) {
   const { pack, ghosts, labels } = st.others.stats;
   const tag = `${pack}/${ghosts}/${labels}`;
   if (st.canvas.dataset.others !== tag) st.canvas.dataset.others = tag;
+}
+
+/**
+ * 沿道のハプニング・名所の配置関数(他のライダーの place と同じ形。傾き roll は使わない)。
+ * inner(アンカー基準の座標)に置く。五重塔のように道路から離れた物は placeAt で地形の格子に合わせる。
+ */
+function actorPlacer(st) {
+  return function placeActor(gapM, lateralM, speedMps, out) {
+    const { elev, placement } = st;
+    const s = st.actorDist + gapM;
+    const p = (placement.placeAt ?? placement.place)(s, lateralM);
+    out.x = p.x;
+    out.z = p.z;
+    out.yaw = p.yaw;
+    out.y = elev.elevAt(s) - st.anchorElev;
+    out.pitch = Math.atan((elev.elevAt(s + 1.5) - elev.elevAt(s - 1.5)) / 3);
+    out.roll = 0;
+    return out;
+  };
+}
+
+/** 沿道のハプニング・名所を inner に置く。地面は山側の斜面・湖側の下り斜面に合わせる。 */
+function updateActors(st, actors, dist) {
+  st.actorDist = dist;
+  st.actors.update(actors, dist, {
+    place: st.actorPlace,
+    groundAboveRoadM: st.actorGround,
+    roadHalfWidthM: st.L.roadHalfWidthM,
+    dt: st.rider.dt ?? 0,
+    qualityIndex: st.qualityIndex ?? 0,
+    // 他のライダーと同じく、道路のある所(組み直しのアンカーの後方 NEAR_BEHIND_M)まで
+    behindM: dist - (st.anchorS - NEAR_BEHIND_M),
+  });
+  const tag = String(st.actors.stats.count);
+  if (st.canvas.dataset.actors !== tag) st.canvas.dataset.actors = tag;
+}
+
+/**
+ * 道路上の地点 (s, d) の地面の、路面からの高さ(m、負なら路面より低い)。車道・路肩は 0、
+ * 熱海の遊歩道・歩道は舗装の帯の高さ、水面より低い所は水面の高さとする。
+ */
+function groundOffsetM(st, s, d) {
+  const { L } = st;
+  const edge = roadEdgeM(L);
+  const a = Math.abs(d);
+  if (a <= edge) return 0;
+  if (st.town) {
+    const u = a - edge;
+    if (d < 0 ? u <= L.town.promenadeM : u <= L.town.sidewalkM) return 0.15;
+  }
+  const roadE = st.elev.elevAt(s);
+  const floorM = st.floor.floorAt(s);
+  return Math.max(floorM, terrainHeightM(L, d, s, roadE, floorM)) - roadE;
 }
 
 function updateCamera(st, dist, { speedKmh, cadenceRpm, roll, riderX }) {
