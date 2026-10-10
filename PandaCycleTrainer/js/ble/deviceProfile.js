@@ -26,6 +26,9 @@ export const DeviceProfile = {
   COMMAND_RETRY_DELAY_MS: 300,
   // indicate応答を待つタイムアウト。
   COMMAND_RESPONSE_TIMEOUT_MS: 4000,
+  // TODO(要実機確認): Start or Resume の直後や、初回の負荷設定に失敗して制御権を取り直す前に
+  // 置く待ち時間(ms)。直後の Simulation Parameters を一時的に拒否する機種があるため。
+  START_SETTLE_DELAY_MS: 400,
 
   // Indoor Bike Simulation Parametersに送る固定定数。
   // 屋内走行のため風速は常に0とする。

@@ -54,6 +54,12 @@ export class FtmsClient extends EventTarget {
     });
 
     this._onDisconnected = this._onDisconnected.bind(this);
+    this._onIndoorBikeData = (ev) => {
+      this._emit('bike-data', this._parseIndoorBikeData(ev.target.value));
+    };
+    this._onControlPointResponse = (ev) => {
+      this._handleControlPointResponse(ev.target.value);
+    };
   }
 
   _emit(type, detail) {
@@ -84,6 +90,16 @@ export class FtmsClient extends EventTarget {
     });
 
     this.device.addEventListener('gattserverdisconnected', this._onDisconnected);
+    try {
+      return await this._setUpConnection();
+    } catch (err) {
+      // 途中で失敗したら GATT 接続を残さない(半端な接続のまま次の接続を始めないため)
+      await this.disconnect();
+      throw err;
+    }
+  }
+
+  async _setUpConnection() {
 
     this.server = await this.device.gatt.connect();
     const ftmsService = await this.server.getPrimaryService(C.FTMS_SERVICE);
@@ -102,7 +118,6 @@ export class FtmsClient extends EventTarget {
 
     this.controlMode = this._decideControlMode(this.supportedFeatures);
     if (this.controlMode === 'unsupported') {
-      await this.disconnect();
       throw new Error(
         'このトレーナーはSimulation Mode/ERGモードのいずれにも対応していないため、本アプリの対象外です。'
       );
@@ -111,43 +126,35 @@ export class FtmsClient extends EventTarget {
     // Indoor Bike Data の購読
     this.indoorBikeDataChar = await ftmsService.getCharacteristic(C.CHAR_INDOOR_BIKE_DATA);
     await this.indoorBikeDataChar.startNotifications();
-    this.indoorBikeDataChar.addEventListener('characteristicvaluechanged', (ev) => {
-      const sample = this._parseIndoorBikeData(ev.target.value);
-      this._emit('bike-data', sample);
-    });
+    this.indoorBikeDataChar.addEventListener('characteristicvaluechanged', this._onIndoorBikeData);
 
     // Control Point の購読 (indicateで応答を受け取る)
     this.controlPointChar = await ftmsService.getCharacteristic(C.CHAR_FTMS_CONTROL_POINT);
     await this.controlPointChar.startNotifications();
-    this.controlPointChar.addEventListener('characteristicvaluechanged', (ev) => {
-      this._handleControlPointResponse(ev.target.value);
-    });
+    this.controlPointChar.addEventListener('characteristicvaluechanged', this._onControlPointResponse);
 
     // 接続確立シーケンス: Request Control -> Start or Resume -> 初回パラメータ
     await this.queue.enqueue(() => this._requestControl(), { name: 'request-control' });
     await this.queue.enqueue(() => this._startOrResume(), { name: 'start-or-resume' });
+    await delay(DeviceProfile.START_SETTLE_DELAY_MS);
 
-    // Simulation Mode優先で初回パラメータを送信し、拒否された場合はERGへフォールバックする。
+    // Simulation Mode優先で初回パラメータを送信し、非対応なら ERG へフォールバックする。
     // Basic Resistance Modeのみの機種は、ERGも拒否されるため最終的にunsupportedとして扱う。
+    // 「非対応」と判断するのは OpCode非対応(0x02)の応答だけ。タイムアウト・Operation Failed・
+    // Control Not Permitted などは一時的な失敗なので、制御権を取り直して同じモードでやり直す
+    // (以前は一時的な失敗でも ERG へ移り、ERG 非対応の機種で「対象外」と誤表示していた)。
     if (this.controlMode === 'simulation') {
-      try {
-        await this.queue.enqueue(() => this._sendSimulationParams(0), { name: 'initial-sim' });
-        this.lastSentGradePercent = 0;
-      } catch (e) {
+      const err = await this._sendInitialTarget('simulation');
+      if (err) {
+        if (!isOpNotSupported(err)) throw connectRetryError(err);
+        if (this.supportedFeatures && !this.supportedFeatures.powerTargetSupported) throw unsupportedError();
         this._emit('warning', { message: 'Simulation Modeが拒否されたため、ERGモードにフォールバックします。' });
         this.controlMode = 'erg';
       }
     }
     if (this.controlMode === 'erg') {
-      try {
-        await this.queue.enqueue(() => this._sendErgTarget(0), { name: 'initial-erg' });
-        this.lastSentErgWatts = 0;
-      } catch (e) {
-        await this.disconnect();
-        throw new Error(
-          'このトレーナーはSimulation Mode/ERGモードのいずれにも対応していないため(Basic Resistance Modeのみの可能性があります)、本アプリの対象外です。'
-        );
-      }
+      const err = await this._sendInitialTarget('erg');
+      if (err) throw isOpNotSupported(err) ? unsupportedError() : connectRetryError(err);
     }
     this._emit('control-mode', { mode: this.controlMode });
 
@@ -156,8 +163,46 @@ export class FtmsClient extends EventTarget {
     return { deviceName: this.device.name, controlMode: this.controlMode };
   }
 
+  /**
+   * 接続直後の初回目標値(勾配0% / 0W)を送る。一時的な失敗なら Request Control →
+   * Start or Resume からもう一度だけやり直す。成功なら null、失敗ならその最後のエラーを返す。
+   */
+  async _sendInitialTarget(mode) {
+    const send = () => (mode === 'simulation'
+      ? this.queue.enqueue(() => this._sendSimulationParams(0), { name: 'initial-sim' })
+      : this.queue.enqueue(() => this._sendErgTarget(0), { name: 'initial-erg' }));
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        this._emit('warning', { message: `初回の負荷設定に失敗したため(${lastErr?.message})、制御権を取り直して再試行します。` });
+        await delay(DeviceProfile.START_SETTLE_DELAY_MS);
+        try {
+          await this.queue.enqueue(() => this._requestControl(), { name: 'request-control' });
+          await this.queue.enqueue(() => this._startOrResume(), { name: 'start-or-resume' });
+          await delay(DeviceProfile.START_SETTLE_DELAY_MS);
+        } catch (e) {
+          // 制御権の取り直しの失敗は初回の負荷設定の失敗の原因ではないので、元のエラーを返す
+          return lastErr;
+        }
+      }
+      try {
+        await send();
+        if (mode === 'simulation') this.lastSentGradePercent = 0;
+        else this.lastSentErgWatts = 0;
+        return null;
+      } catch (e) {
+        lastErr = e;
+        if (isOpNotSupported(e)) return e;
+      }
+    }
+    return lastErr;
+  }
+
   async disconnect() {
     this.queue.clear();
+    // 同じ BluetoothDevice へ再接続したとき、同じ特性オブジェクトにリスナーが重複しないよう外す
+    this.indoorBikeDataChar?.removeEventListener('characteristicvaluechanged', this._onIndoorBikeData);
+    this.controlPointChar?.removeEventListener('characteristicvaluechanged', this._onControlPointResponse);
     try {
       if (this.device?.gatt?.connected) {
         this.device.gatt.disconnect();
@@ -251,7 +296,9 @@ export class FtmsClient extends EventTarget {
     if (resultCode === C.RESULT_SUCCESS) {
       pending.resolve(resultCode);
     } else {
-      pending.reject(new Error(`Control Point失敗 opcode=0x${requestOp.toString(16)} result=0x${resultCode.toString(16)}`));
+      const err = new Error(`Control Point失敗 opcode=0x${requestOp.toString(16)} result=0x${resultCode.toString(16)}`);
+      err.resultCode = resultCode;
+      pending.reject(err);
     }
   }
 
@@ -532,4 +579,34 @@ function validateSample(sample, lastValid) {
     out.heartRateBpm = null;
   }
   return out;
+}
+
+/** Control Point の応答が「OpCode非対応」(そのモードを持たない機種)だったか。 */
+function isOpNotSupported(err) {
+  return err?.resultCode === C.RESULT_OP_NOT_SUPPORTED;
+}
+
+function unsupportedError() {
+  return new Error(
+    'このトレーナーはSimulation Mode/ERGモードのいずれにも対応していないため(Basic Resistance Modeのみの可能性があります)、本アプリの対象外です。'
+  );
+}
+
+/** 一時的な失敗(応答タイムアウト・Operation Failed など)。対象外ではないので再接続を促す。 */
+function connectRetryError(err) {
+  const reason = RESULT_REASONS[err?.resultCode] ?? (/タイムアウト/.test(err?.message ?? '') ? '応答がありません' : err?.message);
+  return new Error(
+    `トレーナーが負荷設定を受け付けませんでした(${reason ?? '原因不明'})。` +
+    'トレーナーが他のアプリ(スマートフォンのアプリなど)と接続していないか確認し、もう一度接続してください。'
+  );
+}
+
+const RESULT_REASONS = {
+  [C.RESULT_INVALID_PARAMETER]: '無効なパラメータ',
+  [C.RESULT_OPERATION_FAILED]: '処理に失敗',
+  [C.RESULT_CONTROL_NOT_PERMITTED]: '制御が許可されていません',
+};
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
