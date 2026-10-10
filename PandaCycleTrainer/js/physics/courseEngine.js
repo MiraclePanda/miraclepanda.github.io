@@ -4,6 +4,10 @@
 //  - 入力距離がプロファイルより短ければ先頭から切り出し
 //  - 長ければプロファイルをループさせる
 //  - ループ境界の不連続はクロスフェードで緩和する
+//  - ただし fixedLength のコース(GPX の実在コース)はループしない。コースの外側は
+//    始点より手前 = 始点の勾配、終点より先 = 平坦(0%)として扱う。走行距離はコース長以下に
+//    制限されるので物理には効かず、3D 表示が終点の先・始点の手前を描くときにだけ使われる
+//    (ループさせると終点の先に始点の起伏が現れてしまうため)。
 
 export class CourseEngine {
   /**
@@ -25,10 +29,17 @@ export class CourseEngine {
 
   /** 指定した走行距離(km)における勾配(%)を返す。 */
   gradeAtKm(distanceKm) {
+    if (this.profile.fixedLength) return this._gradeFixed(distanceKm);
     const L = this.profile.loopLengthKm;
     let m = distanceKm % L;
     if (m < 0) m += L;
     return this._gradeInLoop(m);
+  }
+
+  /** ループしないコースの勾配(%)。始点より手前は始点の勾配、終点より先は 0%。 */
+  _gradeFixed(km) {
+    if (km > this.profile.loopLengthKm) return 0;
+    return interpolate(this.profile.points, km);
   }
 
   /** 1周内の位置 m(0〜L km)における勾配(%)。gradeAtKm とループ積分の共通部分。 */
@@ -57,6 +68,13 @@ export class CourseEngine {
     if (!Number.isFinite(fromKm) || !Number.isFinite(toKm) || fromKm === toKm) return 0;
     if (fromKm > toKm) return -this.elevationDeltaM(toKm, fromKm);
     const L = this.profile.loopLengthKm;
+    if (this.profile.fixedLength) {
+      // 始点より手前は始点の勾配一定、終点より先は平坦(_gradeFixed と同じ扱い)
+      const before = Math.max(0, Math.min(toKm, 0) - fromKm) * interpolate(this.profile.points, 0);
+      const a = Math.max(fromKm, 0);
+      const b = Math.min(toKm, L);
+      return (before + (b > a ? this._integrateInLoop(a, b) : 0)) * 10;
+    }
     const firstLoop = Math.floor(fromKm / L);
     const lastLoop = Math.floor(toKm / L);
     const a = fromKm - firstLoop * L;
@@ -113,13 +131,17 @@ function interpolate(points, km) {
   if (km <= points[0][0]) return points[0][1];
   const last = points[points.length - 1];
   if (km >= last[0]) return last[1];
-  for (let i = 0; i < points.length - 1; i++) {
-    const [k0, g0] = points[i];
-    const [k1, g1] = points[i + 1];
-    if (km >= k0 && km <= k1) {
-      const t = k1 === k0 ? 0 : (km - k0) / (k1 - k0);
-      return g0 + (g1 - g0) * t;
-    }
+  // 二分探索で km を含む区間 [lo, lo+1] を探す(GPX の実在コースは制御点が数百〜千点になるため)。
+  // 同じ km の制御点が並ぶ(勾配の段差)ときは、従来の線形走査と同じく手前の点の値を返す。
+  let lo = 0;
+  let hi = points.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid][0] < km) lo = mid;
+    else hi = mid;
   }
-  return last[1];
+  const [k0, g0] = points[lo];
+  const [k1, g1] = points[hi];
+  const t = k1 === k0 ? 0 : (km - k0) / (k1 - k0);
+  return g0 + (g1 - g0) * t;
 }

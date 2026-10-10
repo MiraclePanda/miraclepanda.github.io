@@ -58,7 +58,8 @@ export function App() {
 
   const handleStart = useCallback((config) => {
     savePrefs({
-      distanceKm: config.distanceKm,
+      // 実在コースの走行距離(コース全長)は組み込みコース用の前回値として残さない
+      distanceKm: config.courseProfile?.fixedLength ? loadPrefs().distanceKm : config.distanceKm,
       weightKg: config.weightKg,
       bikeWeightKg: config.bikeWeightKg,
       crr: config.crr,
@@ -72,7 +73,8 @@ export function App() {
     ftmsClientRef.current.tryWriteUserWeight(config.weightKg).catch(() => {});
     setSessionConfig({
       ...config,
-      courseProfile: getCourseProfile(config.courseId),
+      // GPX の実在コースはセットアップ画面が profile ごと渡す
+      courseProfile: config.courseProfile ?? getCourseProfile(config.courseId),
     });
     setScreen('riding');
   }, []);
@@ -81,7 +83,8 @@ export function App() {
   const handleDemo = useCallback((config) => {
     setSessionConfig({
       ...config,
-      courseProfile: getCourseProfile(config.courseId),
+      // GPX の実在コースはセットアップ画面が profile ごと渡す
+      courseProfile: config.courseProfile ?? getCourseProfile(config.courseId),
       demo: true,
     });
     setScreen('riding');

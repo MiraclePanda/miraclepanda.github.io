@@ -331,7 +331,7 @@ function initScene(canvas, courseEngine, L, vehicle) {
 
   const elev = createElevationSampler((km) => courseEngine.gradeAtKm(km));
   const loopM = courseEngine.profile.loopLengthKm * 1000;
-  const floor = createFloorModel(elev, loopM, L.valley.minDropM);
+  const floor = createFloorModel(elev, loopM, L.valley.minDropM, { fixedLength: !!courseEngine.profile.fixedLength });
   const curve = courseEngine.profile.curve;
 
   return {

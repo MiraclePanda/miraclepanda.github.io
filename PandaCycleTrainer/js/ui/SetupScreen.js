@@ -1,6 +1,10 @@
-import { h, useState, useEffect, useMemo } from './h.js';
+import { h, useState, useEffect, useMemo, useRef } from './h.js';
+import { ConfirmDialog } from './Modal.js';
 import { COURSE_PROFILES } from '../physics/courseProfiles.js';
 import { PhysicsConstants } from '../physics/physicsConstants.js';
+import { buildRealCourse, suggestScenery } from '../physics/realCourse.js';
+import { CourseEngine } from '../physics/courseEngine.js';
+import { parseGpx } from '../storage/gpx.js';
 import {
   validateWeight,
   validateBikeWeight,
@@ -8,6 +12,7 @@ import {
   validateCrr,
   validateCda,
   validateFtp,
+  maxDistanceForCourse,
   LIMITS,
 } from '../utils/validation.js';
 import {
@@ -22,7 +27,7 @@ import {
   PB_GHOST_ID,
   MAX_GHOSTS,
 } from '../storage/prefs.js';
-import { getAllRides } from '../storage/db.js';
+import { getAllRides, getAllCourses, saveCourse, deleteCourse, updateCourseScenery } from '../storage/db.js';
 import { bestRecordFor, fromRecord } from '../storage/ghostTrack.js';
 import { GHOST_COLORS } from './ghostRace.js';
 import { TIME_OPTIONS, WEATHER_OPTIONS, supportsWeather } from './rideOptions.js';
@@ -33,6 +38,8 @@ import { TIME_OPTIONS, WEATHER_OPTIONS, supportsWeather } from './rideOptions.js
  * デバイス接続は任意の順序で実施可能。両方揃った時点で「開始」ボタンが活性化する」に対応。
  * 走行距離・体重・自転車重量・詳細設定(Crr/CdA/FTP)は前回値(prefs.js)を初期値にする。
  * 景観(時間帯・天候)は選んだ時点で保存する(描画品質と同じく、走行開始を待たない)。
+ * ③ コース選択では GPX ファイルから実在コースを読み込める(IndexedDB に保存し、次回以降も選べる)。
+ * 実在コースはループしないため、走行距離はコース全長以下に制限し、選んだ時点で全長を入れる。
  */
 export function SetupScreen({
   initialDistanceKm,
@@ -53,17 +60,31 @@ export function SetupScreen({
   const [weightKg, setWeightKg] = useState(initialWeightKg ?? '');
   const [bikeWeightKg, setBikeWeightKg] = useState(initialBikeWeightKg ?? '');
   const [courseId, setCourseId] = useState(COURSE_PROFILES[0].id);
+  // GPX から読み込んだ実在コース(db.js のレコード)。読み込み中は null。
+  const [savedCourses, setSavedCourses] = useState(null);
+  const [gpxMessage, setGpxMessage] = useState(null); // { error: boolean, text }
+  const [gpxBusy, setGpxBusy] = useState(false);
+  const [gpxFileKey, setGpxFileKey] = useState(0); // 読み込み後にファイル選択欄を空に戻すため
+  const allCourses = useMemo(
+    () => [...COURSE_PROFILES, ...(savedCourses ?? []).map((r) => r.profile)],
+    [savedCourses]
+  );
   const [loadRatioPercent, setLoadRatioPercent] = useState(100);
   const [vehicle, setVehicle] = useState(initialVehicle ?? 'bike');
   // コースで乗り物が固定されている場合(上野不忍池=スワンボート)。ユーザーの選択(vehicle)は
   // 変えずに残し、他のコースへ切り替えたら元の選択に戻る。
-  const fixedVehicle = COURSE_PROFILES.find((c) => c.id === courseId)?.fixedVehicle ?? null;
+  const fixedVehicle = allCourses.find((c) => c.id === courseId)?.fixedVehicle ?? null;
   const effectiveVehicle = fixedVehicle ?? vehicle;
   const [crr, setCrr] = useState(initialCrr ?? PhysicsConstants.CRR);
   const [cdaM2, setCdaM2] = useState(initialCdaM2 ?? PhysicsConstants.CDA);
   const [ftpW, setFtpW] = useState(initialFtpW ?? DEFAULT_FTP_W);
   const [environment, setEnvironment] = useState(loadEnvironment);
-  const courseProfile = COURSE_PROFILES.find((c) => c.id === courseId);
+  const courseProfile = allCourses.find((c) => c.id === courseId) ?? COURSE_PROFILES[0];
+  const maxDistanceKm = courseProfile.fixedLength ? maxDistanceForCourse(courseProfile.loopLengthKm) : undefined;
+  // 実在コースを選ぶ前に入っていた走行距離。組み込みコースへ戻したら元に戻す
+  // (実在コースの全長を、組み込みコース用の前回値として残さないため)。
+  const builtinDistanceRef = useRef(null);
+  const [pendingDelete, setPendingDelete] = useState(null); // 削除確認中のレコード
   // ゴースト対戦: 過去の記録(自己ベストの候補)と、読み込んだ友人のゴースト(コース一致のみ)
   const [rides, setRides] = useState(null);
   const [ghostSelection, setGhostSelection] = useState(loadGhostSelection);
@@ -71,15 +92,70 @@ export function SetupScreen({
   useEffect(() => {
     let alive = true;
     getAllRides().then((list) => alive && setRides(list)).catch(() => alive && setRides([]));
+    getAllCourses().then((list) => alive && setSavedCourses(list)).catch(() => alive && setSavedCourses([]));
     return () => { alive = false; };
   }, []);
+
+  const selectCourse = (c) => {
+    setCourseId(c.id);
+    if (c.fixedLength) {
+      // 実在コースは全長を走るのを基本にする(短くしたければ入力し直せる)
+      if (!courseProfile.fixedLength) builtinDistanceRef.current = distanceKm;
+      setDistanceKm(String(maxDistanceForCourse(c.loopLengthKm)));
+    } else if (courseProfile.fixedLength && builtinDistanceRef.current !== null) {
+      setDistanceKm(builtinDistanceRef.current);
+      builtinDistanceRef.current = null;
+    }
+  };
+
+  const handleGpxFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    setGpxMessage(null);
+    if (!file) return;
+    setGpxBusy(true);
+    try {
+      const gpx = parseGpx(await file.text());
+      const name = gpx.name || file.name.replace(/\.gpx$/i, '');
+      const { profile, stats } = buildRealCourse(gpx.points, { name });
+      const record = await saveCourse({ name: profile.name, fileName: file.name, profile, stats });
+      setSavedCourses((list) => [record, ...(list ?? [])]);
+      selectCourse(record.profile);
+      setGpxMessage({ error: false, text: `「${record.name}」を読み込みました。` });
+    } catch (err) {
+      setGpxMessage({ error: true, text: `GPX ファイルを読み込めませんでした: ${err.message ?? err}` });
+    } finally {
+      setGpxBusy(false);
+      setGpxFileKey((k) => k + 1);
+    }
+  };
+
+  const handleSceneryChange = async (record, scenery) => {
+    try {
+      const updated = await updateCourseScenery(record.id, scenery);
+      setSavedCourses((list) => (list ?? []).map((r) => (r.id === updated.id ? updated : r)));
+    } catch (err) {
+      setGpxMessage({ error: true, text: `景色を変更できませんでした: ${err.message ?? err}` });
+    }
+  };
+
+  const handleDeleteCourse = async (record) => {
+    try {
+      await deleteCourse(record.id);
+    } catch (err) {
+      setGpxMessage({ error: true, text: `削除できませんでした: ${err.message ?? err}` });
+      return;
+    }
+    setSavedCourses((list) => (list ?? []).filter((r) => r.id !== record.id));
+    if (courseId === record.profile.id) selectCourse(COURSE_PROFILES[0]);
+    setGpxMessage(null);
+  };
   const changeEnvironment = (patch) => {
     const next = { ...environment, ...patch };
     setEnvironment(next);
     saveEnvironment(next);
   };
 
-  const distanceCheck = validateDistance(distanceKm);
+  const distanceCheck = validateDistance(distanceKm, maxDistanceKm);
   const weightCheck = validateWeight(weightKg);
   const bikeWeightCheck = validateBikeWeight(bikeWeightKg);
   const crrCheck = validateCrr(crr);
@@ -134,6 +210,7 @@ export function SetupScreen({
     weightKg: Number(weightKg),
     bikeWeightKg: Number(bikeWeightKg),
     courseId,
+    courseProfile,
     loadRatioPercent,
     vehicle: effectiveVehicle,
     preferredVehicle: vehicle, // 記憶するのはユーザー自身の選択
@@ -191,13 +268,16 @@ export function SetupScreen({
       h('h2', null, '② 走行設定'),
       h(
         'label', { className: 'field' },
-        h('span', null, `走行距離 (km) — ${LIMITS.distanceKm.min}〜${LIMITS.distanceKm.max}`),
+        h('span', null, maxDistanceKm === undefined
+          ? `走行距離 (km) — ${LIMITS.distanceKm.min}〜${LIMITS.distanceKm.max}`
+          : `走行距離 (km) — ${LIMITS.distanceKm.min}〜${maxDistanceKm}(コース全長)`),
         h('input', {
           type: 'number',
           inputMode: 'decimal',
+          'aria-label': '走行距離',
           min: LIMITS.distanceKm.min,
-          max: LIMITS.distanceKm.max,
-          step: '0.1',
+          max: maxDistanceKm ?? LIMITS.distanceKm.max,
+          step: maxDistanceKm === undefined ? '0.1' : 'any',
           value: distanceKm,
           onChange: (e) => setDistanceKm(e.target.value),
           placeholder: '例: 20',
@@ -337,11 +417,69 @@ export function SetupScreen({
               name: 'course',
               value: c.id,
               checked: courseId === c.id,
-              onChange: () => setCourseId(c.id),
+              onChange: () => selectCourse(c),
             }),
             h('div', null, h('strong', null, c.name), h('p', { className: 'muted small' }, c.description))
           )
+        ),
+        (savedCourses ?? []).map((r) =>
+          h(
+            'div', { key: r.profile.id, className: `course-option gpx-course ${courseId === r.profile.id ? 'selected' : ''}` },
+            h(
+              'label', { className: 'gpx-course-main' },
+              h('input', {
+                type: 'radio',
+                name: 'course',
+                value: r.profile.id,
+                checked: courseId === r.profile.id,
+                onChange: () => selectCourse(r.profile),
+              }),
+              h(
+                'div', null,
+                h('strong', null, r.name, h('span', { className: 'gpx-badge' }, '実在コース')),
+                h('p', { className: 'muted small' }, gpxStatsLine(r.stats)),
+                h(ElevationChart, { profile: r.profile })
+              )
+            ),
+            h('button', {
+              type: 'button',
+              className: 'btn btn-secondary btn-small',
+              onClick: () => setPendingDelete(r),
+              'aria-label': `${r.name}を削除`,
+            }, '削除'),
+            // 景色は選択中のコースだけ変更できる(ラベルの入れ子を避けるため main の外に置く)
+            courseId === r.profile.id &&
+              h(
+                'div', { className: 'gpx-scenery' },
+                segmented(
+                  '景色',
+                  `scenery-${r.id}`,
+                  GPX_SCENERY_OPTIONS.map((o) => ({ ...o, label: o.id === suggestScenery(r.stats) ? `${o.label}(おすすめ)` : o.label })),
+                  r.profile.scenery,
+                  (id) => handleSceneryChange(r, id)
+                )
+              )
+          )
         )
+      ),
+      h(
+        'div', { className: 'gpx-import' },
+        h(
+          'label', { className: 'field' },
+          h('span', null, '実在コースを GPX ファイルから読み込む'),
+          h('input', {
+            key: gpxFileKey,
+            type: 'file',
+            accept: '.gpx,application/gpx+xml,application/xml,text/xml',
+            disabled: gpxBusy,
+            onChange: handleGpxFile,
+            'aria-label': 'GPX ファイル',
+          })
+        ),
+        gpxMessage && h('p', { className: gpxMessage.error ? 'error-text' : 'muted small' }, gpxMessage.text),
+        h('p', { className: 'muted small' },
+          'Strava・RideWithGPS・Garmin Connect などで作成・書き出したルートの GPX を使えます。勾配は GPX の標高から計算し、景色は起伏に合わせて街並み・湖畔・山岳から自動で選ばれ、コースを選ぶと変更できます。',
+          '実在コースはループしないため、走行距離はコース全長までです。位置情報は勾配と道の曲がり方の計算にだけ使い、走行記録や TCX には含めません。')
       )
     ),
 
@@ -435,7 +573,58 @@ export function SetupScreen({
       !canStart && h('p', { className: 'muted small' }, '入力内容とデバイス接続が両方完了すると開始できます。'),
       h('p', { className: 'muted small' }, 'デモはトレーナーに接続せず、選んだ設定・コース・オプションで自動走行します(走行記録は保存されません)。'),
       h('button', { className: 'btn btn-link', onClick: onOpenHistory }, '過去の走行記録を見る')
-    )
+    ),
+
+    pendingDelete &&
+      h(ConfirmDialog, {
+        title: `「${pendingDelete.name}」を削除しますか？`,
+        message: '同じ GPX を読み込み直しても別のコースとして扱われ、このコースで走った記録は自己ベストのゴーストに使えなくなります(走行記録自体は残ります)。',
+        confirmLabel: '削除する',
+        cancelLabel: 'キャンセル',
+        danger: true,
+        onConfirm: () => {
+          const r = pendingDelete;
+          setPendingDelete(null);
+          handleDeleteCourse(r);
+        },
+        onCancel: () => setPendingDelete(null),
+      })
+  );
+}
+
+/** 実在コースの集計の1行表示。 */
+function gpxStatsLine(stats) {
+  const km = `${stats.distanceKm.toFixed(2)} km`;
+  if (!stats.hasElevation) return `${km} ・ 標高データなし(平坦として走ります)`;
+  return `${km} ・ 獲得標高 ${Math.round(stats.ascentM)} m ・ 最大勾配 ${stats.maxGradePercent.toFixed(1)}%`;
+}
+
+// 実在コースで選べる景色。熱海・上野は専用の地形・周回ルートを持つので対象外。
+const GPX_SCENERY_OPTIONS = [
+  { id: 'city', label: '街並み' },
+  { id: 'lakeside', label: '湖畔' },
+  { id: 'mountain', label: '山岳' },
+];
+
+const CHART_W = 280;
+const CHART_H = 56;
+
+/** 実在コースの標高断面(勾配プロファイルを積分した形。走行中の勾配と同じもの)。 */
+function ElevationChart({ profile }) {
+  const path = useMemo(() => {
+    const engine = new CourseEngine(profile, profile.loopLengthKm);
+    const L = profile.loopLengthKm;
+    const n = 100;
+    const elev = [0];
+    for (let i = 1; i <= n; i++) elev.push(elev[i - 1] + engine.elevationDeltaM(((i - 1) / n) * L, (i / n) * L));
+    const min = Math.min(...elev);
+    const range = Math.max(Math.max(...elev) - min, 20); // 平坦なコースが大きく波打って見えないよう最低20m幅
+    const pts = elev.map((e, i) => `${((i / n) * CHART_W).toFixed(1)},${(CHART_H - 2 - ((e - min) / range) * (CHART_H - 6)).toFixed(1)}`);
+    return `M0,${CHART_H} L${pts.join(' L')} L${CHART_W},${CHART_H} Z`;
+  }, [profile]);
+  return h(
+    'svg', { className: 'elevation-chart', viewBox: `0 0 ${CHART_W} ${CHART_H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': '標高断面' },
+    h('path', { d: path })
   );
 }
 

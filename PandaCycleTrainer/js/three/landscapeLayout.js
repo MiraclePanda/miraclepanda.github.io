@@ -224,8 +224,11 @@ export function createElevationSampler(gradeAtKm, stepM = 4) {
  * 1周分の起伏(トレンドからの偏差)の最小値からさらに minDropM 下に置く。
  * これで道路は常に水面/谷底より minDropM 以上高く、かつ水面は周回を重ねても
  * 道路からどんどん離れていかない。
+ * opts.fixedLength(ループしない GPX の実在コース)では、終点より先は道路が平坦になるので
+ * 水面/谷底も終点の高さで止める(トレンドのまま上り続けると道路が水没する)。
  */
-export function createFloorModel(sampler, loopLengthM, minDropM) {
+export function createFloorModel(sampler, loopLengthM, minDropM, opts = {}) {
+  const clampEnd = !!opts.fixedLength;
   const loopRise = sampler.elevAt(loopLengthM);
   const ratePerM = loopRise / loopLengthM;
   let minDeviation = 0;
@@ -240,7 +243,8 @@ export function createFloorModel(sampler, loopLengthM, minDropM) {
     /** 道路と水面/谷底の最大の高低差(minDropM + 1周の起伏幅)。 */
     maxDropM: minDropM + (maxDeviation - minDeviation),
     floorAt(s) {
-      return ratePerM * s + minDeviation - minDropM;
+      const t = clampEnd ? Math.min(s, loopLengthM) : s;
+      return ratePerM * t + minDeviation - minDropM;
     },
   };
 }

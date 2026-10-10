@@ -310,15 +310,16 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       cityRef.current.draw(drawArgs);
     }
 
-    if (demo && courseEngine.isGoalReached(distanceKm)) {
-      // デモはゴールで止まらず、そのまま次の周回へ(自動走行を続ける)
+    if (demo && !courseProfile.fixedLength && courseEngine.isGoalReached(distanceKm)) {
+      // デモはゴールで止まらず、そのまま次の周回へ(自動走行を続ける)。
+      // ループしない実在コース(fixedLength)はデモでもゴールで止まる(下の分岐)。
       courseEngine.extendGoal();
       showToast({ kind: 'demoLap', kicker: 'デモ走行', title: 'ゴール！', sub: 'デモはそのまま次の周回を走ります。' });
     } else if (!goalHandledRef.current && courseEngine.isGoalReached(distanceKm)) {
       goalHandledRef.current = true;
       isRunningRef.current = false;
       goalPauseStartedAtRef.current = Date.now();
-      ftmsClient.pause();
+      if (!demo) ftmsClient.pause();
       setShowGoalDialog(true);
     }
   };
@@ -461,7 +462,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     try {
       await ftmsClient.connect();
       setShowReconnectDialog(false);
-      doResume();
+      // ゴールのダイアログ表示中は走行を再開しない(実在コースでは終点の先へ進んでしまう)
+      if (!goalHandledRef.current) doResume();
     } catch (err) {
       setReconnectError(err.message ?? String(err));
     } finally {
@@ -695,7 +697,16 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
         onCancel: () => setShowEndConfirm(false),
       }),
 
-    showGoalDialog &&
+    // 実在コース(fixedLength)はコース全長より先が無いので「続行」は出さない
+    showGoalDialog && courseProfile.fixedLength &&
+      h(ConfirmDialog, {
+        title: 'ゴールしました！',
+        message: demo ? 'コースを走り切りました。デモを終了します。' : 'コースを走り切りました。',
+        confirmLabel: demo ? 'セットアップに戻る' : 'リザルトを見る',
+        onConfirm: demo ? () => onExitDemo?.() : handleGoalFinish,
+      }),
+
+    showGoalDialog && !courseProfile.fixedLength &&
       h(ConfirmDialog, {
         title: 'ゴールしました！',
         message: '続けて走行しますか？',
