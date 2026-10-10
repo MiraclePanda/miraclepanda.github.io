@@ -88,7 +88,10 @@ function runBoth(opts) {
     const { powerW, dt } = inputAt(i);
     a.setCurrentPower(powerW);
     b.setCurrentPower(powerW);
-    outA.push({ ...a.step(dt), erg: a.computeErgTargetWatts() });
+    // コーナーの減速(GPX の実在コースのみ)は組み込みの勾配コースでは常に false。比較からは外す
+    const { cornerBraking, ...snapA } = a.step(dt);
+    assert.equal(cornerBraking, false);
+    outA.push({ ...snapA, erg: a.computeErgTargetWatts() });
     outB.push({ ...b.step(dt), erg: b.computeErgTargetWatts() });
   }
   return { outA, outB };

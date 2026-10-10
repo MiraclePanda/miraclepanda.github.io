@@ -57,15 +57,18 @@ export function App() {
   }, []);
 
   const handleStart = useCallback((config) => {
+    // セットアップ画面は変更した時点で保存しているが、開始した設定は念のためここでも保存する
     savePrefs({
       // 実在コースの走行距離(コース全長)は組み込みコース用の前回値として残さない
-      distanceKm: config.courseProfile?.fixedLength ? loadPrefs().distanceKm : config.distanceKm,
+      distanceKm: config.courseProfile?.fixedLength ? undefined : config.distanceKm,
       weightKg: config.weightKg,
       bikeWeightKg: config.bikeWeightKg,
       crr: config.crr,
       cdaM2: config.cdaM2,
       vehicle: config.preferredVehicle ?? config.vehicle,
       ftpW: config.ftpW,
+      courseId: config.courseId,
+      loadRatioPercent: config.loadRatioPercent,
     });
     // 詳細設定のCrr/CdAはSimulation Modeでトレーナーにも送る(物理演算側はRideScreenへ渡す)。
     ftmsClientRef.current.setSimulationCoefficients({ crr: config.crr, cdaM2: config.cdaM2 });
@@ -127,6 +130,8 @@ export function App() {
     initialCdaM2: prefs.cdaM2,
     initialVehicle: prefs.vehicle,
     initialFtpW: prefs.ftpW,
+    initialCourseId: prefs.courseId,
+    initialLoadRatioPercent: prefs.loadRatioPercent,
     deviceState,
     onConnectDevice: handleConnectDevice,
     onDisconnectDevice: handleDisconnectDevice,

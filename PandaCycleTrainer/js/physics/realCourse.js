@@ -6,8 +6,10 @@
 //  2. 標高を移動平均で平滑化する(GPS 標高の数m単位のノイズがそのまま勾配の暴れになるため)
 //  3. GRADE_STEP_M 区間ごとの平均勾配を区間中央の制御点 [km, %] にする
 //     (CourseEngine は制御点間を線形補間するので、積分した標高差が元の標高差とほぼ一致する)
-//  4. 平面上の進行方位から curve(方位の揺らぎのフーリエ級数、routeLayout.js 参照)を求める。
-//     curve は3D表示の見た目専用で、物理・勾配・距離・記録には使われない。
+//  4. 平面上の進行方位を RESAMPLE_M 間隔の表にして curve とする
+//     ({ type: 'table', stepM, headings }、routeLayout.js 参照)。交差点の直角コーナーやヘアピンも
+//     そのまま3D表示の道路になり、cornering.js がコーナー手前の減速にも使う。
+//     (2026-10 以前に読み込んだコースの curve はフーリエ級数で、減速はしない。)
 //
 // 実在コースはループしない: profile.fixedLength = true とし、走行距離(ゴール距離)は
 // コース長以下に制限する(ゴール後の続行・周回もしない。2026-10 ユーザー指示)。
@@ -17,18 +19,13 @@ export const GRADE_STEP_M = 100;
 // 標高の平滑化幅(m)。移動平均を2回かける(三角窓相当)。
 export const ELEVATION_SMOOTH_M = 60;
 // 方位の平滑化幅(m)。GPS の横ぶれによる細かな方位の振れを落とす。
-export const HEADING_SMOOTH_M = 40;
+// 広げすぎると直角コーナーが緩い弧になって減速が弱くなるので、数サンプル分にとどめる。
+export const HEADING_SMOOTH_M = 20;
 // ノイズ・データ欠落による非現実的な勾配の上限(%)。
 // トレーナーへ送る値はさらに deviceProfile.js の範囲でクランプされる。
 export const MAX_ABS_GRADE_PERCENT = 25;
 // 走行できる最短コース長(km)。
 export const MIN_COURSE_KM = 0.5;
-// curve の項数の目安: 何 m の波長までを再現するか。項数には上限を設ける
-// (headingAtM は毎フレーム多数回呼ばれるため)。
-export const CURVE_WAVELENGTH_M = 300;
-export const CURVE_MAX_TERMS = 60;
-// これより小さい振幅(度)の項は捨てる。
-export const CURVE_MIN_AMP_DEG = 0.5;
 
 const EARTH_RADIUS_M = 6371008.8;
 const DEG = Math.PI / 180;
@@ -68,7 +65,7 @@ export function buildRealCourse(trackPoints, opts = {}) {
 
   const points = gradePoints(samples.distM, smoothedEle, totalM);
   const stats = computeStats(totalM, smoothedEle, points, hasElevation);
-  const curve = fitCurve(samples, totalM);
+  const curve = headingTable(samples, totalM);
 
   const name = (opts.name || '').trim() || '実在コース';
   const profile = {
@@ -232,54 +229,41 @@ function computeStats(totalM, ele, points, hasElevation) {
 }
 
 /**
- * 進行方位(rad、東=0・反時計回り=正 = 左へ曲がる向き)から curve を求める。
- * 1周で方位が元に戻るフーリエ級数しか表せないため、始点→終点の正味の方位変化は
- * 直線トレンドとして取り除き、残りの揺らぎだけを近似する(見た目は局所的な曲がり方が
- * 合っていれば十分で、正味の旋回は数百 m の表示範囲ではごく緩い一定曲率にすぎない)。
+ * 進行方位(rad、東=0・反時計回り=正 = 左へ曲がる向き)を、距離 i·RESAMPLE_M ごとの表にする。
+ * 始点の方位を 0 とした累積方位(2π の飛びは外して連続にする)。
  */
-function fitCurve(samples, totalM) {
-  const n = samples.x.length - 1;
-  if (n < 2) return [];
-  const raw = [];
+function headingTable(samples, totalM) {
+  const n = samples.x.length - 1; // 区間の数
+  const seg = [];
   for (let i = 0; i < n; i++) {
-    const dx = samples.x[i + 1] - samples.x[i];
-    const dy = samples.y[i + 1] - samples.y[i];
-    raw.push(Math.atan2(dy, dx));
+    seg.push(Math.atan2(samples.y[i + 1] - samples.y[i], samples.x[i + 1] - samples.x[i]));
   }
-  // 連続になるよう 2π の飛びを外す
-  for (let i = 1; i < raw.length; i++) {
-    while (raw[i] - raw[i - 1] > Math.PI) raw[i] -= 2 * Math.PI;
-    while (raw[i] - raw[i - 1] < -Math.PI) raw[i] += 2 * Math.PI;
+  for (let i = 1; i < seg.length; i++) {
+    while (seg[i] - seg[i - 1] > Math.PI) seg[i] -= 2 * Math.PI;
+    while (seg[i] - seg[i - 1] < -Math.PI) seg[i] += 2 * Math.PI;
   }
-  const h = movingAverage(raw, HEADING_SMOOTH_M / RESAMPLE_M);
-  // 区間中央の距離と、方位(始点基準・トレンド除去)
-  const s = [];
-  const v = [];
-  const net = h[h.length - 1] - h[0];
-  for (let i = 0; i < n; i++) {
-    const m = (samples.distM[i] + samples.distM[i + 1]) / 2;
-    s.push(m);
-    v.push(h[i] - h[0] - (net * m) / totalM);
+  const smooth = movingAverage(seg, HEADING_SMOOTH_M / RESAMPLE_M);
+  // 点 i の方位 = 前後の区間の平均(端は片側)。点 i の距離は samples.distM[i]。
+  const atPoint = samples.distM.map((_, i) => {
+    if (i === 0) return smooth[0];
+    if (i === n) return smooth[n - 1];
+    return (smooth[i - 1] + smooth[i]) / 2;
+  });
+  const count = Math.floor(totalM / RESAMPLE_M + 1e-9) + 1;
+  const headings = [];
+  for (let k = 0; k < count; k++) {
+    const d = k * RESAMPLE_M;
+    headings.push(Math.round((valueAt(samples.distM, atPoint, d) - atPoint[0]) * 10000) / 10000);
   }
-  const terms = Math.max(3, Math.min(CURVE_MAX_TERMS, Math.round(totalM / CURVE_WAVELENGTH_M)));
-  const curve = [];
-  for (let k = 1; k <= terms; k++) {
-    const w = (2 * Math.PI * k) / totalM;
-    let a = 0;
-    let b = 0;
-    for (let i = 0; i < n; i++) {
-      const ds = samples.distM[i + 1] - samples.distM[i];
-      a += v[i] * Math.sin(w * s[i]) * ds;
-      b += v[i] * Math.cos(w * s[i]) * ds;
-    }
-    a *= 2 / totalM;
-    b *= 2 / totalM;
-    // a·sin + b·cos = A·sin(ωm + φ)
-    const ampDeg = Math.hypot(a, b) / DEG;
-    if (ampDeg < CURVE_MIN_AMP_DEG) continue;
-    curve.push([round2(ampDeg), k, Math.round(Math.atan2(b, a) * 1000) / 1000]);
-  }
-  return curve;
+  return { type: 'table', stepM: RESAMPLE_M, headings };
+}
+
+/** 距離の並び distM(昇順)上の値 values を、距離 d で線形補間する。 */
+function valueAt(distM, values, d) {
+  const i = Math.max(0, Math.min(distM.length - 2, Math.floor(d / RESAMPLE_M)));
+  const span = distM[i + 1] - distM[i];
+  const t = span > 0 ? Math.min(1, Math.max(0, (d - distM[i]) / span)) : 0;
+  return values[i] + (values[i + 1] - values[i]) * t;
 }
 
 function round2(x) {

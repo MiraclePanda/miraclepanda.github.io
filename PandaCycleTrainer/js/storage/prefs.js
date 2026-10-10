@@ -2,8 +2,10 @@
 // 要件定義書5章「入力値のデフォルト記憶」に対応(当初は体重・自転車重量のみ)。
 // ユーザー要望により、走行距離と詳細設定(転がり抵抗係数Crr・空気抵抗係数CdA)も
 // 記憶するよう拡張した。オプションのバイク種別(標準/スワンボート)も記憶する。
-// コース選択・負荷率は従来どおり毎回リセットする。
 // PR2+3 で FTP(ftpW、パワーゾーン表示の基準)を同じキーに追加した。既存の保存値はそのまま読める。
+// 2026-10 ユーザー要望により、コース選択(courseId)と負荷率(loadRatioPercent)も記憶し、
+// 保存のタイミングを「走行開始時」から「セットアップ画面で変更した時点」に改めた
+// (デモだけで終えたり、開始前にブラウザを閉じたりすると選択が戻ってしまっていたため)。
 // あわせて、走行画面の環境(時間帯・天候)・視点・ゴースト選択・集団走行の有無・
 // 友人のゴースト(TCX から読み込んだトラック)も localStorage に保存する。
 
@@ -13,6 +15,8 @@ const KEY = 'pct_prefs_v1';
 
 const FIELDS = ['distanceKm', 'weightKg', 'bikeWeightKg', 'crr', 'cdaM2'];
 const VEHICLE_VALUES = ['bike', 'swan'];
+// courseId は組み込みコースの id か、GPX の実在コースの 'gpx-<数字>'。存在しない id は画面側で既定に戻す。
+const COURSE_ID_RE = /^[a-z][a-z0-9-]{0,39}$/;
 
 // FTP の既定値(W)。未設定・範囲外の保存値はこれに戻す。
 export const DEFAULT_FTP_W = 200;
@@ -21,6 +25,19 @@ function sanitizeFtp(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= LIMITS.ftpW.min && value <= LIMITS.ftpW.max
     ? value
     : DEFAULT_FTP_W;
+}
+
+function sanitizeLoadRatio(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 100 ? value : undefined;
+}
+
+function readStored() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(KEY) ?? 'null');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (e) {
+    return {};
+  }
 }
 
 // 戻り値の ftpW は常に数値(既定 200)。他のフィールドは従来どおり未保存・不正なら undefined。
@@ -35,27 +52,33 @@ export function loadPrefs() {
     }
     prefs.vehicle = VEHICLE_VALUES.includes(parsed?.vehicle) ? parsed.vehicle : undefined;
     prefs.ftpW = sanitizeFtp(parsed?.ftpW);
+    prefs.courseId = typeof parsed?.courseId === 'string' && COURSE_ID_RE.test(parsed.courseId) ? parsed.courseId : undefined;
+    prefs.loadRatioPercent = sanitizeLoadRatio(parsed?.loadRatioPercent);
     return prefs;
   } catch (e) {
     return { ftpW: DEFAULT_FTP_W };
   }
 }
 
-// ftpW を省略した呼び出し(従来の呼び出し方)では、保存済みの ftpW を消さずに残す。
-export function savePrefs({ distanceKm, weightKg, bikeWeightKg, crr, cdaM2, vehicle, ftpW }) {
+/**
+ * 設定の一部を保存する。undefined の項目は保存済みの値を残す(上書きしない)。
+ * 範囲外・不正な値は保存しない(読み込み時の検査と同じ基準)。
+ */
+export function savePrefs(patch = {}) {
+  const value = readStored();
+  for (const field of FIELDS) {
+    const v = patch[field];
+    if (typeof v === 'number' && Number.isFinite(v)) value[field] = v;
+  }
+  if (VEHICLE_VALUES.includes(patch.vehicle)) value.vehicle = patch.vehicle;
+  if (patch.ftpW !== undefined) {
+    const ftp = Number(patch.ftpW);
+    if (ftp === sanitizeFtp(ftp)) value.ftpW = ftp;
+  }
+  if (typeof patch.courseId === 'string' && COURSE_ID_RE.test(patch.courseId)) value.courseId = patch.courseId;
+  const ratio = sanitizeLoadRatio(patch.loadRatioPercent);
+  if (ratio !== undefined) value.loadRatioPercent = ratio;
   try {
-    let keepFtp;
-    if (ftpW === undefined) {
-      try {
-        keepFtp = JSON.parse(localStorage.getItem(KEY) ?? 'null')?.ftpW;
-      } catch (e) {
-        keepFtp = undefined;
-      }
-    } else {
-      keepFtp = ftpW;
-    }
-    const value = { distanceKm, weightKg, bikeWeightKg, crr, cdaM2, vehicle };
-    if (typeof keepFtp === 'number' && Number.isFinite(keepFtp)) value.ftpW = keepFtp;
     localStorage.setItem(KEY, JSON.stringify(value));
   } catch (e) {
     // localStorageが使用不可(プライベートモード等)の場合は無視する。

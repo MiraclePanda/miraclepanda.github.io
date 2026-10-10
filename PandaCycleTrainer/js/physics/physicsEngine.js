@@ -1,4 +1,5 @@
 import { PhysicsConstants } from './physicsConstants.js';
+import { applyCornerLimit } from './cornering.js';
 
 /**
  * 仮想空間の速度・距離・標高を求める物理演算エンジン。
@@ -8,6 +9,7 @@ import { PhysicsConstants } from './physicsConstants.js';
  *  - パワー0W時も慣性モデルで加減速を継続する
  *  - 速度は0未満にクランプ(逆走なし)
  *  - 標高は明示的な状態として保持する
+ *  - GPX の実在コースではコーナー手前で曲がれる速度まで減速する(cornering.js)
  */
 /**
  * 走行中のライダーに働く力(N)を求める。PhysicsEngine.step() と仮想ライダー
@@ -73,6 +75,8 @@ export class PhysicsEngine {
     // ドラフティング係数(CdAに掛ける倍率)。1.0=単独走行。集団の後ろについたとき
     // ui が PhysicsConstants.DRAFT_CDA_FACTOR を渡す。
     this.draftFactor = 1;
+    // 直近のステップでコーナーのために減速したか(表示用)
+    this.cornerBraking = false;
   }
 
   /**
@@ -121,6 +125,18 @@ export class PhysicsEngine {
 
     let newSpeed = this.speedMps + acceleration * dt;
     newSpeed = clamp(newSpeed, 0, PhysicsConstants.MAX_SPEED_MPS);
+    // GPX の実在コースのコーナーでは、曲がれる速度まで手前からブレーキをかける(cornering.js)。
+    // トレーナーへ送る勾配は変えない(ペダルを踏んでいても速度だけが抑えられる)。
+    // 1ステップで進む先(高速だと6m以上)の上限も見て、上限区間への進入が1ステップ遅れないようにする。
+    const limit = typeof this.courseEngine.speedLimitMpsAt === 'function'
+      ? Math.min(
+        this.courseEngine.speedLimitMpsAt(distanceKm),
+        this.courseEngine.speedLimitMpsAt(distanceKm + (newSpeed * dt) / 1000),
+      )
+      : Infinity;
+    const cornered = applyCornerLimit(this.speedMps, newSpeed, limit, dt);
+    newSpeed = cornered.speedMps;
+    this.cornerBraking = cornered.braking;
 
     const distanceDeltaM = newSpeed * dt;
     const elevationDeltaM = distanceDeltaM * Math.sin(theta);
@@ -155,6 +171,7 @@ export class PhysicsEngine {
       elevationM: this.elevationM,
       elevationGainM: this.elevationGainM,
       gradePercent: this.currentGradePercent,
+      cornerBraking: this.cornerBraking,
     };
   }
 }

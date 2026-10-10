@@ -17,6 +17,7 @@ import {
 } from '../utils/validation.js';
 import {
   DEFAULT_FTP_W,
+  savePrefs,
   loadEnvironment,
   saveEnvironment,
   loadGhostSelection,
@@ -40,6 +41,8 @@ import { TIME_OPTIONS, WEATHER_OPTIONS, supportsWeather } from './rideOptions.js
  * 景観(時間帯・天候)は選んだ時点で保存する(描画品質と同じく、走行開始を待たない)。
  * ③ コース選択では GPX ファイルから実在コースを読み込める(IndexedDB に保存し、次回以降も選べる)。
  * 実在コースはループしないため、走行距離はコース全長以下に制限し、選んだ時点で全長を入れる。
+ * 入力・選択(走行距離・体重・自転車重量・負荷率・詳細設定・コース・バイク種別)は、変更した時点で
+ * 正しい値だけを prefs.js に保存し、次回はそこから始める(実在コースの全長は走行距離として保存しない)。
  */
 export function SetupScreen({
   initialDistanceKm,
@@ -49,6 +52,8 @@ export function SetupScreen({
   initialCdaM2,
   initialVehicle,
   initialFtpW,
+  initialCourseId,
+  initialLoadRatioPercent,
   deviceState,
   onConnectDevice,
   onDisconnectDevice,
@@ -59,7 +64,12 @@ export function SetupScreen({
   const [distanceKm, setDistanceKm] = useState(initialDistanceKm ?? '');
   const [weightKg, setWeightKg] = useState(initialWeightKg ?? '');
   const [bikeWeightKg, setBikeWeightKg] = useState(initialBikeWeightKg ?? '');
-  const [courseId, setCourseId] = useState(COURSE_PROFILES[0].id);
+  // 前回のコース。GPX の実在コース('gpx-<id>')は一覧の読み込み後に存在を確かめる(下の useEffect)。
+  const [courseId, setCourseId] = useState(() =>
+    initialCourseId && (initialCourseId.startsWith('gpx-') || COURSE_PROFILES.some((c) => c.id === initialCourseId))
+      ? initialCourseId
+      : COURSE_PROFILES[0].id
+  );
   // GPX から読み込んだ実在コース(db.js のレコード)。読み込み中は null。
   const [savedCourses, setSavedCourses] = useState(null);
   const [gpxMessage, setGpxMessage] = useState(null); // { error: boolean, text }
@@ -69,7 +79,7 @@ export function SetupScreen({
     () => [...COURSE_PROFILES, ...(savedCourses ?? []).map((r) => r.profile)],
     [savedCourses]
   );
-  const [loadRatioPercent, setLoadRatioPercent] = useState(100);
+  const [loadRatioPercent, setLoadRatioPercent] = useState(initialLoadRatioPercent ?? 100);
   const [vehicle, setVehicle] = useState(initialVehicle ?? 'bike');
   // コースで乗り物が固定されている場合(上野不忍池=スワンボート)。ユーザーの選択(vehicle)は
   // 変えずに残し、他のコースへ切り替えたら元の選択に戻る。
@@ -95,6 +105,22 @@ export function SetupScreen({
     getAllCourses().then((list) => alive && setSavedCourses(list)).catch(() => alive && setSavedCourses([]));
     return () => { alive = false; };
   }, []);
+
+  // 実在コースの一覧が読み込めたら、前回選んでいたコースを確かめる(削除済みなら既定のコースへ。
+  // 実在コースなら選んだときと同じく走行距離をコース全長にする)。最初の1回だけ。
+  const restoredCourseRef = useRef(false);
+  useEffect(() => {
+    if (savedCourses === null || restoredCourseRef.current) return;
+    restoredCourseRef.current = true;
+    const c = allCourses.find((x) => x.id === courseId);
+    if (!c) {
+      setCourseId(COURSE_PROFILES[0].id);
+    } else if (c.fixedLength) {
+      // この時点の走行距離は組み込みコース用の前回値(実在コースの距離は保存しないため)
+      builtinDistanceRef.current = distanceKm;
+      setDistanceKm(String(maxDistanceForCourse(c.loopLengthKm)));
+    }
+  }, [savedCourses]);
 
   const selectCourse = (c) => {
     setCourseId(c.id);
@@ -149,6 +175,25 @@ export function SetupScreen({
     if (courseId === record.profile.id) selectCourse(COURSE_PROFILES[0]);
     setGpxMessage(null);
   };
+  // 選択・入力を変更した時点で保存する(範囲外の値は prefs.js 側で無視される)。
+  useEffect(() => {
+    const num = (v) => (v === '' || v === null || v === undefined ? undefined : Number(v));
+    const courseKnown = allCourses.some((c) => c.id === courseId);
+    savePrefs({
+      // 実在コースの走行距離(コース全長)は、組み込みコース用の前回値として残さない
+      distanceKm: courseProfile.fixedLength || !validateDistance(distanceKm).valid ? undefined : num(distanceKm),
+      weightKg: validateWeight(weightKg).valid ? num(weightKg) : undefined,
+      bikeWeightKg: validateBikeWeight(bikeWeightKg).valid ? num(bikeWeightKg) : undefined,
+      crr: validateCrr(crr).valid ? num(crr) : undefined,
+      cdaM2: validateCda(cdaM2).valid ? num(cdaM2) : undefined,
+      ftpW: validateFtp(ftpW).valid ? num(ftpW) : undefined,
+      vehicle, // 上野不忍池で固定されるスワンボートではなく、ユーザー自身の選択
+      // 実在コースの一覧を読み込む前は、まだ確かめていない前回のコースをそのまま残す
+      courseId: courseKnown ? courseId : undefined,
+      loadRatioPercent,
+    });
+  }, [distanceKm, weightKg, bikeWeightKg, crr, cdaM2, ftpW, vehicle, courseId, loadRatioPercent, savedCourses]);
+
   const changeEnvironment = (patch) => {
     const next = { ...environment, ...patch };
     setEnvironment(next);

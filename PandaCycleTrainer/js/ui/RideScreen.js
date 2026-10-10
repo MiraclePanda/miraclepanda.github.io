@@ -14,6 +14,7 @@ import {
   saveEnvironment,
   loadCameraView,
   saveCameraView,
+  savePrefs,
   DEFAULT_FTP_W,
 } from '../storage/prefs.js';
 import { powerZone } from '../utils/zones.js';
@@ -96,6 +97,9 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   if (packRef.current === null) packRef.current = packEnabled && courseProfile.scenery !== 'ueno' ? createPack({ startDistanceM: 0 }) : [];
   const myLaneRef = useRef(0);
   const draftingRef = useRef(false);
+  // GPX の実在コースでコーナー手前の減速中か(切り替わったときだけ state を更新してバナーを出す)
+  const cornerBrakingRef = useRef(false);
+  const [cornerBraking, setCornerBraking] = useState(false);
   const ghostsRef = useRef(null);
   if (ghostsRef.current === null) ghostsRef.current = prepareGhosts(ghosts);
   const power3sRef = useRef(null); // 3秒平均パワー(一次遅れ)。最初のフレームで現在値から始める
@@ -221,6 +225,10 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       myLaneRef.current = stepLane(myLaneRef.current, laneTarget(me, pack), dt);
     }
     const snapshot = physics.step(dt);
+    if (snapshot.cornerBraking !== cornerBrakingRef.current) {
+      cornerBrakingRef.current = snapshot.cornerBraking;
+      setCornerBraking(snapshot.cornerBraking);
+    }
     const distanceKm = snapshot.distanceM / 1000;
     const powerNow = latestPowerRef.current ?? 0;
     power3sRef.current = power3sRef.current === null
@@ -279,6 +287,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       loadRatio: String(loadRatioRef.current),
       ghosts: ghostState.ghosts,
       drafting: draftingRef.current,
+      cornerBraking: !!snapshot.cornerBraking,
       ghostSummary: ghostSummary(ghostState.ghosts),
       // canvas 描画用の数値(フルスクリーンHUDのコースマップ・標高プロファイル)
       raw: {
@@ -618,6 +627,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     demo && toast?.kind === 'demoLap' && h('div', { className: 'banner banner-info' }, '🏁 ゴール！ デモはそのまま次の周回を走ります。'),
     toast?.kind === 'ghost' && h('div', { className: 'banner banner-info ghost-banner' }, `👻 ${toast.title}(${toast.sub})`),
     communicationWarning && h('div', { className: 'banner banner-warning' }, '⚠ トレーナーとの通信が不安定です。'),
+    cornerBraking && h('div', { className: 'banner banner-info corner-banner' }, '↪ コーナーのため減速中(曲がれる速度までブレーキ。トレーナーの負荷は変わりません)'),
     h(
       'div',
       {
@@ -675,7 +685,11 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
         `負荷率: ${loadRatioPercent}%`,
         h('input', {
           type: 'range', min: 0, max: 100, step: 1, value: loadRatioPercent,
-          onChange: (e) => setLoadRatioPercent(Number(e.target.value)),
+          onChange: (e) => {
+            const v = Number(e.target.value);
+            setLoadRatioPercent(v);
+            savePrefs({ loadRatioPercent: v }); // 走行中に変えた負荷率も次回の初期値にする
+          },
         })
       )
     ),

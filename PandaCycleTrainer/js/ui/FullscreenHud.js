@@ -95,6 +95,7 @@ export const FullscreenHud = forwardRef(function FullscreenHud(
       if (e.gradeLine) e.gradeLine.style.transform = `rotate(${(((-Math.atan(grade / 100) * 180) / Math.PI) * 2.5).toFixed(1)}deg)`;
 
       if (e.draftChip) e.draftChip.style.display = v.drafting ? '' : 'none';
+      if (e.cornerChip) e.cornerChip.style.display = v.cornerBraking ? '' : 'none';
 
       const now = performance.now();
       if (now - lastGhostAtRef.current >= GHOST_INTERVAL_MS) {
@@ -201,6 +202,7 @@ export const FullscreenHud = forwardRef(function FullscreenHud(
         h(
           'div', { className: 'fs-chips' },
           h('div', { className: 'fs-chip is-accent', ref: setEl('draftChip'), style: { display: 'none' } }, 'ドラフティング中 · 空気抵抗 −34%'),
+          h('div', { className: 'fs-chip is-corner', ref: setEl('cornerChip'), style: { display: 'none' } }, 'コーナーのため減速中'),
           chips.map((c) => h('div', { key: c, className: 'fs-chip' }, c))
         ),
         h(

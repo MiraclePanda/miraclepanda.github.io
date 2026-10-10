@@ -5,6 +5,7 @@
 
 import { PhysicsConstants } from './physicsConstants.js';
 import { computeForces } from './physicsEngine.js';
+import { applyCornerLimit } from './cornering.js';
 
 export const VIRTUAL_RIDER = {
   // massKg 未指定時の体重+自転車重量(kg)。セットアップ画面の既定(70kg+9kg)相当。
@@ -91,6 +92,14 @@ export function stepVirtualRider(r, dt, { gradeAtKm, massKg, crr, cdaM2, draftFa
   });
   let speed = r.speedMps + (netForce / mass) * step;
   speed = Math.min(PhysicsConstants.MAX_SPEED_MPS, Math.max(0, speed));
+  // 自分と同じくコーナーでは減速する(CourseEngine を渡されたときだけ。cornering.js)
+  if (gradeAtKm && typeof gradeAtKm.speedLimitMpsAt === 'function') {
+    const limit = Math.min(
+      gradeAtKm.speedLimitMpsAt(r.distanceM / 1000),
+      gradeAtKm.speedLimitMpsAt((r.distanceM + speed * step) / 1000),
+    );
+    speed = applyCornerLimit(r.speedMps, speed, limit, step).speedMps;
+  }
 
   r.speedMps = speed;
   r.distanceM += speed * step;

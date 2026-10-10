@@ -7,7 +7,7 @@ import {
   createElevationSampler, createFloorModel, terrainHeightM, terrainColor, collectLandscapeObjects,
 } from '../three/landscapeLayout.js';
 import { createLandscapeTextures } from '../three/landscapeMaterials.js';
-import { createAnchoredRoute, headingAtM, lateralSigmaM, curvatureAtM } from '../three/routeLayout.js';
+import { createAnchoredRoute, headingAtM, lateralSigmaM, curvatureAtM, hasCurve } from '../three/routeLayout.js';
 import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
@@ -347,7 +347,7 @@ function initScene(canvas, courseEngine, L, vehicle) {
     // 他のライダー(ゴースト・集団)。世界と一緒に動くよう inner に置く。プールは初めて描画範囲に入ったときに作る
     others: createOtherRiders(inner, vehicle, tex.all),
     // curve があるコースだけ平面カーブの道路(route モード)。null なら従来の L.curves(legacy モード)。
-    curve: Array.isArray(curve) && curve.length > 0 ? curve : null,
+    curve: hasCurve(curve) ? curve : null,
     loopM,
     cols: terrainColumns(L),
     anchorS: null, anchorElev: 0,
