@@ -24,6 +24,8 @@ export const Dashboard = forwardRef(function Dashboard({ controlMode }, ref) {
     elapsedTime: useRef(null),
     ridingTime: useRef(null),
     ghostSummary: useRef(null),
+    kcal: useRef(null),
+    gourmet: useRef(null),
   };
 
   useImperativeHandle(ref, () => ({
@@ -42,6 +44,8 @@ export const Dashboard = forwardRef(function Dashboard({ controlMode }, ref) {
       setText(refs.elevationGain, v.elevationGain);
       setText(refs.elapsedTime, v.elapsedTime);
       setText(refs.ridingTime, v.ridingTime);
+      setText(refs.kcal, v.kcal);
+      setText(refs.gourmet, v.gourmet);
       if (refs.ghostSummary.current) refs.ghostSummary.current.textContent = v.ghostSummary ?? '';
     },
   }));
@@ -65,7 +69,14 @@ export const Dashboard = forwardRef(function Dashboard({ controlMode }, ref) {
       tile('現在標高', refs.elevation, 'm'),
       tile('獲得標高', refs.elevationGain, 'm'),
       tile('経過時間(休憩含む)', refs.elapsedTime, ''),
-      tile('走行時間(休憩除く)', refs.ridingTime, '')
+      tile('走行時間(休憩除く)', refs.ridingTime, ''),
+      // 消費カロリー(目安)と、そのグルメ換算(「おにぎり 1.4個分」)
+      h(
+        'div', { className: 'dash-tile dash-gourmet' },
+        h('div', { className: 'dash-label' }, '消費カロリー(目安)'),
+        h('div', { className: 'dash-value' }, h('span', { ref: refs.kcal }, '--'), h('span', { className: 'dash-unit' }, 'kcal')),
+        h('div', { className: 'dash-sub', ref: refs.gourmet }, '--')
+      )
     ),
     h('p', { className: 'dash-ghost', ref: refs.ghostSummary }) // ゴースト差の1行(ゴーストなしなら空で非表示)
   );

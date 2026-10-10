@@ -1008,3 +1008,37 @@ p { line-height: 1.6; }
   padding: 0.45rem 0.7rem;
 }
 .ghost-import-list .btn { margin: 0; }
+
+/* ---- 走行を楽しくする機能(観光地コース・沿道のハプニング・グルメ換算・日本縦断) ---- */
+.tour-badge { background: #c8553d; }
+.fun-banner { display: flex; flex-direction: column; gap: 0.1rem; }
+.fun-banner-sub { font-size: 0.82rem; }
+.fun-happening { background: #fff6e5; color: #7a4b00; border-color: #f2d49b; }
+.fun-guide { background: #fdeeea; color: #8a2e1c; border-color: #f2c4b8; }
+.fun-journey { background: #eef6ee; color: #23602f; border-color: #c4e2c8; }
+.fun-gourmet { background: #fff1f4; color: #8a2846; border-color: #f2c2cf; }
+.dash-sub { font-size: 0.75rem; color: var(--color-muted); margin-top: 0.1rem; }
+
+.gourmet-kcal strong { font-size: 1.5rem; }
+.gourmet-headline { font-size: 1.1rem; font-weight: 700; margin: 0.2rem 0; }
+.gourmet-list { list-style: none; padding: 0; margin: 0.5rem 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.4rem; }
+.gourmet-list li { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 8px; }
+.gourmet-list li.is-local { border-color: #c8553d; background: #fdf3f0; }
+
+.journey-body { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+.journey-map { width: 180px; max-width: 45%; height: auto; flex-shrink: 0; background: #eaf3fb; border-radius: 8px; }
+.journey-text { flex: 1; min-width: 200px; }
+.journey-text p { margin: 0.2rem 0; }
+.journey-now { font-size: 1.1rem; font-weight: 700; }
+.journey-lap { margin-right: 0.4rem; padding: 0.05rem 0.4rem; border-radius: 999px; font-size: 0.75rem; background: var(--color-primary); color: #fff; }
+.journey-route { fill: none; stroke: #9fb7c9; stroke-width: 2; stroke-linejoin: round; }
+.journey-route-done { fill: none; stroke: var(--color-primary); stroke-width: 3; stroke-linejoin: round; }
+.journey-city { fill: #fff; stroke: #7d93a5; stroke-width: 1; }
+.journey-city.is-passed { fill: var(--color-primary); stroke: var(--color-primary-dark); }
+.journey-label { font-size: 8px; fill: #415563; }
+.journey-me { fill: #e2553d; stroke: #fff; stroke-width: 1.5; }
+.journey-me-icon { font-size: 10px; }
+.journey-bar { height: 8px; border-radius: 999px; background: var(--color-border); overflow: hidden; margin: 0.4rem 0; }
+.journey-bar-fill { height: 100%; background: var(--color-primary); }
+.journey-passed ul { margin: 0.2rem 0 0; padding-left: 1.1rem; }
+.journey-passed li { font-size: 0.85rem; line-height: 1.5; }

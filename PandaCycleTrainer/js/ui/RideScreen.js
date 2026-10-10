@@ -33,11 +33,19 @@ import {
 import { demoRiderTarget, smoothDemoPower } from '../physics/demoRider.js';
 import { ConfirmDialog } from './Modal.js';
 import { fmtTime } from '../utils/format.js';
+import { createHappeningDirector, seedForCourse, DEFAULT_HAPPENING_WEIGHTS } from '../three/happeningsLayout.js';
+import { guideEventsBetween } from '../utils/tourGuide.js';
+import { kcalFromWorkKj, gourmetLine, gourmetMilestone } from '../utils/gourmet.js';
+import { citiesPassed, journeyToast, journeyTotalKm } from '../utils/journey.js';
+import { getAllRides } from '../storage/db.js';
 
 const SAMPLE_INTERVAL_MS = 1000;
 const TOAST_MS = 4600;
 // 3秒平均パワーの時定数(一次遅れ)
 const POWER_AVG_TAU_S = 3;
+
+// 走行を楽しくする通知(画面上部のバナーにも出す種類)
+const FUN_TOAST_KINDS = ['happening', 'guide', 'journey', 'gourmet'];
 
 const QUALITY_LABELS = { auto: '自動', high: '高', medium: '中', low: '低' };
 
@@ -103,6 +111,24 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const ghostsRef = useRef(null);
   if (ghostsRef.current === null) ghostsRef.current = prepareGhosts(ghosts);
   const power3sRef = useRef(null); // 3秒平均パワー(一次遅れ)。最初のフレームで現在値から始める
+  // 沿道のハプニングと観光地コースの名所(見た目と通知だけ)。上野不忍池(池の上)は対象外
+  const happeningsRef = useRef(null);
+  if (happeningsRef.current === null) {
+    happeningsRef.current = courseProfile.scenery === 'ueno'
+      ? null
+      : createHappeningDirector({
+        seed: seedForCourse(courseProfile.id),
+        weights: courseProfile.happenings === null ? null : courseProfile.happenings ?? DEFAULT_HAPPENING_WEIGHTS,
+        profile: courseProfile,
+      });
+  }
+  // 消費カロリー(仕事量 J の積算)。グルメ換算の表示・通知と記録の workKj に使う
+  const workJRef = useRef(0);
+  const prevKcalRef = useRef(0);
+  // 観光ガイド・日本縦断の通過判定用に、前のフレームの距離を持つ
+  const prevDistanceMRef = useRef(0);
+  // バーチャル日本縦断: この走行より前の合計距離(km)。読み込むまで null(デモは数えない)
+  const journeyBaseKmRef = useRef(null);
 
   const startTimeRef = useRef(Date.now());
   const totalPausedMsRef = useRef(0);
@@ -171,8 +197,16 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
 
     startLoop();
     if (!demo) startSampling(); // デモは走行記録を残さない
+    // 日本縦断の起点(これまでの走行記録の合計距離)。デモは記録しないので日本縦断も進めない
+    let alive = true;
+    if (!demo) {
+      getAllRides()
+        .then((rides) => { if (alive) journeyBaseKmRef.current = journeyTotalKm(rides); })
+        .catch(() => { if (alive) journeyBaseKmRef.current = 0; });
+    }
 
     return () => {
+      alive = false;
       stopLoop();
       stopSampling();
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -265,6 +299,26 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     // シーン・canvas に渡す他のライダー(ゴースト+集団)
     const others = pack.length > 0 ? ghostState.others.concat(pack.map(packOther)) : ghostState.others;
 
+    // 沿道のハプニング・名所(シーンへ actors として渡す)と、観光ガイド・日本縦断・グルメ換算の通知
+    const happening = happeningsRef.current
+      ? happeningsRef.current.step({ distanceM: snapshot.distanceM, speedMps: snapshot.speedKmh / 3.6, dt })
+      : null;
+    const prevDistanceM = prevDistanceMRef.current;
+    prevDistanceMRef.current = snapshot.distanceM;
+    workJRef.current += Math.max(0, powerNow) * Math.max(0, Math.min(dt, 0.25));
+    const kcal = kcalFromWorkKj(workJRef.current / 1000);
+    const funEvents = happening ? happening.events.slice() : [];
+    funEvents.push(...guideEventsBetween(courseProfile, prevDistanceM, snapshot.distanceM));
+    if (journeyBaseKmRef.current !== null) {
+      const base = journeyBaseKmRef.current;
+      for (const p of citiesPassed(base + prevDistanceM / 1000, base + snapshot.distanceM / 1000)) funEvents.push(journeyToast(p));
+    }
+    const gourmetEvent = gourmetMilestone(prevKcalRef.current, kcal, courseProfile);
+    prevKcalRef.current = kcal;
+    if (gourmetEvent) funEvents.push(gourmetEvent);
+    // 同じフレームに複数あれば最後のものを出す(新しい通知が来たら差し替える既存の方針どおり)
+    if (funEvents.length > 0) showToast(funEvents[funEvents.length - 1]);
+
     // ダッシュボード/フルスクリーンHUD更新 (高頻度、ref経由でDOM直接更新)
     const values = {
       power: fmtOrDash(latestPowerRef.current, 0),
@@ -284,6 +338,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       elevationGain: fmtOrDash(snapshot.elevationGainM, 0),
       elapsedTime: fmtTime(getElapsedTimeS()),
       ridingTime: fmtTime(getRidingTimeS()),
+      kcal: kcal.toFixed(0),
+      gourmet: gourmetLine(kcal, courseProfile),
       loadRatio: String(loadRatioRef.current),
       ghosts: ghostState.ghosts,
       drafting: draftingRef.current,
@@ -313,6 +369,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       // ケイデンスを受信していない(null)ときは undefined にしてシーン側の速度からの推定に任せる
       cadenceRpm: latestCadenceRef.current ?? undefined,
       myLaneOffsetM: myLaneRef.current,
+      actors: happening ? happening.actors : undefined,
     };
     lastDrawArgsRef.current = drawArgs;
     if (cityRef.current) {
@@ -435,6 +492,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       avgPowerW,
       avgSpeedKmh,
       avgCadenceRpm,
+      // ペダルを回した仕事量(kJ)。消費カロリーのグルメ換算に使う(古い記録はサンプルから求める)
+      workKj: workJRef.current / 1000,
       samples,
     };
 
@@ -626,6 +685,11 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     demo && h('div', { className: 'banner banner-info demo-banner' }, '▶ デモ走行中（トレーナー未接続・自動走行。走行記録は保存されません）'),
     demo && toast?.kind === 'demoLap' && h('div', { className: 'banner banner-info' }, '🏁 ゴール！ デモはそのまま次の周回を走ります。'),
     toast?.kind === 'ghost' && h('div', { className: 'banner banner-info ghost-banner' }, `👻 ${toast.title}(${toast.sub})`),
+    // 沿道のハプニング・観光ガイド・日本縦断・グルメ換算(フルスクリーン中は HUD の通知に出る)
+    toast && FUN_TOAST_KINDS.includes(toast.kind) && !isFullscreen &&
+      h('div', { className: `banner banner-info fun-banner fun-${toast.kind}`, role: 'status' },
+        h('strong', null, `${toast.kicker} — ${toast.title}`),
+        toast.sub && h('span', { className: 'fun-banner-sub' }, toast.sub)),
     communicationWarning && h('div', { className: 'banner banner-warning' }, '⚠ トレーナーとの通信が不安定です。'),
     cornerBraking && h('div', { className: 'banner banner-info corner-banner' }, '↪ コーナーのため減速中(曲がれる速度までブレーキ。トレーナーの負荷は変わりません)'),
     h(
