@@ -12,11 +12,13 @@ import {
   validateCrr,
   validateCda,
   validateFtp,
+  validatePowerScale,
   maxDistanceForCourse,
   LIMITS,
 } from '../utils/validation.js';
 import {
   DEFAULT_FTP_W,
+  DEFAULT_POWER_SCALE,
   savePrefs,
   loadEnvironment,
   saveEnvironment,
@@ -54,6 +56,7 @@ export function SetupScreen({
   initialCdaM2,
   initialVehicle,
   initialFtpW,
+  initialPowerScale,
   initialCourseId,
   initialLoadRatioPercent,
   deviceState,
@@ -90,6 +93,7 @@ export function SetupScreen({
   const [crr, setCrr] = useState(initialCrr ?? PhysicsConstants.CRR);
   const [cdaM2, setCdaM2] = useState(initialCdaM2 ?? PhysicsConstants.CDA);
   const [ftpW, setFtpW] = useState(initialFtpW ?? DEFAULT_FTP_W);
+  const [powerScale, setPowerScale] = useState(initialPowerScale ?? DEFAULT_POWER_SCALE);
   const [environment, setEnvironment] = useState(loadEnvironment);
   const courseProfile = allCourses.find((c) => c.id === courseId) ?? COURSE_PROFILES[0];
   const maxDistanceKm = courseProfile.fixedLength ? maxDistanceForCourse(courseProfile.loopLengthKm) : undefined;
@@ -189,12 +193,13 @@ export function SetupScreen({
       crr: validateCrr(crr).valid ? num(crr) : undefined,
       cdaM2: validateCda(cdaM2).valid ? num(cdaM2) : undefined,
       ftpW: validateFtp(ftpW).valid ? num(ftpW) : undefined,
+      powerScale: validatePowerScale(powerScale).valid ? num(powerScale) : undefined,
       vehicle, // 上野不忍池で固定されるスワンボートではなく、ユーザー自身の選択
       // 実在コースの一覧を読み込む前は、まだ確かめていない前回のコースをそのまま残す
       courseId: courseKnown ? courseId : undefined,
       loadRatioPercent,
     });
-  }, [distanceKm, weightKg, bikeWeightKg, crr, cdaM2, ftpW, vehicle, courseId, loadRatioPercent, savedCourses]);
+  }, [distanceKm, weightKg, bikeWeightKg, crr, cdaM2, ftpW, powerScale, vehicle, courseId, loadRatioPercent, savedCourses]);
 
   const changeEnvironment = (patch) => {
     const next = { ...environment, ...patch };
@@ -208,8 +213,10 @@ export function SetupScreen({
   const crrCheck = validateCrr(crr);
   const cdaCheck = validateCda(cdaM2);
   const ftpCheck = validateFtp(ftpW);
-  const advancedValid = crrCheck.valid && cdaCheck.valid && ftpCheck.valid;
-  const isDefaultCoefficients = Number(crr) === PhysicsConstants.CRR && Number(cdaM2) === PhysicsConstants.CDA;
+  const powerScaleCheck = validatePowerScale(powerScale);
+  const advancedValid = crrCheck.valid && cdaCheck.valid && ftpCheck.valid && powerScaleCheck.valid;
+  const isDefaultCoefficients = Number(crr) === PhysicsConstants.CRR && Number(cdaM2) === PhysicsConstants.CDA &&
+    Number(powerScale) === DEFAULT_POWER_SCALE;
   // 既定値から変えている(または範囲外の)場合は最初から開いておき、閉じたまま気付かないのを防ぐ。
   const [advancedOpen, setAdvancedOpen] = useState(!isDefaultCoefficients || !advancedValid);
 
@@ -264,6 +271,7 @@ export function SetupScreen({
     crr: Number(crr),
     cdaM2: Number(cdaM2),
     ftpW: Number(ftpW),
+    powerScale: Number(powerScale),
     environment,
     ghosts: buildGhostTracks(),
     packEnabled: ghostsSupported && packEnabled, // 上野は集団なし
@@ -379,7 +387,7 @@ export function SetupScreen({
           open: advancedOpen,
           onToggle: (e) => setAdvancedOpen(e.currentTarget.open),
         },
-        h('summary', null, '詳細設定（転がり抵抗・空気抵抗係数・FTP）'),
+        h('summary', null, '詳細設定（転がり抵抗・空気抵抗係数・FTP・パワー補正）'),
         h(
           'div', { className: 'advanced-grid' },
           h(
@@ -423,7 +431,27 @@ export function SetupScreen({
               onChange: (e) => setFtpW(e.target.value),
             }),
             !ftpCheck.valid && h('span', { className: 'error-text' }, ftpCheck.message)
+          ),
+          h(
+            'label', { className: 'field' },
+            h('span', null, `パワー補正の倍率 — ${LIMITS.powerScale.min}〜${LIMITS.powerScale.max}`),
+            h('input', {
+              type: 'number',
+              inputMode: 'decimal',
+              min: LIMITS.powerScale.min,
+              max: LIMITS.powerScale.max,
+              step: '0.05',
+              value: powerScale,
+              onChange: (e) => setPowerScale(e.target.value),
+              'aria-label': 'パワー補正の倍率',
+            }),
+            !powerScaleCheck.valid && h('span', { className: 'error-text' }, powerScaleCheck.message)
           )
+        ),
+        h(
+          'p', { className: 'muted small' },
+          `パワー補正の倍率(既定 ${DEFAULT_POWER_SCALE})は、トレーナーが送ってくるパワーに掛けます。トレーナーのパワーが実際より小さく、`,
+          '仮想速度が実測速度(参考)よりずっと遅いときに上げてください(例: 2 で2倍)。仮想速度・表示・記録のパワーに効き、勾配の負荷は変わりません。'
         ),
         h(
           'p', { className: 'muted small' },

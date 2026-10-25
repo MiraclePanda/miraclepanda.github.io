@@ -3,6 +3,7 @@
 // ユーザー要望により、走行距離と詳細設定(転がり抵抗係数Crr・空気抵抗係数CdA)も
 // 記憶するよう拡張した。オプションのバイク種別(標準/スワンボート)も記憶する。
 // PR2+3 で FTP(ftpW、パワーゾーン表示の基準)を同じキーに追加した。既存の保存値はそのまま読める。
+// 2026-10 にパワー補正の倍率(powerScale、既定1.0)も同じキーに追加した。
 // 2026-10 ユーザー要望により、コース選択(courseId)と負荷率(loadRatioPercent)も記憶し、
 // 保存のタイミングを「走行開始時」から「セットアップ画面で変更した時点」に改めた
 // (デモだけで終えたり、開始前にブラウザを閉じたりすると選択が戻ってしまっていたため)。
@@ -27,6 +28,15 @@ function sanitizeFtp(value) {
     : DEFAULT_FTP_W;
 }
 
+// パワー補正の倍率の既定値。未設定・範囲外の保存値はこれに戻す。
+export const DEFAULT_POWER_SCALE = 1;
+
+function sanitizePowerScale(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= LIMITS.powerScale.min && value <= LIMITS.powerScale.max
+    ? value
+    : DEFAULT_POWER_SCALE;
+}
+
 function sanitizeLoadRatio(value) {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 100 ? value : undefined;
 }
@@ -40,11 +50,11 @@ function readStored() {
   }
 }
 
-// 戻り値の ftpW は常に数値(既定 200)。他のフィールドは従来どおり未保存・不正なら undefined。
+// 戻り値の ftpW・powerScale は常に数値(既定 200・1)。他のフィールドは従来どおり未保存・不正なら undefined。
 export function loadPrefs() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return { ftpW: DEFAULT_FTP_W };
+    if (!raw) return { ftpW: DEFAULT_FTP_W, powerScale: DEFAULT_POWER_SCALE };
     const parsed = JSON.parse(raw);
     const prefs = {};
     for (const field of FIELDS) {
@@ -52,11 +62,12 @@ export function loadPrefs() {
     }
     prefs.vehicle = VEHICLE_VALUES.includes(parsed?.vehicle) ? parsed.vehicle : undefined;
     prefs.ftpW = sanitizeFtp(parsed?.ftpW);
+    prefs.powerScale = sanitizePowerScale(parsed?.powerScale);
     prefs.courseId = typeof parsed?.courseId === 'string' && COURSE_ID_RE.test(parsed.courseId) ? parsed.courseId : undefined;
     prefs.loadRatioPercent = sanitizeLoadRatio(parsed?.loadRatioPercent);
     return prefs;
   } catch (e) {
-    return { ftpW: DEFAULT_FTP_W };
+    return { ftpW: DEFAULT_FTP_W, powerScale: DEFAULT_POWER_SCALE };
   }
 }
 
@@ -74,6 +85,10 @@ export function savePrefs(patch = {}) {
   if (patch.ftpW !== undefined) {
     const ftp = Number(patch.ftpW);
     if (ftp === sanitizeFtp(ftp)) value.ftpW = ftp;
+  }
+  if (patch.powerScale !== undefined) {
+    const scale = Number(patch.powerScale);
+    if (scale === sanitizePowerScale(scale)) value.powerScale = scale;
   }
   if (typeof patch.courseId === 'string' && COURSE_ID_RE.test(patch.courseId)) value.courseId = patch.courseId;
   const ratio = sanitizeLoadRatio(patch.loadRatioPercent);

@@ -52,7 +52,7 @@ const QUALITY_LABELS = { auto: '自動', high: '高', medium: '中', low: '低' 
 /**
  * 走行中画面。物理演算ループ・BLEデータ購読・記録・一時停止/終了/ゴール処理を統括する。
  */
-export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderWeightKg, bikeWeightKg, crr, cdaM2, vehicle, courseProfile, goalDistanceKm, initialLoadRatioPercent, ftpW = DEFAULT_FTP_W, initialEnvironment, ghosts = [], packEnabled = false, onFinish, demo = false, onExitDemo }) {
+export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderWeightKg, bikeWeightKg, crr, cdaM2, vehicle, courseProfile, goalDistanceKm, initialLoadRatioPercent, ftpW = DEFAULT_FTP_W, powerScale = 1, initialEnvironment, ghosts = [], packEnabled = false, onFinish, demo = false, onExitDemo }) {
   const [paused, setPaused] = useState(false);
   // 表示用のcontrolMode。トレーナー再接続で変わりうるため、ftmsClientの
   // 'control-mode'イベントを購読して更新する(高頻度ループはcontrolModeRefを参照)。
@@ -172,7 +172,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
 
     const onBikeData = (ev) => {
       const s = ev.detail;
-      if (s.instPowerW !== null && s.instPowerW !== undefined) latestPowerRef.current = s.instPowerW;
+      // パワー補正の倍率(詳細設定)を掛ける。仮想速度・表示・記録はすべて補正後のパワー。
+      if (s.instPowerW !== null && s.instPowerW !== undefined) latestPowerRef.current = s.instPowerW * powerScale;
       latestCadenceRef.current = s.instCadenceRpm;
       latestRealSpeedRef.current = s.instSpeedKmh;
       latestHeartRateRef.current = s.heartRateBpm;
@@ -283,7 +284,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
         lastControlActualRef.current = result.actual;
       }
     } else if (controlModeRef.current === 'erg') {
-      const requiredW = physics.computeErgTargetWatts();
+      // 目標Wはトレーナーの計るパワーで指示するので、パワー補正の倍率で割って戻す
+      const requiredW = physics.computeErgTargetWatts() / powerScale;
       const calculated = requiredW * ratio;
       lastControlCalculatedRef.current = calculated;
       const result = ftmsClient.setErgTarget(calculated);

@@ -16,7 +16,10 @@ export const DeviceProfile = {
   ERG_MAX_WATTS: 1000,
 
   // grade再送信の閾値(%)。この変化量を超えた場合のみ送信する。
-  GRADE_RESEND_THRESHOLD_PERCENT: 0.5,
+  // 当初は 0.5% だったが、0.5% の段差は 75kg・20km/h で約20W に相当し、DC1 の実機で
+  // 「走行中に唐突に負荷が変わる」と報告されたため 0.1% に下げた(2026-10)。
+  // 走行中は毎フレーム呼ばれるが、CommandQueue#enqueueLatest で最新値だけが送られる。
+  GRADE_RESEND_THRESHOLD_PERCENT: 0.1,
 
   // ERG目標W再送信の閾値(W)。
   ERG_RESEND_THRESHOLD_WATTS: 3,
