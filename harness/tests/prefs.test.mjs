@@ -21,7 +21,7 @@ test('prefs: existing pct_prefs_v1 data keeps loading; ftpW defaults to 200', ()
     JSON.stringify({ distanceKm: 20, weightKg: 65, bikeWeightKg: 9, crr: 0.004, cdaM2: 0.32, vehicle: 'swan' }),
   );
   const p = prefs.loadPrefs();
-  assert.deepEqual(p, { distanceKm: 20, weightKg: 65, bikeWeightKg: 9, crr: 0.004, cdaM2: 0.32, vehicle: 'swan', ftpW: 200, courseId: undefined, loadRatioPercent: undefined });
+  assert.deepEqual(p, { distanceKm: 20, weightKg: 65, bikeWeightKg: 9, crr: 0.004, cdaM2: 0.32, vehicle: 'swan', ftpW: 200, powerScale: 1, courseId: undefined, loadRatioPercent: undefined });
   assert.equal(prefs.loadPrefs().ftpW, 200);
   localStorage.clear();
   assert.equal(prefs.loadPrefs().ftpW, 200);

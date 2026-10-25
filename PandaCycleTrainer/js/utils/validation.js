@@ -3,6 +3,8 @@
 // メートル法のみ(体重kg、自転車重量kg、距離km)。
 // 詳細設定の転がり抵抗係数Crr・空気抵抗係数CdA(m^2)も同じ仕組みで検証する。
 // FTP(W)はパワーゾーン表示(utils/zones.js)の基準。PR2+3 仕様 §1.1 で追加(既定200W)。
+// パワー補正の倍率は、トレーナーが送るパワーに掛ける係数(既定1.0)。CYCPLUS DC1 の実機で
+// パワーが実際より小さく(90rpm で約25W)仮想速度が遅すぎたため追加した(2026-10 ユーザー要望)。
 
 export const LIMITS = {
   weightKg: { min: 20, max: 200 },
@@ -11,6 +13,7 @@ export const LIMITS = {
   crr: { min: 0.001, max: 0.02 },
   cdaM2: { min: 0.15, max: 0.6 },
   ftpW: { min: 50, max: 600 },
+  powerScale: { min: 0.5, max: 5 },
 };
 
 export function validateWeight(value) {
@@ -52,6 +55,10 @@ export function validateCda(value) {
 
 export function validateFtp(value) {
   return inRange(value, LIMITS.ftpW, 'FTPは50〜600Wの範囲で入力してください。');
+}
+
+export function validatePowerScale(value) {
+  return inRange(value, LIMITS.powerScale, 'パワー補正の倍率は0.5〜5の範囲で入力してください。');
 }
 
 function inRange(value, { min, max }, message) {

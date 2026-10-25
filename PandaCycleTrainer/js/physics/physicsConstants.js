@@ -29,9 +29,11 @@ export const PhysicsConstants = {
   DRAFT_MAX_LATERAL_M: 1.0,
   DRAFT_CDA_FACTOR: 0.66,
   // コーナーでの減速(GPX の実在コースのみ。js/physics/cornering.js)。
-  // 横方向の加速度の上限 (m/s^2, 約0.3G)。一般のサイクリストが無理なく曲がれる程度で、
-  // GPX の直角の交差点(方位の平滑化で半径20m前後になる)で25〜30km/h、ヘアピンで20〜25km/h になる。
-  CORNER_LATERAL_ACCEL_MPS2: 3.0,
+  // 横方向の加速度の上限 (m/s^2, 約0.2G)。一般のサイクリストが無理なく曲がれる程度。
+  // GPX の直角の交差点(角度からの見積もりで半径約10m、cornering.js)で約16km/h、
+  // 半径15mのヘアピンで約20km/h になる。当初は 3.0 だったが、実走の GPX の記録
+  // (交差点を 10 km/h 前後で曲がっている)と比べて速すぎたため下げた(2026-10)。
+  CORNER_LATERAL_ACCEL_MPS2: 2.0,
   // コーナー手前のブレーキの減速度 (m/s^2)。急ブレーキではない普通の減速。
   CORNER_BRAKE_DECEL_MPS2: 2.5,
 };

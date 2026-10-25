@@ -67,6 +67,7 @@ export function App() {
       cdaM2: config.cdaM2,
       vehicle: config.preferredVehicle ?? config.vehicle,
       ftpW: config.ftpW,
+      powerScale: config.powerScale,
       courseId: config.courseId,
       loadRatioPercent: config.loadRatioPercent,
     });
@@ -130,6 +131,7 @@ export function App() {
     initialCdaM2: prefs.cdaM2,
     initialVehicle: prefs.vehicle,
     initialFtpW: prefs.ftpW,
+    initialPowerScale: prefs.powerScale,
     initialCourseId: prefs.courseId,
     initialLoadRatioPercent: prefs.loadRatioPercent,
     deviceState,
@@ -158,6 +160,7 @@ export function App() {
       goalDistanceKm: sessionConfig.distanceKm,
       initialLoadRatioPercent: sessionConfig.loadRatioPercent,
       ftpW: sessionConfig.ftpW,
+      powerScale: sessionConfig.powerScale,
       initialEnvironment: sessionConfig.environment,
       ghosts: sessionConfig.ghosts,
       packEnabled: !!sessionConfig.packEnabled,
