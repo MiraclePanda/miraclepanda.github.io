@@ -4,9 +4,9 @@
 // loopLengthKm はこのプロファイル自体の1周分の長さ(最後の制御点の距離)。
 // scenery は走行中の3D表示の景色: 'city'(街並み、CityScene)/'lakeside'(湖を見下ろす
 // 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ)/'ueno'(上野不忍池)/観光地コース専用の
-// 'kawaguchiko'(河口湖)・'kyoto'(京都・東山の町並み)・'nara'(奈良公園)。uenoはPondScene
-// (js/three/pondLayout.js)、ほかの city 以外は LandscapeScene(js/three/landscapeLayout.js。
-// 観光地の町並み・名物は js/three/tourLayout.js)で描く。
+// 'kawaguchiko'(河口湖)・'kyoto'(京都・東山の町並み)・'nara'(奈良公園)・'ryugu'(竜宮城の海底)。
+// uenoはPondScene(js/three/pondLayout.js)、ほかの city 以外は LandscapeScene(js/three/landscapeLayout.js。
+// 観光地の町並み・名物は js/three/tourLayout.js、竜宮城の海底は js/three/ryuguLayout.js)で描く。
 // fixedLength: true のコース(GPX から読み込んだ実在コース、js/physics/realCourse.js)は
 // ループせず、走行距離をコース長(loopLengthKm)以下に制限する。
 // fixedVehicle があるコースは、オプションのバイク種別に関わらずその乗り物で走る。
@@ -19,7 +19,8 @@
 // 観光地コース(tag: '観光地')は専用の景色を使い、次の項目を持つ:
 //   backdrop: 遠景(現在は 'fuji' = 富士山。LandscapeScene が空と一緒に回る遠景として描く)
 //   landmarks: [{ km, kind, side, lateralM, yaw?, viewM? }] 1周ごとに置く名所(js/three/happeningsLayout.js)。
-//     kind は大鳥居・五重塔・三重塔・三門・楼門・大仏殿・清水の舞台・浮見堂(LANDMARK_KINDS)。
+//     kind は大鳥居・五重塔・三重塔・三門・楼門・大仏殿・清水の舞台・浮見堂・竜宮門・竜宮城・乙姫の舞台・
+//     玉手箱(LANDMARK_KINDS)。
 //     yaw = −π/2(右側)/+π/2(左側)で門・お堂の正面を道路へ向ける。viewM は遠くから見える距離
 //   guide: [{ km, title, sub }] バスガイド風のアナウンス(js/utils/tourGuide.js)
 //   localFood: { name, unit, kcal } 消費カロリーのグルメ換算で優先する名物(js/utils/gourmet.js)
@@ -258,6 +259,50 @@ export const COURSE_PROFILES = [
       { km: 5.3, title: '鹿せんべいの売店が見えてまいりました', sub: '走りながらは渡せませんので、気持ちだけお渡しください。' },
     ],
     localFood: { name: '柿の葉寿司', unit: '個', kcal: 50 },
+  },
+  {
+    id: 'ryugu',
+    name: '竜宮城・海底コース',
+    tag: '観光地',
+    scenery: 'ryugu',
+    description: '光の差し込む海の底を、サンゴと貝殻で縁取られた白い砂の道でめぐる観光コース(1周6km)。昆布の林や沈没船を抜け、竜宮門をくぐって竜宮城と乙姫さまの舞台へ。カメがときどき並んで泳いでくれます。',
+    loopLengthKm: 6,
+    crossfadeKm: 0.15,
+    curve: [[26, 2, 0.9], [11, 6, 2.4], [4, 14, 0.5]],
+    // 上りは海底の岩山、下りは海溝の縁へ。1周の上り下りはほぼ打ち消し合う
+    points: [
+      [0, 0],
+      [0.8, 1.5],
+      [1.6, 0.5],
+      [2.4, -2],
+      [3.2, -1],
+      [4, 2],
+      [4.8, 0.5],
+      [5.5, -1.5],
+      [6, 0],
+    ],
+    // 海の中なので猫・パンダ・鹿・応援団の代わりにカメが出る(給水所は海の中でもある)
+    happenings: { cat: 0, panda: 0, cheer: 0, aid: 1, deer: 0, turtle: 4 },
+    // 昆布の林・沈没船・舞台のまわりの踊り子の位置は js/three/landscapeLayout.js の LANDSCAPES.ryugu.tour と揃えている
+    landmarks: [
+      { km: 1.2, kind: 'ryuguGate', side: 0, lateralM: 0, viewM: 500 },
+      { km: 1.75, kind: 'ryuguPalace', side: 1, lateralM: 70, yaw: -Math.PI / 2, viewM: 1200 },
+      { km: 2.25, kind: 'otohimeStage', side: -1, lateralM: 8, yaw: Math.PI / 2, viewM: 400 },
+      { km: 5.2, kind: 'tamatebako', side: 1, lateralM: 2.5, yaw: -Math.PI / 2, viewM: 200 },
+    ],
+    guide: [
+      { km: 0.2, title: '海の底へようこそ', sub: '本日のガイドはわたくし、パンダがつとめます。息つぎは気にせずペダルをどうぞ。' },
+      { km: 0.5, title: '道の両側はサンゴ礁でございます', sub: '貝殻で縁取られた白い砂の道。サンゴには触らないようお願いいたします。' },
+      { km: 0.95, title: '正面に竜宮門が見えてまいりました', sub: '白い漆喰に朱塗りの楼閣。このまま門をくぐってまいります。' },
+      { km: 1.55, title: '右手に見えますのが竜宮城でございます', sub: '絵にも描けない美しさ……でしたが、本日は3Dで描いております。' },
+      { km: 2.05, title: '左手は乙姫さまの舞台でございます', sub: 'タイやヒラメが舞い踊っております。見とれてペダルが止まらないようご注意ください。' },
+      { km: 2.7, title: '昆布の林に入ります', sub: 'ゆらゆら揺れておりますが、揺れているのは昆布です。目が回ったわけではございません。' },
+      { km: 3.75, title: '左手に沈没船が見えてまいります', sub: '宝箱が転がっておりますが、持ち帰りはご遠慮ください。' },
+      { km: 4.5, title: '左手の先は海溝でございます', sub: '深さは……わかりません。チョウチンアンコウが住んでいるそうです。' },
+      { km: 5.05, title: '右手に玉手箱がございます', sub: '決して開けてはなりません。開けるのはゴール後のリザルト画面でどうぞ。' },
+      { km: 5.7, title: '間もなく1周でございます', sub: '竜宮城の1日は地上の100年とも申します。時計はあまり気になさらずに。' },
+    ],
+    localFood: { name: '海藻サラダ', unit: '皿', kcal: 40 },
   },
 ];
 

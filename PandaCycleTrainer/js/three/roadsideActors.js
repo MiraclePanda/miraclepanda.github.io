@@ -1,4 +1,4 @@
-// 沿道のハプニング(猫・パンダ・応援団・給水所・鹿)と観光地の名所(大鳥居・五重塔・三門など)の3D描画
+// 沿道のハプニング(猫・パンダ・応援団・給水所・鹿・カメ)と観光地の名所(大鳥居・五重塔・三門・竜宮門など)の3D描画
 // (CityScene / LandscapeScene が使う。上野不忍池は対象外)。配置と動きの入力は happeningsLayout.js の actors、
 // 道路の断面への横位置の決め方は roadsideLayout.js(どちらも Three.js 非依存の純粋ロジック)。
 //
@@ -8,7 +8,7 @@
 //   こうすると旗も腕と同じメッシュに結合でき、シェーダープログラムも1つで済む。
 // - 動かない部品は種類ごとに1つのジオメトリへ焼き込む(大鳥居・名所の建物・給水所は1 draw call)。
 //   名所の建物の形は sightModels.js。
-//   脚・尻尾・首・旗を振る腕だけ別メッシュにして回す(猫6・パンダ5・鹿6・応援団8 draw call)。
+//   脚・尻尾・首・旗を振る腕・ひれだけ別メッシュにして回す(猫6・パンダ5・鹿6・応援団8・カメ5 draw call)。
 // - 模型(とジオメトリ)は種類ごとに初めて必要になったときに作り、以後は使い回す。
 //   同じ種類が同時に出るのは高々 MAX_PER_KEY 体まで。使っていない模型は visible = false。
 // - 影は品質「高」(qualityIndex 0)のときだけ落とす。品質「低」では旗振りを止める(模型は出す)。
@@ -383,6 +383,55 @@ function deerTemplate() {
   };
 }
 
+/** 海を泳ぐカメ(アオウミガメ)。原点は真下の路面、前は −Z。体は路面から約1.1m 上に浮かべる。 */
+function turtleTemplate() {
+  const SKIN = 0x7f8f55;
+  // 甲羅: 濃い緑褐色の甲板と、明るい継ぎ目
+  const shellColor = (x, y, z) => {
+    const n = Math.abs(Math.sin(x * 9.5)) < 0.12 || Math.abs(Math.sin(z * 7.5 + 0.6)) < 0.1;
+    return n ? 0xb9a46a : 0x5c5a2c;
+  };
+  const body = merge([
+    paint(sphere(1, [0, 1.12, 0.02], [0.56, 0.22, 0.72], 20), shellColor),
+    paint(sphere(1, [0, 1.04, 0.04], [0.5, 0.12, 0.64], 16), 0xe6d7a2),
+    paint(sphere(0.17, [0, 1.1, -0.8], [1, 0.82, 1.25], 14), SKIN),
+    paint(rod([0, 1.08, -0.58], [0, 1.1, -0.72], 0.12, 0.13, 10), SKIN),
+    paint(sphere(0.028, [-0.09, 1.15, -0.9]), 0x101010),
+    paint(sphere(0.028, [0.09, 1.15, -0.9]), 0x101010),
+    paint(new THREE.ConeGeometry(0.05, 0.18, 6).rotateX(Math.PI / 2).translate(0, 1.06, 0.78), SKIN),
+  ]);
+  const parts = [{ name: 'body', geo: body, pivot: [0, 0, 0] }];
+  // 前びれ(大きく羽ばたく)と後ろびれ(舵)
+  for (const [i, sx] of [[0, -1], [1, 1]]) {
+    const pivot = [sx * 0.42, 1.08, -0.36];
+    const geo = paint(sphere(1, [sx * 0.85, 1.06, -0.28], [0.48, 0.045, 0.17], 12).rotateY(0), SKIN);
+    parts.push({ name: `fin${i}`, geo: aroundPivot(geo, pivot), pivot, parent: 'body' });
+  }
+  for (const [i, sx] of [[2, -1], [3, 1]]) {
+    const pivot = [sx * 0.25, 1.05, 0.52];
+    const geo = paint(sphere(1, [sx * 0.4, 1.04, 0.62], [0.19, 0.035, 0.12], 10), SKIN);
+    parts.push({ name: `fin${i}`, geo: aroundPivot(geo, pivot), pivot, parent: 'body' });
+  }
+  return {
+    parts,
+    animate(n, a) {
+      const t = a.phase || 0;
+      const m = a.moving || 0;
+      // ゆったり羽ばたいて、体ごとふわふわ上下する
+      const w = Math.sin(t * Math.PI * 2 * (0.5 + 0.4 * m));
+      n.fin0.rotation.z = -w * 0.55;
+      n.fin1.rotation.z = w * 0.55;
+      n.fin0.rotation.y = w * 0.2;
+      n.fin1.rotation.y = -w * 0.2;
+      n.fin2.rotation.y = Math.sin(t * 1.3) * 0.25;
+      n.fin3.rotation.y = -Math.sin(t * 1.3) * 0.25;
+      // 路面から少し高く(自転車のハンドルくらい)浮かんで泳ぐ
+      n.body.position.y = 0.35 + Math.sin(t * Math.PI * 2 * 0.35) * 0.12 - w * 0.03;
+      n.body.rotation.x = w * 0.04;
+    },
+  };
+}
+
 /** 法被(はっぴ)姿の人。原点は足元、前は −Z。flagCell があれば右手に旗を持つ。 */
 function personParts(prefix, [px, pz], happi, flagCell, parentName) {
   const PANTS = 0x2b2f45;
@@ -584,9 +633,10 @@ export function createRoadsideActors(parent, textures) {
       case 'deer': t = deerTemplate(); break;
       case 'cheer': t = cheerTemplate(); break;
       case 'aid': t = aidTemplate(); break;
+      case 'turtle': t = turtleTemplate(); break;
       case 'torii': t = toriiTemplate(roadHalfWidthM); break;
       default:
-        t = sightTemplate(kind, KIT);
+        t = sightTemplate(kind, KIT, roadHalfWidthM);
         if (!t) return null;
     }
     templates.set(key, t);
@@ -690,8 +740,8 @@ export function createRoadsideActors(parent, textures) {
               groundAboveRoadM(gap, lateral), groundAboveRoadM(gap, lateral - rl), groundAboveRoadM(gap, lateral + rl),
               groundAboveRoadM(gap - ra, lateral), groundAboveRoadM(gap + ra, lateral)
             );
-          } else if (a.kind === 'torii') {
-            ground = 0; // 柱は地下まで伸ばしてあるので路面に合わせる
+          } else if (a.kind === 'torii' || a.kind === 'ryuguGate') {
+            ground = 0; // 柱・門の脚は地下まで伸ばしてあるので路面に合わせる
           } else {
             ground = groundAboveRoadM(gap, lateral);
           }

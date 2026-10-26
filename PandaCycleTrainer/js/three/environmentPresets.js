@@ -23,6 +23,8 @@
  * @property {number} hemiIntensity HemisphereLight の強さ
  * @property {number} fogDensity    FogExp2 の密度
  * @property {number} exposure      renderer.toneMappingExposure
+ * @property {object} [palettes]     時間帯ごとの色(TIMES の palette と同じ形)。あればそちらを使う(竜宮城の海底)
+ * @property {boolean} [underwater]  海の底から見上げた空として焼く(sceneKit.js の bakeSky)
  */
 
 // FogExp2 の「見通し距離」への換算係数。濃度 d·ρ = 2 で約98%が霧色になるので、
@@ -142,7 +144,8 @@ function withElevation(dir, elevationDeg) {
 export function resolveEnvironment(baseAtmo, timeId, weatherId) {
   const t = TIMES[timeId] ?? TIMES.noon;
   const w = WEATHERS[weatherId] ?? WEATHERS.clear;
-  const p = t.palette;
+  // 景観が時間帯ごとの色を持つ(竜宮城の海底: baseAtmo.palettes)ならそちらを使う
+  const p = baseAtmo.palettes?.[timeId] ?? t.palette;
   const pick = (key) => (p ? p[key] : baseAtmo[key]);
   const { grey, darken } = w;
 

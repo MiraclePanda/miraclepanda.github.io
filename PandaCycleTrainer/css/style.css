@@ -1042,3 +1042,26 @@ p { line-height: 1.6; }
 .journey-bar-fill { height: 100%; background: var(--color-primary); }
 .journey-passed ul { margin: 0.2rem 0 0; padding-left: 1.1rem; }
 .journey-passed li { font-size: 0.85rem; line-height: 1.5; }
+
+/* 竜宮城の海底コースのリザルト: 玉手箱 */
+.tamatebako-card { position: relative; overflow: hidden; background: linear-gradient(180deg, #e7f6fb, #fff 70%); }
+.tamatebako-result { animation: tamatebako-reveal 1.2s ease-out 0.6s both; }
+.tamatebako-years { font-size: 1.15rem; }
+.tamatebako-smoke { position: absolute; inset: 0; pointer-events: none; }
+.tamatebako-smoke span {
+  position: absolute; left: 50%; bottom: -40px; width: 160px; height: 160px; margin-left: -80px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.95), rgba(255,255,255,0) 70%);
+  animation: tamatebako-smoke 2.4s ease-out forwards;
+}
+.tamatebako-smoke span:nth-child(2) { margin-left: -170px; animation-delay: 0.2s; }
+.tamatebako-smoke span:nth-child(3) { margin-left: 10px; animation-delay: 0.4s; }
+@keyframes tamatebako-smoke {
+  0% { transform: translateY(0) scale(0.4); opacity: 0; }
+  20% { opacity: 1; }
+  100% { transform: translateY(-260px) scale(2.2); opacity: 0; }
+}
+@keyframes tamatebako-reveal { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .tamatebako-smoke span, .tamatebako-result { animation: none; opacity: 1; }
+  .tamatebako-smoke { display: none; }
+}

@@ -67,7 +67,7 @@ test('湖畔・山岳・熱海の景観: コース対応、道路は常に水面
   const { CourseEngine } = await import('../../PandaCycleTrainer/js/physics/courseEngine.js');
   const { COURSE_PROFILES, getCourseProfile } = await import('../../PandaCycleTrainer/js/physics/courseProfiles.js');
   const LL = await import('../../PandaCycleTrainer/js/three/landscapeLayout.js');
-  assert.deepEqual(COURSE_PROFILES.map((p) => p.scenery), ['city', 'lakeside', 'mountain', 'atami', 'ueno', 'kawaguchiko', 'kyoto', 'nara']);
+  assert.deepEqual(COURSE_PROFILES.map((p) => p.scenery), ['city', 'lakeside', 'mountain', 'atami', 'ueno', 'kawaguchiko', 'kyoto', 'nara', 'ryugu']);
   for (const [courseId, id] of [['hilly', 'lakeside'], ['mountain', 'mountain'], ['atami', 'atami']]) {
     const p = getCourseProfile(courseId);
     const ce = new CourseEngine(p, 100);

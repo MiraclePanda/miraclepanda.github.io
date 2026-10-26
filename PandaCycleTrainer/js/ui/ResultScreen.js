@@ -6,6 +6,7 @@ import { getCourseProfile } from '../physics/courseProfiles.js';
 import { recordKcal, gourmetVerdict } from '../utils/gourmet.js';
 import { journeyTotalKm } from '../utils/journey.js';
 import { JourneyCard } from './JourneyCard.js';
+import { landTimeLabel, tamatebakoComment } from '../utils/tamatebako.js';
 
 /**
  * リザルト画面。
@@ -58,6 +59,7 @@ export function ResultScreen({ record, onBackToSetup, onOpenHistory }) {
       ),
       h('p', { className: 'muted small' }, 'ペダルを回した仕事量から、体の効率を約24%として推定した目安です。')
     ),
+    record.courseId === 'ryugu' && h(TamatebakoCard, { elapsedS: record.elapsedTimeS }),
     h(JourneyCard, { totalKm, rideKm }),
     h(
       'section', { className: 'card' },
@@ -74,6 +76,25 @@ export function ResultScreen({ record, onBackToSetup, onOpenHistory }) {
       'div', { className: 'start-bar' },
       h('button', { className: 'btn btn-primary', onClick: onBackToSetup }, 'セットアップ画面に戻る'),
       h('button', { className: 'btn btn-link', onClick: onOpenHistory }, '過去の走行記録を見る')
+    )
+  );
+}
+
+/** 竜宮城の海底コースだけ: 乙姫さまのおみやげの玉手箱。開けると、地上で過ぎた時間がわかる。 */
+function TamatebakoCard({ elapsedS }) {
+  const [opened, setOpened] = useState(false);
+  return h(
+    'section', { className: `card tamatebako-card${opened ? ' is-open' : ''}` },
+    h('h2', null, '🎁 乙姫さまからのおみやげ'),
+    !opened && h('p', null, '玉手箱をいただきました。「決して開けてはなりませんよ」とのことです。'),
+    !opened && h('button', { className: 'btn btn-primary tamatebako-open', onClick: () => setOpened(true) }, '玉手箱を開ける'),
+    opened && h('div', { className: 'tamatebako-smoke', 'aria-hidden': 'true' }, h('span'), h('span'), h('span')),
+    opened && h(
+      'div', { className: 'tamatebako-result' },
+      h('p', null, `竜宮城で過ごした時間: ${fmtTime(elapsedS)}`),
+      h('p', { className: 'tamatebako-years' }, '地上では ', h('strong', null, landTimeLabel(elapsedS)), ' が過ぎていました'),
+      h('p', null, tamatebakoComment(elapsedS)),
+      h('p', { className: 'muted small' }, '「竜宮城の1日は地上の100年」という言い伝えで換算しています(記録には影響しません)。')
     )
   );
 }

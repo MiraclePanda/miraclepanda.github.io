@@ -1,4 +1,5 @@
-// 観光地コースの名所の建物(五重塔・三重塔・三門/楼門・大仏殿・清水の舞台・浮見堂)の3Dの形。
+// 観光地コースの名所の建物(五重塔・三重塔・三門/楼門・大仏殿・清水の舞台・浮見堂、
+// 竜宮城の海底コースの竜宮門・竜宮城・乙姫の舞台・玉手箱)の3Dの形。
 // roadsideActors.js のテンプレートの一種で、描画・配置は roadsideActors.js が行う
 // (敷地の広さ・地面の合わせ方は roadsideLayout.js の SIGHT_FOOTPRINTS)。
 //
@@ -10,7 +11,7 @@
 // (頂点カラー + 共通のアトラス、1種類1ジオメトリ = 1 draw call)。
 
 import THREE from './three.js';
-import { PAGODA_PLINTH_HALF_M } from './roadsideLayout.js';
+import { PAGODA_PLINTH_HALF_M, RYUGU_GATE_ARCH_OUTSET_M, RYUGU_GATE_PIER_M, RYUGU_GATE_HALF_DEPTH_M } from './roadsideLayout.js';
 
 /**
  * 反りのある寄棟屋根(四角い平面形、軒先は平らで頂部ほど急、四隅が跳ね上がる)。
@@ -314,10 +315,205 @@ function ukimidoModel(kit) {
   return { parts: [{ name: 'body', geo: merge(g), pivot: [0, 0, 0] }], animate() {} };
 }
 
+// ---- 竜宮城の海底コース ----
+
+const RYUGU_RED = 0xd8402a;
+const RYUGU_WHITE = 0xf4efe4;
+const RYUGU_ROOF = 0x3f8a7c; // 緑青の銅板葺き
+
+/** 棟の両端の金の鯱(しゃちほこ)。 */
+function shachi(kit, g, x, y, z, size = 1) {
+  const { paint, box, sphere } = kit;
+  for (const sx of [-1, 1]) {
+    g.push(paint(box(0.7 * size, 1.6 * size, 1.0 * size, [sx * x, y + 0.8 * size, z]), GOLD));
+    g.push(paint(sphere(0.55 * size, [sx * x, y + 1.9 * size, z], [0.8, 1.4, 1]), GOLD));
+  }
+}
+
+/**
+ * 竜宮門(竜宮造りの楼門)。道路をまたいで建ち、下層は白い漆喰にアーチの通り抜け、上層は朱塗りの楼閣に
+ * 緑青の屋根。原点は道路中心の路面、通り抜けは Z 方向(走る向き −Z にくぐる)。脚は地下 4m まで。
+ */
+function ryuguGateModel(kit, roadHalfWidthM) {
+  const { paint, merge, box, rod, sphere } = kit;
+  const A = roadHalfWidthM + RYUGU_GATE_ARCH_OUTSET_M; // アーチの内側の半幅
+  const P = RYUGU_GATE_PIER_M;
+  const D = RYUGU_GATE_HALF_DEPTH_M * 2;
+  const outer = A + P;
+  const spring = 4.6; // アーチの立ち上がり
+  const top = spring + A + 2.2; // 下層の上端
+  const g = [];
+  // 下層: 逆U字の白壁を Z 方向に押し出す
+  const shape = new THREE.Shape();
+  shape.moveTo(-outer, -4);
+  shape.lineTo(-A, -4);
+  shape.lineTo(-A, spring);
+  shape.absarc(0, spring, A, Math.PI, 0, true);
+  shape.lineTo(A, -4);
+  shape.lineTo(outer, -4);
+  shape.lineTo(outer, top);
+  shape.lineTo(-outer, top);
+  shape.closePath();
+  const body = new THREE.ExtrudeGeometry(shape, { depth: D, bevelEnabled: false, curveSegments: 20 }).translate(0, 0, -D / 2);
+  g.push(paint(body, RYUGU_WHITE));
+  // 脚の根元の黒い腰石と、アーチの縁取り(朱)
+  for (const sx of [-1, 1]) g.push(paint(box(P + 0.3, 5.2, D + 0.3, [sx * (A + P / 2), -1.4, 0]), 0x3a3633));
+  const rim = new THREE.TorusGeometry(A + 0.25, 0.32, 8, 28, Math.PI).translate(0, spring, 0);
+  for (const z of [-D / 2 - 0.05, D / 2 + 0.05]) g.push(paint(rim.clone().translate(0, 0, z), RYUGU_RED));
+  rim.dispose();
+  // 下層の上の軒(裳階)
+  g.push(paint(hipRoof(outer + 1.4, D / 2 + 1.4, 1.6, 0.7, outer - D / 2).translate(0, top, 0), RYUGU_ROOF));
+  // 上層: 縁と高欄、白壁と朱の柱、緑青の入母屋屋根
+  const u0 = top + 1.1;
+  const uw = outer * 1.05;
+  const ud = D * 0.62;
+  g.push(paint(box(uw + 1.6, 0.4, ud + 1.6, [0, u0 + 0.2, 0]), RYUGU_RED));
+  for (const sz of [-1, 1]) g.push(paint(box(uw + 1.6, 0.16, 0.16, [0, u0 + 1.2, sz * (ud / 2 + 0.7)]), RYUGU_RED));
+  for (const sx of [-1, 1]) g.push(paint(box(0.16, 0.16, ud + 1.6, [sx * (uw / 2 + 0.7), u0 + 1.2, 0]), RYUGU_RED));
+  const h2 = 4.4;
+  g.push(paint(box(uw, h2, ud, [0, u0 + 0.4 + h2 / 2, 0]), RYUGU_WHITE));
+  for (const x of linspace(-uw / 2, uw / 2, 5)) {
+    for (const sz of [-1, 1]) g.push(paint(box(0.55, h2, 0.3, [x, u0 + 0.4 + h2 / 2, sz * (ud / 2 + 0.05)]), RYUGU_RED));
+  }
+  // 正面・背面の丸窓(花頭窓のかわり)
+  for (const sz of [-1, 1]) g.push(paint(new THREE.CylinderGeometry(1.1, 1.1, 0.2, 20).rotateX(Math.PI / 2).translate(0, u0 + 0.4 + h2 / 2, sz * (ud / 2 + 0.12)), 0x2a1a14));
+  g.push(paint(box(uw + 0.6, 0.7, ud + 0.6, [0, u0 + 0.4 + h2 + 0.35, 0]), RYUGU_RED));
+  const r2 = u0 + 0.4 + h2 + 0.7;
+  const rh = 4.6;
+  const ridgeHalf = uw * 0.32;
+  g.push(paint(hipRoof(uw / 2 + 2.6, ud / 2 + 2.4, rh, 1.4, ridgeHalf).translate(0, r2, 0), RYUGU_ROOF));
+  g.push(paint(gableEnds(ridgeHalf * 0.86, ud * 0.22, r2 + rh * 0.62, r2 + rh), RYUGU_WHITE));
+  g.push(paint(box(ridgeHalf * 2 + 0.6, 0.7, 0.7, [0, r2 + rh + 0.1, 0]), 0x2c3a36));
+  shachi(kit, g, ridgeHalf + 0.1, r2 + rh + 0.3, 0, 0.9);
+  // 門の脇の灯籠(丸い提灯)
+  for (const sx of [-1, 1]) {
+    const x = sx * (outer + 1.6);
+    g.push(paint(rod([x, -1, D / 2 + 0.6], [x, 3.4, D / 2 + 0.6], 0.12, 0.12, 6), RYUGU_RED));
+    g.push(paint(sphere(0.55, [x, 3.9, D / 2 + 0.6], [1, 1.25, 1]), 0xffe2a8));
+  }
+  return { parts: [{ name: 'body', geo: merge(g), pivot: [0, 0, 0] }], animate() {} };
+}
+
+/**
+ * 竜宮城(海底のサンゴ礁の上の朱塗りの御殿)。白い基壇の上に二重屋根の本殿、両脇に三重の楼閣と回廊。
+ * 原点は中心の地面、正面は +Z。「絵にも描けない美しさ」なので、遠くからも分かるよう大きめに作る。
+ */
+function ryuguPalaceModel(kit) {
+  const { paint, merge, box, sphere } = kit;
+  const g = [];
+  g.push(paint(box(66, 14, 46, [0, -4, 0]), 0xe8ddd0)); // 基壇(上面 y = 3)
+  g.push(paint(box(66.6, 0.6, 46.6, [0, 3, 0]), RYUGU_RED));
+  g.push(paint(box(14, 3, 6, [0, 1.5, 25.5]), 0xe8ddd0)); // 正面の石段
+  // 本殿 下層
+  const posts = (w, d, y0, h, nx) => {
+    for (const x of linspace(-w / 2, w / 2, nx)) for (const sz of [-1, 1]) g.push(paint(box(0.9, h, 0.5, [x, y0 + h / 2, sz * (d / 2 + 0.1)]), RYUGU_RED));
+    g.push(paint(box(w + 0.6, 0.8, d + 0.6, [0, y0 + h - 0.4, 0]), RYUGU_RED));
+  };
+  g.push(paint(box(32, 10, 20, [0, 8, 0]), RYUGU_WHITE));
+  posts(32, 20, 3, 10, 9);
+  g.push(paint(box(9, 7, 0.4, [0, 6.5, 10.3]), 0x2a1a14)); // 正面の扉
+  g.push(paint(hipRoof(20, 13.5, 4, 1.6, 6.5).translate(0, 13, 0), RYUGU_ROOF));
+  // 本殿 上層
+  g.push(paint(box(21, 7, 13, [0, 18.5, 0]), RYUGU_WHITE));
+  posts(21, 13, 15, 7, 6);
+  g.push(paint(hipRoof(14.5, 10, 8, 1.8, 5).translate(0, 22, 0), RYUGU_ROOF));
+  g.push(paint(box(11, 1, 1, [0, 30.2, 0]), 0x2c3a36));
+  shachi(kit, g, 5.6, 30.4, 0, 1.4);
+  // 唐破風(正面の曲線の屋根)と金の飾り
+  g.push(paint(
+    new THREE.CylinderGeometry(5, 5, 5, 20, 1, true, Math.PI / 2, Math.PI).rotateX(Math.PI / 2).scale(1, 0.42, 1).translate(0, 14.2, 12.5),
+    RYUGU_ROOF
+  ));
+  g.push(paint(box(6, 1.2, 0.5, [0, 12.2, 12.8]), GOLD));
+  // 両脇の三重の楼閣
+  for (const sx of [-1, 1]) {
+    const x = sx * 25;
+    let y = 3;
+    [[8, 6], [6.6, 4.4], [5.4, 4]].forEach(([w, h], i) => {
+      g.push(paint(box(w, h, w, [x, y + h / 2, -4]), RYUGU_WHITE));
+      for (const ox of [-w / 2, w / 2]) for (const oz of [-w / 2, w / 2]) g.push(paint(box(0.5, h, 0.5, [x + ox, y + h / 2, -4 + oz]), RYUGU_RED));
+      const last = i === 2;
+      g.push(paint(eaveRoof(w / 2 + 1.8, last ? 0.4 : w * 0.4, last ? 3.6 : 1.4, 0.8).translate(x, y + h, -4), RYUGU_ROOF));
+      y += h + (last ? 3.6 : 1.2);
+    });
+    g.push(paint(sphere(0.6, [x, y + 0.3, -4]), GOLD)); // 宝珠
+    // 本殿へつながる回廊
+    g.push(paint(box(10, 4.5, 4, [sx * 18.5, 5.25, -2]), RYUGU_RED));
+    g.push(paint(box(9.6, 3.2, 4.1, [sx * 18.5, 5.4, -2]), RYUGU_WHITE));
+    g.push(paint(hipRoof(5.8, 3.2, 1.6, 0.4, 3).translate(sx * 18.5, 7.5, -2), RYUGU_ROOF));
+  }
+  return { parts: [{ name: 'body', geo: merge(g), pivot: [0, 0, 0] }], animate() {} };
+}
+
+/**
+ * 乙姫の舞台(丸い舞台、朱の高欄、奥に大きなホタテ貝の屏風と真珠)。原点は舞台の中心の地面、正面は +Z。
+ * まわりで舞い踊るタイやヒラメは ryuguParts.js が動かす。
+ */
+function otohimeStageModel(kit) {
+  const { paint, merge, rod, sphere } = kit;
+  const g = [];
+  const R = 8;
+  g.push(paint(new THREE.CylinderGeometry(R, R + 0.4, 5.2, 40).translate(0, -1.4, 0), 0xeeddd2));
+  g.push(paint(new THREE.CylinderGeometry(R + 0.05, R + 0.05, 0.3, 40, 1, true).translate(0, 1.05, 0), GOLD));
+  // 高欄(正面は開けて、客席=道路側から舞台が見えるように)
+  for (let i = 0; i < 28; i++) {
+    const a = (i / 28) * Math.PI * 2;
+    if (Math.cos(a) > 0.82) continue; // +Z 側
+    g.push(paint(rod([Math.sin(a) * (R - 0.3), 1.2, Math.cos(a) * (R - 0.3)], [Math.sin(a) * (R - 0.3), 2.3, Math.cos(a) * (R - 0.3)], 0.09, 0.09, 6), RYUGU_RED));
+  }
+  const rail = new THREE.TorusGeometry(R - 0.3, 0.08, 6, 48, Math.PI * 2 - 2 * Math.acos(0.82)).rotateX(Math.PI / 2).rotateY(Math.PI / 2 + Math.acos(0.82));
+  g.push(paint(rail.translate(0, 2.3, 0), RYUGU_RED));
+  // 大きなホタテ貝の屏風(放射状の筋と、ゆるい反り)
+  const shell = new THREE.CircleGeometry(7.5, 48, 0, Math.PI);
+  const sp = shell.attributes.position;
+  for (let i = 0; i < sp.count; i++) {
+    const x = sp.getX(i);
+    const y = sp.getY(i);
+    const r = Math.hypot(x, y) / 7.5;
+    const th = Math.atan2(y, x);
+    sp.setZ(i, 0.45 * Math.abs(Math.sin(th * 9)) * r + 1.6 * r * r);
+  }
+  shell.computeVertexNormals();
+  g.push(paint(shell.translate(0, 1.2, -6), (x, y) => {
+    const th = Math.atan2(y - 1.2, x);
+    return Math.sin(th * 18) > 0.2 ? 0xf6d4c4 : 0xe9a99a;
+  }));
+  g.push(paint(sphere(1.05, [0, 2.3, -4.6], [1, 1, 1], 20), 0xfbf6ee)); // 真珠
+  // 舞台の両脇の柱と提灯
+  for (const sx of [-1, 1]) {
+    const x = sx * (R + 1.2);
+    g.push(paint(rod([x, -1, 3], [x, 6.5, 3], 0.22, 0.22, 8), RYUGU_RED));
+    g.push(paint(sphere(0.75, [x, 5.6, 3], [1, 1.25, 1]), 0xffe2a8));
+  }
+  return { parts: [{ name: 'body', geo: merge(g), pivot: [0, 0, 0] }], animate() {} };
+}
+
+/** 玉手箱(岩の台座の上の黒漆の箱と朱の紐)。原点は台座の中心の地面、正面は +Z。開けてはいけない。 */
+function tamatebakoModel(kit) {
+  const { paint, merge, box, sphere } = kit;
+  const g = [];
+  g.push(paint(box(2.6, 3.4, 2.4, [0, -0.3, 0]), 0x66737a)); // 岩の台座(上面 y = 1.4)
+  g.push(paint(box(1.6, 1.0, 1.2, [0, 1.9, 0]), 0x1b1515));
+  g.push(paint(box(1.7, 0.32, 1.3, [0, 2.56, 0]), 0x231a1a));
+  for (const [w, d, x, z] of [[1.72, 0.06, 0, 0.66], [1.72, 0.06, 0, -0.66], [0.06, 1.32, 0.86, 0], [0.06, 1.32, -0.86, 0]]) {
+    g.push(paint(box(w, 0.08, d, [x, 2.4, z]), GOLD));
+  }
+  // 朱の紐を十字にかけ、正面で蝶結び
+  g.push(paint(box(1.74, 1.4, 0.12, [0, 2.1, 0]), RYUGU_RED));
+  g.push(paint(box(0.12, 1.4, 1.34, [0, 2.1, 0]), RYUGU_RED));
+  g.push(paint(sphere(0.16, [0, 2.75, 0.62]), RYUGU_RED));
+  for (const sx of [-1, 1]) g.push(paint(sphere(0.22, [sx * 0.28, 2.78, 0.62], [1.3, 0.7, 0.5]), RYUGU_RED));
+  // 遠くからも分かるよう、少し大きめに
+  return { parts: [{ name: 'body', geo: merge(g).scale(1.5, 1.5, 1.5), pivot: [0, 0, 0] }], animate() {} };
+}
+
 const VERMILION = 0xd24a2a;
 
-/** 名所の種類からテンプレートを作る(該当しなければ null)。 */
-export function sightTemplate(kind, kit) {
+/**
+ * 名所の種類からテンプレートを作る(該当しなければ null)。
+ * roadHalfWidthM は道路をまたぐ竜宮門の大きさに使う。
+ */
+export function sightTemplate(kind, kit, roadHalfWidthM = 3) {
   switch (kind) {
     case 'pagoda':
       return pagodaModel(kit, {
@@ -344,6 +540,14 @@ export function sightTemplate(kind, kit) {
       return kiyomizuModel(kit);
     case 'ukimido':
       return ukimidoModel(kit);
+    case 'ryuguGate':
+      return ryuguGateModel(kit, roadHalfWidthM);
+    case 'ryuguPalace':
+      return ryuguPalaceModel(kit);
+    case 'otohimeStage':
+      return otohimeStageModel(kit);
+    case 'tamatebako':
+      return tamatebakoModel(kit);
     default:
       return null;
   }

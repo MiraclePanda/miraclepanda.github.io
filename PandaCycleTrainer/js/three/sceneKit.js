@@ -50,6 +50,17 @@ void main() {
   vec3 col = mix(uHorizon, uZenith, pow(clamp(h, 0.0, 1.0), 0.5));
   col = mix(col, uGround, 1.0 - smoothstep(-0.12, 0.0, h));
   float s = max(dot(d, uSunDir), 0.0);
+#ifdef SKY_UNDERWATER
+  // 海の底から見上げた空: 太陽は水面でぼやけ、真上に水面の明るい窓(スネルの窓)とさざ波の模様。雲・星は無い
+  col += uSunColor * pow(s, 10.0) * 0.45;
+  if (h > 0.0) {
+    vec2 wp = d.xz / (h + 0.08) * 3.0;
+    float ripple = fbm(wp + vec2(1.3, 7.1)) * 0.6 + fbm(wp * 2.7 + vec2(5.2, 2.4)) * 0.4;
+    float window = smoothstep(0.45, 0.85, h);
+    col = mix(col, uZenith * 1.15 + uSunColor * 0.25, window * 0.6);
+    col += uSunColor * window * smoothstep(0.45, 0.8, ripple) * 0.35;
+  }
+#else
   col += uSunColor * (pow(s, 1200.0) * 12.0 + pow(s, 16.0) * 0.18);
   if (h > 0.0) {
     // 空の高いところにある平面へ投影した、ゆるいfBmの積雲。
@@ -69,6 +80,7 @@ void main() {
     col = mix(col, cloud, cover * 0.9);
 #endif
   }
+#endif
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -83,11 +95,12 @@ const SKY_RADIUS_M = 700;
  * 時間帯・天候(environmentPresets.js の resolveEnvironment)で空を変えるときは、
  * 雲量 cloudCover・雲の色 cloud・太陽の輝き sunGlow・夜度 night を渡して焼き直す。
  * これらが既定値(0 / - / 1 / 0)のときは従来と同じシェーダーで焼く(昼・晴れの見た目を変えないため)。
+ * underwater(竜宮城の海底)なら、雲・星の代わりに水面を見上げた明るい窓とさざ波を焼く。
  * @param {THREE.WebGLRenderer} renderer
  * @param {{zenith:string, horizon:string, ground:string, sunColor:string, sunDir:THREE.Vector3,
- *   cloudCover?:number, cloud?:string, sunGlow?:number, night?:number}} colors
+ *   cloudCover?:number, cloud?:string, sunGlow?:number, night?:number, underwater?:boolean}} colors
  */
-export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, cloudCover = 0, cloud = '#ffffff', sunGlow = 1, night = 0 }) {
+export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, cloudCover = 0, cloud = '#ffffff', sunGlow = 1, night = 0, underwater = false }) {
   const backgroundTarget = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
   const cubeCamera = new THREE.CubeCamera(0.1, SKY_RADIUS_M * 2, backgroundTarget);
   const weather = cloudCover !== 0 || sunGlow !== 1 || night !== 0;
@@ -107,7 +120,7 @@ export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, c
   const material = new THREE.ShaderMaterial({
     vertexShader: SKY_VERTEX,
     fragmentShader: SKY_FRAGMENT,
-    defines: weather ? { SKY_WEATHER: '' } : {},
+    defines: { ...(weather ? { SKY_WEATHER: '' } : {}), ...(underwater ? { SKY_UNDERWATER: '' } : {}) },
     uniforms,
     side: THREE.BackSide,
     depthWrite: false,

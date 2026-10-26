@@ -282,6 +282,46 @@ export const LANDSCAPES = {
     rockMaxM: 1.2,
     forestCover: [0.44, 0.58],
   },
+  // 竜宮城の海底(ryuguLayout.js が地形の起伏・色、サンゴ・昆布・魚などの配置を担う)。水面は使わず、
+  // 空は水面を見上げた海の色(LandscapeScene の ATMOSPHERE.ryugu、underwater)。左は海溝、右は岩山。
+  ryugu: {
+    id: 'ryugu',
+    seed: 7193,
+    roadHalfWidthM: 3.2,
+    shoulderM: 0.6,
+    centerLine: 'none',
+    roadStyle: 'sand',
+    underwater: true,
+    curves: [
+      { ampM: 16, lenM: 1000, phase: 0.9 },
+      { ampM: 5, lenM: 360, phase: 2.4 },
+    ],
+    tour: {
+      kind: 'ryugu',
+      terrain: true,
+      loopM: 6000,
+      sandM: 6, // 道路脇の平らな白い砂の幅(路肩外縁から)
+      hillU: 120, // 右の岩山の始まり
+      kelp: { fromM: 2550, toM: 3450 }, // 昆布の林
+      ship: { atM: 3950, u: 34 }, // 沈没船(左側)
+      trench: { fromM: 4200, toM: 4950, baseU: 170, nearU: 26, depthM: 160 }, // 海溝の縁(左側)
+      stage: { atM: 2250, d: -15.7 }, // 乙姫の舞台(コースプロファイルの landmarks と同じ位置)
+    },
+    valley: { minDropM: 400 }, // 水面は使わない。海底より十分低く隠しておく
+    hill: {},
+    treeline: null,
+    snowline: null,
+    trees: { valley: 0, hill: 0, coniferRatio: 0, maxLateralM: 100, maxSlope: 1 },
+    farTrees: { density: 0, coniferRatio: 0, maxLateralM: 1000 },
+    guardrailChance: 0,
+    delineators: false,
+    houses: false,
+    boats: false,
+    walls: false,
+    rocks: 0.5,
+    rockMaxM: 2.6,
+    forestCover: [1, 1],
+  },
 };
 
 export function getLandscape(id) {
