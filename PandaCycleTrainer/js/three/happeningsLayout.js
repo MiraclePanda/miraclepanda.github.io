@@ -1,5 +1,5 @@
 // 沿道のハプニング(猫が横切る・パンダが並走する・謎の応援団・給水所・鹿のおじぎ)と、
-// 観光地コースの名所(大鳥居・五重塔)の配置を決める純粋ロジック(Three.js 非依存。テスト対象)。
+// 観光地コースの名所(大鳥居・五重塔・三門・大仏殿・清水の舞台など)の配置を決める純粋ロジック(Three.js 非依存。テスト対象)。
 // 実際の3D描画は roadsideActors.js(CityScene / LandscapeScene が使う)。
 //
 // ハプニングの地点は seed から決定的に決める(同じ seed なら毎回同じ距離で同じことが起きる)。
@@ -7,18 +7,21 @@
 //
 // 各フレームの出力 actors は次の形(roadsideActors.js との契約):
 //   { id, kind, distanceM, side, lateralM, yaw, moving, phase }
-//   - kind: 'cat' | 'panda' | 'cheer' | 'aid' | 'deer' | 'torii' | 'pagoda'
+//   - kind: 'cat' | 'panda' | 'cheer' | 'aid' | 'deer' | LANDMARK_KINDS のいずれか
 //   - distanceM: コース上の絶対距離(m)。ループするコースでも周回をまたいで増え続ける距離
 //   - side: 0 = 道路上(lateralM は道路中心から右向きの距離)、
 //           −1 / +1 = 左 / 右の沿道(lateralM は道路の端から外向きの距離)
 //   - yaw: 道路の進行方向を 0 とした向き(rad、左回りが正。+π/2 = 左を向く、−π/2 = 右を向く、π = こちらを向く)
 //   - moving: 0〜1 の動きの強さ(脚の振り・旗振り・おじぎの大きさ)
 //   - phase: 動きの位相(s)。毎フレーム増える
+//   - viewM: (大きな名所だけ)前方この距離から描く。省略時は ACTORS_AHEAD_M まで
 
 import { mulberry32 } from './cityLayout.js';
 
 export const HAPPENING_KINDS = ['cat', 'panda', 'cheer', 'aid', 'deer'];
-export const LANDMARK_KINDS = ['torii', 'pagoda'];
+// 大鳥居・五重塔(白壁)・五重塔(朱塗り、忠霊塔)・三重塔(朱塗り)・三門(木地の大きな二重門)・
+// 楼門(朱塗りの二重門)・大仏殿・清水の舞台・浮見堂
+export const LANDMARK_KINDS = ['torii', 'pagoda', 'pagodaRed', 'pagoda3', 'sanmon', 'romon', 'daibutsuden', 'kiyomizu', 'ukimido'];
 
 /** ハプニングの既定の出やすさ(コースプロファイルの happenings で上書きできる)。 */
 export const DEFAULT_HAPPENING_WEIGHTS = { cat: 3, panda: 2, cheer: 2, aid: 2, deer: 0 };
@@ -116,8 +119,9 @@ export function happeningToast(key, variant) {
 }
 
 /**
- * コースの名所(大鳥居・五重塔など)。profile.landmarks = [{ km, kind, side, lateralM, yaw? }] を
+ * コースの名所(大鳥居・五重塔など)。profile.landmarks = [{ km, kind, side, lateralM, yaw?, viewM? }] を
  * 1周ごとに繰り返して、描く範囲にあるものを actors の形で返す。fixedLength のコースは繰り返さない。
+ * viewM のある名所(大仏殿・清水の舞台など遠くから見える大きな建物)は、前方 max(aheadM, viewM) まで返す。
  */
 export function landmarkActors(profile, distanceM, behindM = ACTORS_BEHIND_M, aheadM = ACTORS_AHEAD_M) {
   const marks = Array.isArray(profile?.landmarks) ? profile.landmarks : [];
@@ -125,17 +129,20 @@ export function landmarkActors(profile, distanceM, behindM = ACTORS_BEHIND_M, ah
   const loopM = (profile.loopLengthKm ?? 0) * 1000;
   const out = [];
   const from = distanceM - behindM;
-  const to = distanceM + aheadM;
+  const reach = (m) => Math.max(aheadM, Number.isFinite(m.viewM) ? m.viewM : 0);
+  const to = distanceM + Math.max(...marks.map(reach));
   const firstLoop = loopM > 0 && !profile.fixedLength ? Math.max(0, Math.floor(from / loopM)) : 0;
   const lastLoop = loopM > 0 && !profile.fixedLength ? Math.floor(to / loopM) : 0;
   for (let loop = firstLoop; loop <= lastLoop; loop++) {
     marks.forEach((m, i) => {
       const at = loop * loopM + m.km * 1000;
-      if (at < from || at > to) return;
-      out.push({
+      if (at < from || at > distanceM + reach(m)) return;
+      const actor = {
         id: `lm-${loop}-${i}`, kind: m.kind, distanceM: at,
         side: m.side ?? 0, lateralM: m.lateralM ?? 0, yaw: m.yaw ?? 0, moving: 0, phase: 0,
-      });
+      };
+      if (Number.isFinite(m.viewM)) actor.viewM = m.viewM;
+      out.push(actor);
     });
   }
   return out;

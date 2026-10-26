@@ -1,4 +1,4 @@
-// 沿道のハプニング(猫・パンダ・応援団・給水所・鹿)と観光地の名所(大鳥居・五重塔)の3D描画
+// 沿道のハプニング(猫・パンダ・応援団・給水所・鹿)と観光地の名所(大鳥居・五重塔・三門など)の3D描画
 // (CityScene / LandscapeScene が使う。上野不忍池は対象外)。配置と動きの入力は happeningsLayout.js の actors、
 // 道路の断面への横位置の決め方は roadsideLayout.js(どちらも Three.js 非依存の純粋ロジック)。
 //
@@ -6,7 +6,8 @@
 // - マテリアルは全部で1つ(頂点カラー + 文字のアトラステクスチャ、両面)。色のついた部品は
 //   アトラスの白い所を指す UV にして頂点カラーで塗り、旗・看板・扁額だけ文字の所を指す。
 //   こうすると旗も腕と同じメッシュに結合でき、シェーダープログラムも1つで済む。
-// - 動かない部品は種類ごとに1つのジオメトリへ焼き込む(大鳥居・五重塔・給水所は1 draw call)。
+// - 動かない部品は種類ごとに1つのジオメトリへ焼き込む(大鳥居・名所の建物・給水所は1 draw call)。
+//   名所の建物の形は sightModels.js。
 //   脚・尻尾・首・旗を振る腕だけ別メッシュにして回す(猫6・パンダ5・鹿6・応援団8 draw call)。
 // - 模型(とジオメトリ)は種類ごとに初めて必要になったときに作り、以後は使い回す。
 //   同じ種類が同時に出るのは高々 MAX_PER_KEY 体まで。使っていない模型は visible = false。
@@ -15,12 +16,14 @@
 
 import THREE from './three.js';
 import {
-  actorLateralM, PAGODA_PLINTH_HALF_M, TORII_PILLAR_OUTSET_M, AID_HALF_WIDTH_M, AID_DEPTH_M, variantOf,
+  actorLateralM, SIGHT_FOOTPRINTS, TORII_PILLAR_OUTSET_M, AID_HALF_WIDTH_M, AID_DEPTH_M, variantOf,
 } from './roadsideLayout.js';
+import { sightTemplate } from './sightModels.js';
 
 // 同じ種類(猫は毛色ごと)の模型を同時に描く上限
 const MAX_PER_KEY = 4;
-// 描く前方の上限(m)。happeningsLayout の描画範囲(前方300m)より少し広く
+// 描く前方の上限(m)。happeningsLayout の描画範囲(前方300m)より少し広く。
+// 遠くから見える大きな名所(actor.viewM があるもの)はその距離まで描く
 const MAX_AHEAD_M = 400;
 // 一度に描く actors の上限
 const MAX_ACTORS = 16;
@@ -207,6 +210,9 @@ function sphere(r, [x, y, z], [sx, sy, sz] = [1, 1, 1], seg = 12) {
 function box(w, h, d, [x, y, z]) {
   return new THREE.BoxGeometry(w, h, d).translate(x, y, z);
 }
+
+// 名所の建物(sightModels.js)に渡す道具
+const KIT = { paint, merge, box, rod, sphere };
 
 // ---- 模型のテンプレート ----
 // テンプレート = { parts: [{ name, geo, pivot, parent }], animate(nodes, actor, low) }。
@@ -543,91 +549,6 @@ function toriiTemplate(roadHalfWidthM) {
   return { parts: [{ name: 'body', geo: merge(geos), pivot: [0, 0, 0] }], animate() {} };
 }
 
-/**
- * 反りのある寄棟屋根(四角い平面形、軒先は平らで頂部ほど急、四隅が跳ね上がる)。
- * rBottom: 軒先の半幅、rTop: 上端の半幅、fascia > 0 なら軒先の鼻隠し(縦の帯)を作る。
- */
-function eaveRoof(rBottom, rTop, height, lift, fascia = 0) {
-  const geo = new THREE.CylinderGeometry(1, 1, 1, 24, fascia ? 1 : 5, true);
-  const pos = geo.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const z = pos.getZ(i);
-    const t = pos.getY(i) + 0.5;
-    const th = Math.atan2(x, z);
-    // 円を正方形へ(辺が軸に沿う)。corner は四隅で 1
-    const k = 1 / Math.max(Math.abs(Math.sin(th)), Math.abs(Math.cos(th)));
-    const corner = (k - 1) / (Math.SQRT2 - 1);
-    let r;
-    let y;
-    if (fascia) {
-      r = rBottom;
-      y = lift * corner - (1 - t) * fascia;
-    } else {
-      r = rBottom + (rTop - rBottom) * t;
-      y = height * Math.pow(t, 1.7) + lift * corner * Math.pow(1 - t, 2.5);
-    }
-    pos.setXYZ(i, Math.sin(th) * r * k, y, Math.cos(th) * r * k);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-
-function pagodaTemplate() {
-  // 五重塔。原点は基壇の中心の地面(基壇は斜面でも浮かないよう地下 12m まで)
-  const WALL = 0xece5d4;
-  const WOOD = 0x5c2a1a;
-  const ROOF = 0x3d3c3c;
-  const BRONZE = 0x8a7744;
-  const S = 1.12; // 全体の大きさ(高さ約42m)
-  const tower = [];
-  const storeys = [
-    { w: 7.6, h: 4.8 }, { w: 6.8, h: 3.6 }, { w: 6.1, h: 3.4 }, { w: 5.4, h: 3.2 }, { w: 4.7, h: 3.0 },
-  ];
-  let y = 0;
-  storeys.forEach(({ w, h }, i) => {
-    const half = w / 2;
-    const base = y;
-    // 白壁に、柱・長押・扉(濃い木部)を別の部品として重ねる(頂点カラーの補間でにじまないように)
-    tower.push(paint(box(w, h, w, [0, base + h / 2, 0]), WALL));
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) tower.push(paint(box(0.42, h, 0.42, [sx * half, base + h / 2, sz * half]), WOOD));
-    }
-    for (const o of [-half / 3, half / 3]) {
-      tower.push(paint(box(0.26, h, w + 0.08, [o, base + h / 2, 0]), WOOD));
-      tower.push(paint(box(w + 0.08, h, 0.26, [0, base + h / 2, o]), WOOD));
-    }
-    tower.push(paint(box(w + 0.12, 0.45, w + 0.12, [0, base + 0.22, 0]), WOOD));
-    tower.push(paint(box(w + 0.12, 0.5, w + 0.12, [0, base + h - 0.25, 0]), WOOD));
-    // 中央の柱間の扉(各面)
-    const doorW = (2 * half) / 3 - 0.5;
-    const doorH = h * 0.55;
-    tower.push(paint(box(doorW, doorH, w + 0.05, [0, base + 0.45 + doorH / 2, 0]), 0x3a1d12));
-    tower.push(paint(box(w + 0.05, doorH, doorW, [0, base + 0.45 + doorH / 2, 0]), 0x3a1d12));
-    if (i > 0) tower.push(paint(box(w + 0.9, 0.35, w + 0.9, [0, base + 0.18, 0]), WOOD)); // 縁(高欄)
-    const next = storeys[i + 1];
-    const roofY = base + h - 0.25;
-    const last = !next;
-    const rTop = last ? 0.55 : next.w / 2 * 0.92;
-    tower.push(paint(eaveRoof(half + 2.4, rTop, last ? 3.4 : 1.5, 0.9).translate(0, roofY, 0), ROOF));
-    tower.push(paint(eaveRoof(half + 2.4, 0, 0, 0.9, 0.35).translate(0, roofY, 0), WOOD));
-    y = last ? roofY + 3.4 : roofY + 1.35;
-  });
-  // 相輪(露盤・伏鉢・九輪・宝珠)
-  tower.push(paint(box(1.5, 0.8, 1.5, [0, y + 0.2, 0]), BRONZE));
-  tower.push(paint(sphere(0.65, [0, y + 0.6, 0], [1, 0.7, 1]), BRONZE));
-  tower.push(paint(new THREE.CylinderGeometry(0.12, 0.16, 8.6, 8).translate(0, y + 0.6 + 4.3, 0), BRONZE));
-  for (let i = 0; i < 9; i++) {
-    tower.push(paint(new THREE.CylinderGeometry(0.58 - i * 0.025, 0.58 - i * 0.025, 0.16, 12).translate(0, y + 1.6 + i * 0.62, 0), BRONZE));
-  }
-  tower.push(paint(sphere(0.3, [0, y + 9.5, 0]), 0xb39a52));
-  for (const g of tower) g.scale(S, S, S).translate(0, 1.2, 0);
-  // 基壇(石)
-  const plinthH = 12 + 1.2;
-  tower.push(paint(box(PAGODA_PLINTH_HALF_M * 2, plinthH, PAGODA_PLINTH_HALF_M * 2, [0, 1.2 - plinthH / 2, 0]), 0x8f8b84));
-  return { parts: [{ name: 'body', geo: merge(tower), pivot: [0, 0, 0] }], animate() {} };
-}
-
 // ---- 本体 ----
 
 /**
@@ -664,8 +585,9 @@ export function createRoadsideActors(parent, textures) {
       case 'cheer': t = cheerTemplate(); break;
       case 'aid': t = aidTemplate(); break;
       case 'torii': t = toriiTemplate(roadHalfWidthM); break;
-      case 'pagoda': t = pagodaTemplate(); break;
-      default: return null;
+      default:
+        t = sightTemplate(kind, KIT);
+        if (!t) return null;
     }
     templates.set(key, t);
     return t;
@@ -738,7 +660,7 @@ export function createRoadsideActors(parent, textures) {
           const a = actors[i];
           if (!a || !Number.isFinite(a.distanceM)) continue;
           const gap = a.distanceM - myDistanceM;
-          if (!(gap >= -behindM && gap <= MAX_AHEAD_M)) continue;
+          if (!(gap >= -behindM && gap <= Math.max(MAX_AHEAD_M, a.viewM ?? 0))) continue;
           const variant = a.kind === 'cat' ? variantOf(a.id, CAT_COATS) : 0;
           const key = a.kind === 'cat' ? `cat${variant}` : a.kind;
           let list = pools.get(key);
@@ -759,10 +681,15 @@ export function createRoadsideActors(parent, textures) {
           const lateral = actorLateralM(a, roadHalfWidthM);
           place(gap, lateral, 0, out);
           let ground;
-          if (a.kind === 'pagoda') {
-            // 基壇の幅の中で一番高い地面に建てる(低い側は深い基壇が隠す)
-            const r = PAGODA_PLINTH_HALF_M - 0.5;
-            ground = Math.max(groundAboveRoadM(gap, lateral), groundAboveRoadM(gap, lateral - r), groundAboveRoadM(gap, lateral + r));
+          const fp = SIGHT_FOOTPRINTS[a.kind];
+          if (fp && fp.ground === 'max') {
+            // 敷地の中で一番高い地面に建てる(低い側は深い基壇が隠す)
+            const rl = fp.halfLatM - 0.5;
+            const ra = fp.halfAlongM - 0.5;
+            ground = Math.max(
+              groundAboveRoadM(gap, lateral), groundAboveRoadM(gap, lateral - rl), groundAboveRoadM(gap, lateral + rl),
+              groundAboveRoadM(gap - ra, lateral), groundAboveRoadM(gap + ra, lateral)
+            );
           } else if (a.kind === 'torii') {
             ground = 0; // 柱は地下まで伸ばしてあるので路面に合わせる
           } else {

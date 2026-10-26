@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   planHappenings, createHappeningDirector, landmarkActors, pickKind, seedForCourse,
-  DEFAULT_HAPPENING_WEIGHTS, MIN_GAP_M, MAX_GAP_M, FIRST_AT_M, HAPPENING_KINDS,
+  DEFAULT_HAPPENING_WEIGHTS, MIN_GAP_M, MAX_GAP_M, FIRST_AT_M, HAPPENING_KINDS, LANDMARK_KINDS,
 } from '../../PandaCycleTrainer/js/three/happeningsLayout.js';
 import { guideEventsBetween } from '../../PandaCycleTrainer/js/utils/tourGuide.js';
 import {
@@ -150,7 +150,7 @@ test('tourist courses have guide, landmarks and local food; ueno has no happenin
   for (const p of tourist) {
     assert.ok(p.guide.length >= 3);
     for (const g of p.guide) assert.ok(g.km >= 0 && g.km < p.loopLengthKm && g.title);
-    for (const m of p.landmarks) assert.ok(['torii', 'pagoda'].includes(m.kind) && m.km < p.loopLengthKm);
+    for (const m of p.landmarks) assert.ok(LANDMARK_KINDS.includes(m.kind) && m.km < p.loopLengthKm);
     assert.ok(p.localFood.kcal > 0);
     assert.equal(p.points[p.points.length - 1][0], p.loopLengthKm);
   }
