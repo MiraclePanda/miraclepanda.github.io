@@ -75,7 +75,9 @@ export function createCountryRoadTexture(roadHalfWidthM, centerLine, anisotropy)
   paint('rgba(236,236,230,0.92)', 0.25 * mToPx);
   paint('rgba(236,236,230,0.92)', W - 0.25 * mToPx);
   // 中央線
-  if (centerLine === 'yellow') {
+  if (centerLine === 'none') {
+    // 中央線なし
+  } else if (centerLine === 'yellow') {
     paint('rgba(232,178,42,0.95)', W / 2);
   } else {
     // 白破線: 5m引いて7m空ける(12mで1周期)
@@ -84,6 +86,36 @@ export function createCountryRoadTexture(roadHalfWidthM, centerLine, anisotropy)
   }
   // 塗装の擦れ
   speckle(ctx, W, H, rand, 2500, 70, 110, 0.35, 1.2);
+  return toTexture(canvas, { anisotropy });
+}
+
+/**
+ * 京都の細い通りの石畳(中央線なし)。U=道路の全幅、V=ROAD_TILE_M(12m)分。
+ * 長方形の切石を横に目地をずらして敷き、石ごとに少しずつ色を変える。
+ */
+export function createStonePavingTexture(anisotropy) {
+  const W = 256;
+  const H = 512;
+  const { canvas, ctx } = makeCanvas(W, H);
+  const rand = rng(97);
+  ctx.fillStyle = '#5c5a55'; // 目地
+  ctx.fillRect(0, 0, W, H);
+  const rowH = 16; // 約0.37m
+  for (let y = 0; y < H; y += rowH) {
+    let x = -rand() * 40;
+    while (x < W) {
+      const w = 28 + rand() * 34;
+      const l = Math.floor(128 + rand() * 40);
+      ctx.fillStyle = `rgb(${l + 6},${l + 3},${l - 4})`;
+      ctx.fillRect(x + 1.5, y + 1.5, w - 3, rowH - 3);
+      x += w;
+    }
+  }
+  speckle(ctx, W, H, rand, 6000, 70, 190, 0.25, 1.3);
+  // 両端の側溝の縁石
+  ctx.fillStyle = 'rgba(150,146,138,0.95)';
+  ctx.fillRect(0, 0, 8, H);
+  ctx.fillRect(W - 8, 0, 8, H);
   return toTexture(canvas, { anisotropy });
 }
 
@@ -207,7 +239,9 @@ export function createRetainingWallTexture(anisotropy) {
 
 /** LandscapeScene用のテクスチャ一式。all は破棄用。 */
 export function createLandscapeTextures(L, anisotropy) {
-  const road = createCountryRoadTexture(L.roadHalfWidthM, L.centerLine, anisotropy);
+  const road = L.roadStyle === 'stone'
+    ? createStonePavingTexture(anisotropy)
+    : createCountryRoadTexture(L.roadHalfWidthM, L.centerLine, anisotropy);
   const shoulder = createShoulderTexture(anisotropy);
   const terrain = createTerrainDetailTexture(anisotropy);
   const water = createWaterNormalTexture();

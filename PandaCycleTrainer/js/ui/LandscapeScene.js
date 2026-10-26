@@ -22,6 +22,7 @@ import { createRoadsideActors } from '../three/roadsideActors.js';
 import { clearZones, inClearZone } from '../three/roadsideLayout.js';
 import { landmarkActors } from '../three/happeningsLayout.js';
 import { createBackdrop } from '../three/backdrops.js';
+import { buildTourParts, placeTourObjects } from '../three/tourParts.js';
 
 const { forwardRef, useImperativeHandle } = React;
 
@@ -45,6 +46,22 @@ const ATMOSPHERE = {
     sunDir: new THREE.Vector3(-0.55, 0.55, -0.6).normalize(),
     // 空気が澄んだ晴天(沖合5kmの初島まで見えるよう、フォグは薄め)
     hemiSky: 0xd4e6f7, hemiGround: 0x8a8272, fog: 0.00018, water: 0x2a6f93,
+  },
+  // 秋晴れの京都: 左前方の太陽が通りの町家に斜めの日差しを落とす。京都タワー・西山が霞みすぎないよう薄めのフォグ
+  kyoto: {
+    zenith: '#3576c8', horizon: '#dfe6ea', ground: '#9a9a92', sunColor: '#fff0d8',
+    sunDir: new THREE.Vector3(-0.42, 0.6, -0.55).normalize(),
+    hemiSky: 0xd6e2ef, hemiGround: 0x7a7466, fog: 0.00028, water: 0x3d6460,
+  },
+  nara: {
+    zenith: '#3a7cc9', horizon: '#dbe5ea', ground: '#90a08a', sunColor: '#fff2dc',
+    sunDir: new THREE.Vector3(-0.45, 0.6, -0.55).normalize(),
+    hemiSky: 0xd0e2f2, hemiGround: 0x6f7a5a, fog: 0.00032, water: 0x3c5f58,
+  },
+  kawaguchiko: {
+    zenith: '#3a7cc9', horizon: '#d3e3ee', ground: '#8ea39a', sunColor: '#fff3de',
+    sunDir: new THREE.Vector3(-0.5, 0.6, -0.62).normalize(),
+    hemiSky: 0xcfe2f5, hemiGround: 0x6f7a5a, fog: 0.00032, water: 0x2d6075,
   },
 };
 
@@ -116,7 +133,7 @@ const MAX_ROCKS = 200;
 const MAX_GUARDRAIL = 160;
 const MAX_DELINEATORS = 40;
 const MAX_WALL_SEGMENTS = 140;
-const MAX_HOUSES = 90;
+const MAX_HOUSES = 220; // 京都は町並みの奥まで家が建ち並ぶ
 // 熱海サンビーチの配置物
 const MAX_HOTELS_PER_STYLE = 70;
 const MAX_PALMS = 120;
@@ -187,10 +204,11 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
     scene3d.env = createEnvironmentController(scene3d, {
       base: baseAtmo(scene3d.atmo), hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
       wetMaterials: [scene3d.road.material, ...(scene3d.town ? [scene3d.town.promenade.material] : [])],
-      // 夜はデリニエーター(視線誘導標)の反射と、熱海の遊歩道の街灯を明るくする
+      // 夜はデリニエーター(視線誘導標)の反射と、熱海の遊歩道の街灯・京都の提灯を明るくする
       glowMaterials: [
         { material: pools.delineatorLens.mesh.material, night: 4 },
         ...(pools.lampGlobes ? [{ material: pools.lampGlobes.mesh.material, night: 6 }] : []),
+        ...(scene3d.tour ? scene3d.tour.glowMaterials : []),
       ],
       headlightParent: scene3d.rider.group,
     });
@@ -329,6 +347,9 @@ function initScene(canvas, courseEngine, L, vehicle) {
   );
 
   const town = L.town ? buildTownParts(inner, anisotropy, tex) : null;
+  // 観光地コース(京都・奈良・河口湖)の町並み・名物
+  const tour = L.tour ? buildTourParts(inner, L, atmo.water) : null;
+  if (tour) tex.all.push(...tour.textures);
 
   const rider = createAvatar(vehicle);
   scene.add(rider.group);
@@ -349,8 +370,10 @@ function initScene(canvas, courseEngine, L, vehicle) {
       trunks, canopies, conifers, farCones, farBlobs, rocks, railPosts, railBeams,
       delineatorPosts, delineatorLens, walls, houseBodies, houseRoofs, boatHulls, boatSails,
       ...(town ? town.pools : {}),
+      ...(tour ? tour.pools : {}),
     },
     town,
+    tour,
     rider, elev, floor,
     // 他のライダー(ゴースト・集団)。世界と一緒に動くよう inner に置く。プールは初めて描画範囲に入ったときに作る
     others: createOtherRiders(inner, vehicle, tex.all),
@@ -798,6 +821,7 @@ function placeObjects(st, anchorS, floorM) {
   }
 
   if (objects.town) placeTownObjects(st, objects.town, floorM, { groundAt, local });
+  if (objects.tour) placeTourObjects(st, objects.tour, { groundAt, local, blocked, floorM });
 
   for (const pool of Object.values(p)) commitPool(pool);
 }

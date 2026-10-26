@@ -11,6 +11,7 @@
 // ゆっくり上がる水面/谷底を、道路より常に minDropM 以上低い位置に置く。
 
 import { mulberry32 } from './cityLayout.js';
+import { tourTerrainHeight, tourTerrainColor, collectTourObjects, tourTreeAllowed } from './tourLayout.js';
 
 export const LANDSCAPES = {
   lakeside: {
@@ -144,6 +145,142 @@ export const LANDSCAPES = {
     rocks: 0,
     rockMaxM: 1,
     forestCover: [0.42, 0.56],
+  },
+  // ---- 観光地コース(tourLayout.js が地形の起伏・色、町並み・名物の配置を担う) ----
+  // 京都・東山: 石畳の細い通りの両側に京町家が軒を連ね、東(右)は紅葉の東山、西(左)は
+  // 京都盆地の瓦屋根が西山まで続く。祇園白川(柳並木の小川)・円山公園・神宮道の並木道がある。
+  kyoto: {
+    id: 'kyoto',
+    seed: 4517,
+    roadHalfWidthM: 3.0,
+    shoulderM: 0.4,
+    centerLine: 'none',
+    roadStyle: 'stone',
+    curves: [
+      { ampM: 14, lenM: 1100, phase: 0.8 },
+      { ampM: 4, lenM: 380, phase: 2.6 },
+    ],
+    tour: {
+      kind: 'kyoto',
+      terrain: true,
+      loopM: 8000,
+      sidewalkM: 1.5, // 道路脇の石畳の歩道
+      rowDepthM: 11, // 通り沿いの町家の奥行き
+      avenue: { fromM: 250, toM: 1250 }, // 神宮道(平安神宮の大鳥居の並木道)
+      park: { fromM: 1950, toM: 2350 }, // 円山公園(右側)
+      canal: { fromM: 2950, toM: 3650, fromU: 1.4, toU: 6.2 }, // 祇園白川(左側)
+      vista: { fromM: 6700, toM: 7250 }, // 五条坂から西の眺め(左側に町家がなく、京都タワーが見える)
+      hill: { baseU: 190, nearU: 18, nearAtM: 5250, nearHalfM: 650, riseSlope: 0.32, hillAmpM: 70, ridgeM: 210 }, // 東山
+      westHills: { startU: 2300, heightM: 260 }, // 西山
+      tower: { atM: 400, d: -1300 }, // 京都タワー(五条坂の眺めの左前方。1周の始まりのすぐ先)
+    },
+    valley: { minDropM: 40 }, // 水面(湖)は使わない。地形より十分低く隠しておく
+    hill: {},
+    treeline: null,
+    snowline: null,
+    trees: { valley: 0, hill: 0, coniferRatio: 0.35, maxLateralM: 140, maxSlope: 1.3 },
+    farTrees: { density: 1.6, coniferRatio: 0.45, maxLateralM: 1500, sides: [1] },
+    broadleafColors: [0x4a6b2f, 0x3f5f2a, 0x56793a, 0xc8361d, 0xd9541e, 0xe08a1c, 0xb02a1a, 0xd8b02a],
+    guardrailChance: 0,
+    delineators: false,
+    houses: false,
+    boats: false,
+    walls: false,
+    rocks: 0,
+    rockMaxM: 1,
+    forestCover: [0.36, 0.52],
+  },
+  // 奈良公園: 芝生の公園に大きな木と鹿の群れ。東(右)は春日山の森と若草山、西(左)は奈良の町並み。
+  // 猿沢池・鷺池(浮見堂)、春日大社の参道(石灯籠と杉並木)がある。
+  nara: {
+    id: 'nara',
+    seed: 5381,
+    roadHalfWidthM: 3.3,
+    shoulderM: 0.8,
+    centerLine: 'white-dashed',
+    curves: [
+      { ampM: 18, lenM: 1000, phase: 0.4 },
+      { ampM: 5, lenM: 360, phase: 1.7 },
+    ],
+    tour: {
+      kind: 'nara',
+      terrain: true,
+      loopM: 6000,
+      ponds: [
+        { atM: 700, u: 42, rAlongM: 60, rLatM: 34, willows: true }, // 猿沢池(左側)
+        { atM: 4750, u: 42, rAlongM: 80, rLatM: 30, willows: false }, // 鷺池と浮見堂(左側)
+      ],
+      wakakusa: { atM: 2700, u: 650, hM: 250, rAlongM: 430, rLatM: 270 }, // 若草山(右側)
+      sando: { fromM: 3330, toM: 4250 }, // 春日大社の参道
+      forestU: 330, // 東の春日山の森の始まり
+      townU: 520, // 西の奈良の町並みの始まり
+    },
+    valley: { minDropM: 40 },
+    hill: {},
+    treeline: null,
+    snowline: null,
+    trees: { valley: 0, hill: 0, coniferRatio: 0.3, maxLateralM: 160, maxSlope: 1.2 },
+    farTrees: { density: 1.8, coniferRatio: 0.5, maxLateralM: 1500, sides: [1] },
+    broadleafColors: [0x3f5f2a, 0x4a6b2f, 0x56793a, 0x34552a, 0x5c7a34, 0xc8461d, 0xd8a52a],
+    guardrailChance: 0,
+    delineators: false,
+    houses: false,
+    boats: false,
+    walls: false,
+    rocks: 0,
+    rockMaxM: 1,
+    forestCover: [0.34, 0.5],
+  },
+  // 河口湖: 湖畔(lakeside)の地形のまま、湖を近くし、紅葉の木・もみじ回廊・河口湖大橋・遊覧船を足す。
+  kawaguchiko: {
+    id: 'kawaguchiko',
+    seed: 6007,
+    roadHalfWidthM: 3.5,
+    shoulderM: 1.1,
+    centerLine: 'white-dashed',
+    curves: [
+      { ampM: 22, lenM: 900, phase: 0.3 },
+      { ampM: 8, lenM: 350, phase: 1.9 },
+    ],
+    tour: {
+      kind: 'kawaguchiko',
+      terrain: false,
+      loopM: 20000,
+      bridge: { atM: 9000, fromU: 40, toU: 1450 }, // 河口湖大橋(左の湖を渡る)
+      steamers: [{ atM: 11800, u: 300 }], // 遊覧船
+      momiji: { fromM: 12700, toM: 13700 }, // もみじ回廊(右側)
+    },
+    valley: {
+      bankSlope: 0.5,
+      bankCurve: 0.012,
+      bankNoiseM: 3,
+      minDropM: 18, // 湖畔のすぐ上を走る
+      bedDepthM: 7,
+      farShoreM: 1450, // 対岸までの距離(河口湖は幅1km余り)
+      farShoreJitterM: 260,
+      farHillM: 240,
+    },
+    hill: {
+      cutSlope: 0.55,
+      cutWidthM: 4,
+      riseSlope: 0.12,
+      hillAmpM: 70,
+      hillScaleM: 320,
+      hillRampM: 80,
+    },
+    treeline: null,
+    snowline: null,
+    trees: { valley: 1.0, hill: 2.2, coniferRatio: 0.3, maxLateralM: 110, maxSlope: 1.1 },
+    farTrees: { density: 1.8, coniferRatio: 0.4, maxLateralM: 1500 },
+    // 秋の河口湖(紅葉・黄葉を3割ほど混ぜる)
+    broadleafColors: [0x4a6b2f, 0x56793a, 0x3f5f2a, 0x66843f, 0x5c7a34, 0x4a6b2f, 0xc8361d, 0xe0761c, 0xd8b02a],
+    guardrailChance: 0.45,
+    houses: true,
+    boats: true,
+    walls: false,
+    rocks: 0.1,
+    rockMaxM: 1.2,
+    forestCover: [0.44, 0.58],
   },
 };
 
@@ -289,7 +426,7 @@ export function fbm(x, y, seed, octaves = 4) {
 }
 
 /** 尾根状のfBm(0..1)。山並みの稜線に使う。 */
-function ridged(x, y, seed, octaves = 5) {
+export function ridged(x, y, seed, octaves = 5) {
   let v = 0;
   let amp = 0.5;
   let norm = 0;
@@ -304,7 +441,7 @@ function ridged(x, y, seed, octaves = 5) {
   return v / norm;
 }
 
-function smoothstep(e0, e1, x) {
+export function smoothstep(e0, e1, x) {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
 }
@@ -334,6 +471,7 @@ export function terrainHeightM(L, d, s, roadElevM, floorM) {
   const u = a - edge; // 路肩外縁からの距離
   const seed = L.seed;
   if (L.id === 'atami') return atamiTerrainHeight(L, d, s, u, roadElevM, floorM);
+  if (L.tour?.terrain) return tourTerrainHeight(L, d, s, u, roadElevM, floorM);
 
   if (d < 0) {
     // 谷/湖側: 道路から下る斜面(bank)と、水面/谷底基準の地形(bed)の高い方。
@@ -377,6 +515,7 @@ export function terrainHeightM(L, d, s, roadElevM, floorM) {
  */
 export function terrainColor(L, d, s, h, floorM, normalY) {
   if (L.id === 'atami') return atamiTerrainColor(L, d, s, h, floorM, normalY);
+  if (L.tour?.terrain) return tourTerrainColor(L, d, s, h, floorM, normalY);
   const seed = L.seed;
   const aboveFloor = h - floorM;
   const patch = fbm(s / 180, d / 180, seed + 61, 3);
@@ -445,11 +584,11 @@ export const CONIFER_COLORS = [0x23402a, 0x2b4a30, 0x1f3a26, 0x31522f];
 export const HOUSE_WALL_COLORS = [0xf1ece2, 0xe4dccb, 0xd9cdb6, 0x9c7a58, 0xf5f3ee];
 export const HOUSE_ROOF_COLORS = [0x3c4148, 0x2f3d52, 0x7a3b2a, 0x4a4a4a, 0x5b3a2a];
 
-function cellRand(L, kind, index) {
+export function cellRand(L, kind, index) {
   return mulberry32((L.seed * 7919) ^ (kind * 104729) ^ Math.imul(index, 2654435761));
 }
 
-function forEachCell(fromM, toM, cellM, fn) {
+export function forEachCell(fromM, toM, cellM, fn) {
   const first = Math.floor(fromM / cellM);
   const last = Math.floor(toM / cellM);
   for (let i = first; i <= last; i++) fn(i, i * cellM);
@@ -471,6 +610,8 @@ export function collectLandscapeObjects(L, fromM, toM, { farToM = toM } = {}) {
   const delineators = [];
 
   const inRange = (s) => s >= fromM && s < toM;
+  // 秋の景色などで広葉樹の色を変える景色がある(乱数の使い方は同じなので、ほかの景色の見た目は変わらない)
+  const broadleaf = L.broadleafColors ?? BROADLEAF_COLORS;
 
   forEachCell(fromM, toM, TREE_CELL_M, (i, cellS) => {
     const rand = cellRand(L, 1, i);
@@ -487,7 +628,7 @@ export function collectLandscapeObjects(L, fromM, toM, { farToM = toM } = {}) {
         const tree = {
           s, d: side * (edge + u), kind: conifer ? 'conifer' : 'broadleaf',
           scale: conifer ? 0.8 + rand() * 0.7 : 0.75 + rand() * 0.6,
-          color: conifer ? CONIFER_COLORS[Math.floor(rand() * CONIFER_COLORS.length)] : BROADLEAF_COLORS[Math.floor(rand() * BROADLEAF_COLORS.length)],
+          color: conifer ? CONIFER_COLORS[Math.floor(rand() * CONIFER_COLORS.length)] : broadleaf[Math.floor(rand() * broadleaf.length)],
           seed: Math.floor(rand() * 1e9),
         };
         if (inRange(s)) trees.push(tree);
@@ -512,9 +653,10 @@ export function collectLandscapeObjects(L, fromM, toM, { farToM = toM } = {}) {
       const d = side * (edge + u);
       const forest = fbm(s / 420, d / 420, L.seed + 67, 4);
       if (forest < L.forestCover[0]) continue;
+      if (L.farTrees.sides && !L.farTrees.sides.includes(side)) continue; // 町並みの側には森を置かない
       const conifer = rand() < L.farTrees.coniferRatio;
       if (s >= fromM && s < farToM) {
-        farTrees.push({ s, d, kind: conifer ? 'conifer' : 'broadleaf', scale: 1.4 + rand() * 1.4, color: conifer ? CONIFER_COLORS[Math.floor(rand() * CONIFER_COLORS.length)] : BROADLEAF_COLORS[Math.floor(rand() * BROADLEAF_COLORS.length)] });
+        farTrees.push({ s, d, kind: conifer ? 'conifer' : 'broadleaf', scale: 1.4 + rand() * 1.4, color: conifer ? CONIFER_COLORS[Math.floor(rand() * CONIFER_COLORS.length)] : broadleaf[Math.floor(rand() * broadleaf.length)] });
       }
     }
   });
@@ -577,7 +719,15 @@ export function collectLandscapeObjects(L, fromM, toM, { farToM = toM } = {}) {
   }
 
   const town = L.town ? collectAtamiObjects(L, fromM, toM, farToM) : null;
-  return { trees, farTrees, rocks, houses, boats, guardrailRuns, walls, delineators, town };
+  // 観光地コースの町並み・名物。木と家はふつうの木・家と同じ形で返し、同じプールで描く
+  const tour = L.tour ? collectTourObjects(L, fromM, toM, farToM) : null;
+  if (tour) {
+    trees.push(...tour.trees);
+    houses.push(...tour.houses);
+    const ok = (t) => tourTreeAllowed(L, t.s, t.d);
+    return { trees: trees.filter(ok), farTrees: farTrees.filter(ok), rocks, houses, boats, guardrailRuns, walls, delineators, town, tour };
+  }
+  return { trees, farTrees, rocks, houses, boats, guardrailRuns, walls, delineators, town, tour };
 }
 
 // ---- 熱海サンビーチ ----
