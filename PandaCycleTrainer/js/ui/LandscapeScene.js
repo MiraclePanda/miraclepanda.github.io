@@ -63,6 +63,19 @@ const ATMOSPHERE = {
     sunDir: new THREE.Vector3(-0.5, 0.6, -0.62).normalize(),
     hemiSky: 0xcfe2f5, hemiGround: 0x6f7a5a, fog: 0.00032, water: 0x2d6075,
   },
+  // 竜宮城の海底: 真上から差し込む光と、青く霞む海の中(見通し約320m)。空は水面を見上げた色で焼き(underwater)、
+  // 時間帯は海の中の色(palettes)で変える。夜は深海の暗さ
+  ryugu: {
+    zenith: '#86d8ec', horizon: '#0e5876', ground: '#05283c', sunColor: '#d2f4ff',
+    sunDir: new THREE.Vector3(-0.2, 0.93, -0.3).normalize(),
+    hemiSky: 0x7fcbe0, hemiGround: 0x1d4a5c, fog: 0.0062, water: 0x1f6f8a,
+    underwater: true,
+    palettes: {
+      morning: { zenith: '#a6dccf', horizon: '#1f5d78', ground: '#0b2f40', sunColor: '#ffe2b8', hemiSky: 0xa9d6d0, hemiGround: 0x1e3e48, cloud: '#ffffff' },
+      sunset: { zenith: '#e8a27e', horizon: '#2a4a6a', ground: '#10283a', sunColor: '#ffb27a', hemiSky: 0xd8a890, hemiGround: 0x1a2a38, cloud: '#ffffff' },
+      night: { zenith: '#0a2440', horizon: '#03111f', ground: '#010811', sunColor: '#7fa6d8', hemiSky: 0x2c4a78, hemiGround: 0x061018, cloud: '#ffffff' },
+    },
+  },
 };
 
 // 光の強さ・露出(全景色共通)
@@ -76,6 +89,7 @@ function baseAtmo(atmo) {
     zenith: atmo.zenith, horizon: atmo.horizon, ground: atmo.ground, sunColor: atmo.sunColor, sunDir: atmo.sunDir.toArray(),
     sunIntensity: SUN_INTENSITY, hemiSky: atmo.hemiSky, hemiGround: atmo.hemiGround, hemiIntensity: HEMI_INTENSITY,
     fogDensity: atmo.fog, exposure: EXPOSURE,
+    ...(atmo.underwater ? { underwater: true, palettes: atmo.palettes } : {}),
   };
 }
 
@@ -211,6 +225,8 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
         ...(scene3d.tour ? scene3d.tour.glowMaterials : []),
       ],
       headlightParent: scene3d.rider.group,
+      // 海の底に雨は降らない(時間帯だけ反映)
+      weather: !scene3d.L.underwater,
     });
     scene3d.env.set(environment, { immediate: true });
     scene3d.cam.view = normalizeCameraView(cameraView);
@@ -320,6 +336,8 @@ function initScene(canvas, courseEngine, L, vehicle) {
     })
   );
   water.frustumCulled = false;
+  // 竜宮城の海底は海の中なので、湖・海の水面は描かない
+  water.visible = !L.underwater;
   root.add(water);
 
   // ---- 配置物のプール ----
@@ -347,8 +365,16 @@ function initScene(canvas, courseEngine, L, vehicle) {
   );
 
   const town = L.town ? buildTownParts(inner, anisotropy, tex) : null;
-  // 観光地コース(京都・奈良・河口湖)の町並み・名物
-  const tour = L.tour ? buildTourParts(inner, L, atmo.water) : null;
+  // 観光地コース(京都・奈良・河口湖・竜宮城の海底)の町並み・名物。海底は地形・砂の道に水面の光の模様を重ねる
+  // (テクスチャ座標1あたりのメートルと、沿う向きの繰り返しの長さ)
+  const tour = L.tour
+    ? buildTourParts(inner, L, atmo.water, {
+      causticTargets: [
+        { material: terrain.material, scale: [TERRAIN_TILE_M, TERRAIN_TILE_M], periodM: TERRAIN_TILE_M },
+        { material: road.material, scale: [L.roadHalfWidthM * 2, ROAD_TILE_M], periodM: ROAD_TILE_M },
+      ],
+    })
+    : null;
   if (tour) tex.all.push(...tour.textures);
 
   const rider = createAvatar(vehicle);
@@ -1072,6 +1098,8 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
   updateOthers(st, others, dist);
   updateActors(st, actors, dist);
   updateCamera(st, dist, { speedKmh, cadenceRpm, roll, riderX });
+  // 竜宮城の海底: 魚の群れ・マンタ・泡、昆布の揺れ・水面の光の模様
+  if (st.tour?.animate) st.tour.animate(st, t);
 
   // 走行環境の補間と雨粒(カメラ位置を使うのでカメラの後)
   st.env.update();

@@ -119,6 +119,72 @@ export function createStonePavingTexture(anisotropy) {
   return toTexture(canvas, { anisotropy });
 }
 
+/**
+ * 竜宮城の海底の白い砂の道。U=道路の全幅、V=ROAD_TILE_M(12m)分。砂のさざ波の筋と、
+ * 両端の小石・サンゴのかけらの縁取り、中央の白い貝殻の点線。
+ */
+export function createSandRoadTexture(anisotropy) {
+  const W = 256;
+  const H = 512;
+  const { canvas, ctx } = makeCanvas(W, H);
+  const rand = rng(131);
+  ctx.fillStyle = '#ddd2b4';
+  ctx.fillRect(0, 0, W, H);
+  // さざ波(進む向きと直角の、ゆるく波打つ筋)。V 方向にちょうど繰り返すよう整数個
+  for (let k = 0; k < 24; k++) {
+    const y0 = (k + 0.5) * (H / 24);
+    for (const [dy, color] of [[0, 'rgba(160,145,110,0.22)'], [3, 'rgba(255,250,235,0.3)']]) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 8) {
+        const y = y0 + dy + Math.sin(x / 23 + k * 1.7) * 3 + Math.sin(x / 9 + k) * 1.2;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+  speckle(ctx, W, H, rand, 7000, 150, 255, 0.25, 1.4);
+  // 両端の縁取り(小石とサンゴのかけら)
+  const bits = ['#f2a7a0', '#ffffff', '#c9b9a0', '#f5c98a', '#b9a3d6'];
+  for (const x0 of [2, W - 14]) {
+    for (let i = 0; i < 90; i++) {
+      ctx.fillStyle = bits[Math.floor(rand() * bits.length)];
+      ctx.beginPath();
+      ctx.ellipse(x0 + rand() * 12, rand() * H, 1.5 + rand() * 2.5, 1.5 + rand() * 2, rand() * Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  // 中央の白い貝殻の点線(1.5m おき)
+  for (let y = 16; y < H; y += 64) {
+    ctx.fillStyle = '#fffaf0';
+    ctx.beginPath();
+    ctx.ellipse(W / 2, y, 5, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(200,170,150,0.8)';
+    ctx.lineWidth = 1;
+    for (const a of [-0.5, 0, 0.5]) {
+      ctx.beginPath();
+      ctx.moveTo(W / 2, y + 6);
+      ctx.lineTo(W / 2 + Math.sin(a) * 6, y - 5);
+      ctx.stroke();
+    }
+  }
+  return toTexture(canvas, { anisotropy });
+}
+
+/** 竜宮城の海底の路肩(細かい白い砂)。 */
+function createSandShoulderTexture(anisotropy) {
+  const S = 128;
+  const { canvas, ctx } = makeCanvas(S, S);
+  const rand = rng(137);
+  ctx.fillStyle = '#d6cbad';
+  ctx.fillRect(0, 0, S, S);
+  speckle(ctx, S, S, rand, 2500, 150, 255, 0.3, 1.2);
+  return toTexture(canvas, { anisotropy });
+}
+
 /** 路肩(アスファルトの端から地山までの砂利・土)。 */
 export function createShoulderTexture(anisotropy) {
   const S = 128;
@@ -241,8 +307,10 @@ export function createRetainingWallTexture(anisotropy) {
 export function createLandscapeTextures(L, anisotropy) {
   const road = L.roadStyle === 'stone'
     ? createStonePavingTexture(anisotropy)
-    : createCountryRoadTexture(L.roadHalfWidthM, L.centerLine, anisotropy);
-  const shoulder = createShoulderTexture(anisotropy);
+    : L.roadStyle === 'sand'
+      ? createSandRoadTexture(anisotropy)
+      : createCountryRoadTexture(L.roadHalfWidthM, L.centerLine, anisotropy);
+  const shoulder = L.roadStyle === 'sand' ? createSandShoulderTexture(anisotropy) : createShoulderTexture(anisotropy);
   const terrain = createTerrainDetailTexture(anisotropy);
   const water = createWaterNormalTexture();
   const wall = createRetainingWallTexture(anisotropy);

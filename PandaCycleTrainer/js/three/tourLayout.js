@@ -1,6 +1,7 @@
-// 観光地コース(京都・東山/奈良公園/河口湖)の景色の手続き型生成。landscapeLayout.js の
-// 景色(LANDSCAPES.kyoto / nara / kawaguchiko の tour)に対する地形の起伏・色と、町並み・名物の配置を
+// 観光地コース(京都・東山/奈良公園/河口湖/竜宮城の海底)の景色の手続き型生成。landscapeLayout.js の
+// 景色(LANDSCAPES.kyoto / nara / kawaguchiko / ryugu の tour)に対する地形の起伏・色と、町並み・名物の配置を
 // 決める純粋関数(Three.js 非依存。テスト対象)。3D の形と描画は tourParts.js。
+// 竜宮城の海底は ryuguLayout.js(形と描画は ryuguParts.js)に分けてあり、ここからはそちらへ振り分けるだけ。
 //
 // 座標系は landscapeLayout.js と同じ(s = 絶対距離、d = 道路中心からの横距離。負 = 左)。
 // 名所の並びは1周(tour.loopM)ごとに繰り返し、同じ地点は何度通っても同じ景色になる。
@@ -12,6 +13,7 @@
 import {
   roadEdgeM, fbm, valueNoise, smoothstep, ridged, cellRand, forEachCell, CONIFER_COLORS,
 } from './landscapeLayout.js';
+import { ryuguTerrainHeight, ryuguTerrainColor, collectRyuguObjects } from './ryuguLayout.js';
 
 function lerp(a, b, t) {
   return a + (b - a) * t;
@@ -71,6 +73,7 @@ function treeColor(rand, autumnRatio) {
 export function tourTerrainHeight(L, d, s, u, roadElevM, floorM) {
   if (L.tour.kind === 'kyoto') return kyotoHeight(L, d, s, u, roadElevM);
   if (L.tour.kind === 'nara') return naraHeight(L, d, s, u, roadElevM);
+  if (L.tour.kind === 'ryugu') return ryuguTerrainHeight(L, d, s, u, roadElevM);
   return roadElevM;
 }
 
@@ -79,6 +82,7 @@ export function tourTerrainColor(L, d, s, h, floorM, normalY) {
   const u = Math.abs(d) - roadEdgeM(L);
   if (L.tour.kind === 'kyoto') return kyotoColor(L, d, s, u, normalY).map(clamp01);
   if (L.tour.kind === 'nara') return naraColor(L, d, s, u, normalY).map(clamp01);
+  if (L.tour.kind === 'ryugu') return ryuguTerrainColor(L, d, s, normalY).map(clamp01);
   return [0.4, 0.5, 0.3];
 }
 
@@ -283,15 +287,17 @@ export function tourTreeAllowed(L, s, d) {
  * - towers: 京都タワー { s, d }
  * - steamers: 遊覧船 { s, d }
  * - bridges: 湖を渡る橋 { s, dFrom, dTo }
+ * - ryugu: 竜宮城の海底の配置物(ryuguLayout.js の collectRyuguObjects。ほかの景色では null)
  */
 export function collectTourObjects(L, fromM, toM, farToM = toM) {
   const out = {
     trees: [], houses: [], machiya: [], lanterns: [], stoneLanterns: [], willows: [], deer: [],
-    ponds: [], canal: [], towers: [], steamers: [], bridges: [],
+    ponds: [], canal: [], towers: [], steamers: [], bridges: [], ryugu: null,
   };
   if (L.tour.kind === 'kyoto') collectKyoto(L, fromM, toM, farToM, out);
   else if (L.tour.kind === 'nara') collectNara(L, fromM, toM, farToM, out);
   else if (L.tour.kind === 'kawaguchiko') collectKawaguchiko(L, fromM, toM, farToM, out);
+  else if (L.tour.kind === 'ryugu') out.ryugu = collectRyuguObjects(L, fromM, toM, farToM);
   return out;
 }
 

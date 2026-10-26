@@ -17,7 +17,7 @@ const curvedProfiles = COURSE_PROFILES.filter((p) => Array.isArray(p.curve) && p
 const loopM = (p) => p.loopLengthKm * 1000;
 
 test('curved course profiles exist (flat, hilly, mountain, tourist courses) and atami/ueno stay straight', () => {
-  assert.deepEqual(curvedProfiles.map((p) => p.id), ['flat', 'hilly', 'mountain', 'fuji', 'kyoto', 'nara']);
+  assert.deepEqual(curvedProfiles.map((p) => p.id), ['flat', 'hilly', 'mountain', 'fuji', 'kyoto', 'nara', 'ryugu']);
   assert.equal(getCourseProfile('atami').curve, undefined);
   assert.equal(getCourseProfile('ueno').curve, undefined);
 });

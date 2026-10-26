@@ -119,7 +119,7 @@ export function createEnvironmentController(s, { base, hemiLight, sunLight, wetM
     s.sky = bakeSky(s.renderer, {
       zenith: v.zenith, horizon: v.horizon, ground: v.ground, sunColor: v.sunColor,
       sunDir: new THREE.Vector3().fromArray(v.sunDir),
-      cloudCover: v.cloudCover, cloud: v.cloud, sunGlow: v.sunGlow, night: v.night,
+      cloudCover: v.cloudCover, cloud: v.cloud, sunGlow: v.sunGlow, night: v.night, underwater: !!v.underwater,
     });
     s.scene.background = s.sky.background;
     // 環境マップを使う品質段階なら、新しい空から作り直す(使わない段階では作らない)

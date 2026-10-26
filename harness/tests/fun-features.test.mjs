@@ -146,7 +146,7 @@ test('seedForCourse is stable and differs between courses', () => {
 
 test('tourist courses have guide, landmarks and local food; ueno has no happenings', () => {
   const tourist = COURSE_PROFILES.filter((p) => p.tag === '観光地');
-  assert.deepEqual(tourist.map((p) => p.id), ['fuji', 'kyoto', 'nara']);
+  assert.deepEqual(tourist.map((p) => p.id), ['fuji', 'kyoto', 'nara', 'ryugu']);
   for (const p of tourist) {
     assert.ok(p.guide.length >= 3);
     for (const g of p.guide) assert.ok(g.km >= 0 && g.km < p.loopLengthKm && g.title);
@@ -252,4 +252,12 @@ test('citiesPassed reports each city once, across laps, and journeyTotalKm sums 
   assert.match(journeyToast(wrap[2]).kicker, /2周目/);
   assert.equal(journeyTotalKm([{ totalDistanceM: 12000 }, { totalDistanceM: 3500 }, {}]), 15.5);
   assert.equal(journeyTotalKm(null), 0);
+});
+
+test('玉手箱: 竜宮城の1日は地上の100年', async () => {
+  const { landTimeFromRyuguS, landTimeLabel } = await import('../../PandaCycleTrainer/js/utils/tamatebako.js');
+  assert.deepEqual(landTimeFromRyuguS(86400), { years: 100, months: 0, days: 0 });
+  assert.equal(landTimeLabel(1800), '約2年1か月');
+  assert.equal(landTimeLabel(60), '約25日');
+  assert.deepEqual(landTimeFromRyuguS(-5), { years: 0, months: 0, days: 0 });
 });

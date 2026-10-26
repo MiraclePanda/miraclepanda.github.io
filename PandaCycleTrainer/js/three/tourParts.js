@@ -1,4 +1,5 @@
-// 観光地コース(京都・東山/奈良公園/河口湖)の町並み・名物の3D部品(LandscapeScene が使う)。
+// 観光地コース(京都・東山/奈良公園/河口湖/竜宮城の海底)の町並み・名物の3D部品(LandscapeScene が使う)。
+// 竜宮城の海底は ryuguParts.js に分けてあり、ここからはそちらへ振り分けるだけ。
 // 配置は tourLayout.js(純粋ロジック)が決め、ここでは形を作ってインスタンスとして置くだけ。
 //
 // - 京町家: 1F の格子・暖簾、2F の虫籠窓は Canvas 2D で描いた小さなアトラスで、木部・漆喰・瓦は
@@ -8,6 +9,7 @@
 
 import THREE from './three.js';
 import { mergeGeometries, makePool, pushInstance, pushInstanceYawPitch } from './sceneKit.js';
+import { buildRyuguParts, placeRyuguObjects } from './ryuguParts.js';
 
 const MAX_MACHIYA = 130; // 種類ごと
 const MAX_LANTERNS = 160;
@@ -324,9 +326,12 @@ function buildSteamerGeometries() {
 
 /**
  * 観光地の部品(プール)を作って inner に加える。
- * @returns {{pools: object, glowMaterials: Array, textures: THREE.Texture[]}}
+ * 竜宮城の海底(ryuguParts.js)は、毎フレーム動かす物のプール animPools と animate(st, t) も返す。
+ * @param {object} [opts] 竜宮城の海底用(ryuguParts.js の buildRyuguParts の opts)
+ * @returns {{pools: object, glowMaterials: Array, textures: THREE.Texture[], animate?: Function}}
  */
-export function buildTourParts(inner, L, waterColor) {
+export function buildTourParts(inner, L, waterColor, opts = {}) {
+  if (L.tour.kind === 'ryugu') return buildRyuguParts(inner, L, opts);
   const pools = {};
   const textures = [];
   const glowMaterials = [];
@@ -377,6 +382,10 @@ export function buildTourParts(inner, L, waterColor) {
  */
 export function placeTourObjects(st, tour, { groundAt, local, blocked, floorM }) {
   const { elev, anchorElev, pools: p } = st;
+  if (tour.ryugu) {
+    placeRyuguObjects(st, tour.ryugu, { groundAt, local, blocked });
+    return;
+  }
 
   for (const m of tour.machiya) {
     if (blocked(m.s, m.d, m.widthM / 2)) continue;

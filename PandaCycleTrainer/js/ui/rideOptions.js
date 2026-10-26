@@ -11,9 +11,9 @@ export const VIEW_LABELS = { chase: '後方', fp: '目線', cine: 'シネマ' };
 export const TIME_OPTIONS = ENVIRONMENT_TIMES.map((id) => ({ id, label: TIME_LABELS[id] ?? id }));
 export const WEATHER_OPTIONS = ENVIRONMENT_WEATHERS.map((id) => ({ id, label: WEATHER_LABELS[id] ?? id }));
 
-/** 上野不忍池(PondScene)は時間帯だけを反映し、天候は出さない。 */
+/** 上野不忍池(PondScene)と竜宮城の海底(海の中に雨は降らない)は時間帯だけを反映し、天候は出さない。 */
 export function supportsWeather(courseProfile) {
-  return courseProfile?.scenery !== 'ueno';
+  return courseProfile?.scenery !== 'ueno' && courseProfile?.scenery !== 'ryugu';
 }
 
 /** コースで選べる視点。上野不忍池は後方/目線のみ(シネマは後方扱い)。 */
@@ -34,7 +34,7 @@ export function nextView(view, courseProfile) {
   return views[(i + 1) % views.length];
 }
 
-/** チップ等に出す環境の短い表示(上野は時間帯のみ)。 */
+/** チップ等に出す環境の短い表示(上野・竜宮城は時間帯のみ)。 */
 export function environmentLabel(env, courseProfile) {
   const time = TIME_LABELS[env?.time] ?? '--';
   return supportsWeather(courseProfile) ? `${time} · ${WEATHER_LABELS[env?.weather] ?? '--'}` : time;

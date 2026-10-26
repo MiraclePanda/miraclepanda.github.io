@@ -1,4 +1,4 @@
-// 沿道のハプニング(猫が横切る・パンダが並走する・謎の応援団・給水所・鹿のおじぎ)と、
+// 沿道のハプニング(猫が横切る・パンダが並走する・謎の応援団・給水所・鹿のおじぎ・カメの並泳)と、
 // 観光地コースの名所(大鳥居・五重塔・三門・大仏殿・清水の舞台など)の配置を決める純粋ロジック(Three.js 非依存。テスト対象)。
 // 実際の3D描画は roadsideActors.js(CityScene / LandscapeScene が使う)。
 //
@@ -7,7 +7,7 @@
 //
 // 各フレームの出力 actors は次の形(roadsideActors.js との契約):
 //   { id, kind, distanceM, side, lateralM, yaw, moving, phase }
-//   - kind: 'cat' | 'panda' | 'cheer' | 'aid' | 'deer' | LANDMARK_KINDS のいずれか
+//   - kind: 'cat' | 'panda' | 'cheer' | 'aid' | 'deer' | 'turtle' | LANDMARK_KINDS のいずれか
 //   - distanceM: コース上の絶対距離(m)。ループするコースでも周回をまたいで増え続ける距離
 //   - side: 0 = 道路上(lateralM は道路中心から右向きの距離)、
 //           −1 / +1 = 左 / 右の沿道(lateralM は道路の端から外向きの距離)
@@ -18,13 +18,16 @@
 
 import { mulberry32 } from './cityLayout.js';
 
-export const HAPPENING_KINDS = ['cat', 'panda', 'cheer', 'aid', 'deer'];
+export const HAPPENING_KINDS = ['cat', 'panda', 'cheer', 'aid', 'deer', 'turtle'];
 // 大鳥居・五重塔(白壁)・五重塔(朱塗り、忠霊塔)・三重塔(朱塗り)・三門(木地の大きな二重門)・
-// 楼門(朱塗りの二重門)・大仏殿・清水の舞台・浮見堂
-export const LANDMARK_KINDS = ['torii', 'pagoda', 'pagodaRed', 'pagoda3', 'sanmon', 'romon', 'daibutsuden', 'kiyomizu', 'ukimido'];
+// 楼門(朱塗りの二重門)・大仏殿・清水の舞台・浮見堂・竜宮門(道路をまたぐ)・竜宮城・乙姫の舞台・玉手箱
+export const LANDMARK_KINDS = [
+  'torii', 'pagoda', 'pagodaRed', 'pagoda3', 'sanmon', 'romon', 'daibutsuden', 'kiyomizu', 'ukimido',
+  'ryuguGate', 'ryuguPalace', 'otohimeStage', 'tamatebako',
+];
 
-/** ハプニングの既定の出やすさ(コースプロファイルの happenings で上書きできる)。 */
-export const DEFAULT_HAPPENING_WEIGHTS = { cat: 3, panda: 2, cheer: 2, aid: 2, deer: 0 };
+/** ハプニングの既定の出やすさ(コースプロファイルの happenings で上書きできる)。カメは海の中のコースだけ。 */
+export const DEFAULT_HAPPENING_WEIGHTS = { cat: 3, panda: 2, cheer: 2, aid: 2, deer: 0, turtle: 0 };
 
 // ハプニングどうしの間隔(m)。のんびり走って数分に1回くらい
 export const MIN_GAP_M = 700;
@@ -45,6 +48,11 @@ const PANDA_CATCHUP_MPS = 2.5;
 const PANDA_PACE_S = 22;
 const PANDA_FADE_MPS = 3;
 const PANDA_LANE_M = 1.6; // 自分(左車線)の右隣
+// カメ: 前方に見えてきたらゆっくり先を泳ぎ、追いつくと「お礼に」並んで泳ぎ、しばらくして帰っていく
+const TURTLE_SWIM_MPS = 1.2;
+const TURTLE_PACE_GAP_M = 1.0;
+const TURTLE_PACE_S = 22;
+const TURTLE_FADE_MPS = 2.5;
 // 応援団・給水所・鹿: 地点の手前 NOTICE_M で通知する
 const NOTICE_M = 35;
 
@@ -76,9 +84,17 @@ const TOASTS = {
     { title: '鹿がおじぎをしてきました', sub: '鹿せんべいは持っていません。' },
     { title: '鹿がおじぎをしてきました', sub: 'つられておじぎをすると危ないので前を見ましょう。' },
   ],
+  turtleStart: [
+    { title: 'カメに追いつきました', sub: '「助けてくれたお礼です」と並んで泳いでくれます(カメは速度に影響しません)。' },
+    { title: '「あのとき助けていただいたカメです」', sub: '助けた覚えはありませんが、ありがたく応援してもらいましょう。' },
+  ],
+  turtleEnd: [
+    { title: 'カメは竜宮城へ帰っていきました', sub: '「乙姫さまによろしく」と伝えておきましょう。' },
+    { title: 'カメが休憩に入りました', sub: '甲羅の中でひと眠りするそうです。' },
+  ],
 };
 
-const EMOJI = { cat: '🐈', pandaStart: '🐼', pandaEnd: '🐼', cheer: '📣', aid: '🍙', deer: '🦌' };
+const EMOJI = { cat: '🐈', pandaStart: '🐼', pandaEnd: '🐼', cheer: '📣', aid: '🍙', deer: '🦌', turtleStart: '🐢', turtleEnd: '🐢' };
 
 /** 重みからハプニングの種類を1つ選ぶ。重みがすべて0なら null。 */
 export function pickKind(weights, r) {
@@ -255,6 +271,47 @@ export function createHappeningDirector({ seed = 1, weights = DEFAULT_HAPPENING_
         return {
           id, kind: 'panda', distanceM: distanceM + st.gapM, side: 0, lateralM: PANDA_LANE_M,
           yaw: 0, moving: Math.min(1, pandaSpeed / 4), phase: clock,
+        };
+      }
+      case 'turtle': {
+        if (st.phase === 'waiting') {
+          if (gap > ACTORS_AHEAD_M) return null; // 見えるところまで来たら泳ぎはじめる
+          st.phase = 'ahead';
+          st.posM = p.atM;
+        }
+        let turtleSpeed = TURTLE_SWIM_MPS;
+        if (st.phase === 'ahead') {
+          st.posM += TURTLE_SWIM_MPS * dt;
+          if (st.posM - distanceM <= TURTLE_PACE_GAP_M) {
+            st.phase = 'pace';
+            st.t = 0;
+            st.posM = distanceM + TURTLE_PACE_GAP_M;
+            events.push(happeningToast('turtleStart', p.variant));
+          } else if (st.posM - distanceM > ACTORS_AHEAD_M) {
+            return null; // 止まっている間に見えないほど先へ行った(追いつけば、また会える)
+          }
+        } else if (st.phase === 'pace') {
+          turtleSpeed = speed;
+          st.posM = distanceM + TURTLE_PACE_GAP_M;
+          // 自分が止まっている間は並泳の時間を数えない(待っていてくれる)
+          if (speed >= 0.5) st.t += dt;
+          if (st.t >= TURTLE_PACE_S) {
+            st.phase = 'leave';
+            st.gapM = TURTLE_PACE_GAP_M;
+            events.push(happeningToast('turtleEnd', p.variant));
+          }
+        } else if (st.phase === 'leave') {
+          turtleSpeed = Math.max(0, speed - TURTLE_FADE_MPS);
+          st.gapM -= TURTLE_FADE_MPS * dt;
+          st.posM = distanceM + st.gapM;
+          if (st.gapM < -ACTORS_BEHIND_M) {
+            st.done = true;
+            return null;
+          }
+        }
+        return {
+          id, kind: 'turtle', distanceM: st.posM, side: 0, lateralM: PANDA_LANE_M,
+          yaw: 0, moving: Math.min(1, 0.4 + turtleSpeed / 6), phase: clock,
         };
       }
       case 'cheer':

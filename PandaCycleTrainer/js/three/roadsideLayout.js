@@ -18,6 +18,13 @@ export const PAGODA_VIEW_M = 24;
 /** 大鳥居の柱の中心の、車道の端からの距離(m)。 */
 export const TORII_PILLAR_OUTSET_M = 1.5;
 /**
+ * 竜宮門(道路をまたぐ白い漆喰の門。下層にアーチの通り抜け)の寸法(m)。アーチの内側の半幅は
+ * 車道の半幅 + RYUGU_GATE_ARCH_OUTSET_M、両側の袖壁(門の脚)の幅と、道路に沿う奥行きの半分。
+ */
+export const RYUGU_GATE_ARCH_OUTSET_M = 1.4;
+export const RYUGU_GATE_PIER_M = 4;
+export const RYUGU_GATE_HALF_DEPTH_M = 4;
+/**
  * 沿道に建つ名所の敷地の半幅(m)。halfAlongM = 道路に沿う向き、halfLatM = 道路と直角の向き
  * (門・お堂は正面を道路へ向けて置くので、間口が道路に沿う)。
  * viewM: 手前(近づく側)に建物・木を置かずに見通しを空けておく長さ。
@@ -33,6 +40,10 @@ export const SIGHT_FOOTPRINTS = {
   daibutsuden: { halfAlongM: 33, halfLatM: 29, viewM: 60, ground: 'max' },
   kiyomizu: { halfAlongM: 27, halfLatM: 30, viewM: 70, ground: 'center' },
   ukimido: { halfAlongM: 6, halfLatM: 6, viewM: 0, ground: 'center' },
+  // 竜宮城(海底のサンゴ礁に建つ朱塗りの御殿)・乙姫の舞台(丸い舞台と大きな貝殻)・玉手箱(岩の台座の上)
+  ryuguPalace: { halfAlongM: 34, halfLatM: 24, viewM: 60, ground: 'max' },
+  otohimeStage: { halfAlongM: 11, halfLatM: 11, viewM: 30, ground: 'max' },
+  tamatebako: { halfAlongM: 1.6, halfLatM: 1.6, viewM: 8, ground: 'max' },
 };
 
 /** 給水所のテントの間口の半分・奥行き(m)。原点はテントの道路側の縁の中央。 */
@@ -81,6 +92,19 @@ export function clearZones(actors, roadHalfWidthM) {
         }
         break;
       }
+      case 'ryuguGate': {
+        // 道路の両側の袖壁(門の脚)のまわり
+        const inner = roadHalfWidthM + RYUGU_GATE_ARCH_OUTSET_M;
+        for (const sign of [-1, 1]) {
+          const a0 = lat + sign * inner;
+          const a1 = lat + sign * (inner + RYUGU_GATE_PIER_M + 1);
+          zones.push({
+            fromM: s - RYUGU_GATE_HALF_DEPTH_M - 1, toM: s + RYUGU_GATE_HALF_DEPTH_M + 1,
+            latMin: Math.min(a0, a1), latMax: Math.max(a0, a1), kind: a.kind,
+          });
+        }
+        break;
+      }
       case 'pagoda':
       case 'pagodaRed':
       case 'pagoda3':
@@ -88,7 +112,10 @@ export function clearZones(actors, roadHalfWidthM) {
       case 'romon':
       case 'daibutsuden':
       case 'kiyomizu':
-      case 'ukimido': {
+      case 'ukimido':
+      case 'ryuguPalace':
+      case 'otohimeStage':
+      case 'tamatebako': {
         // 敷地のまわりに加えて、手前 viewM は道路側まで空けて、近づく途中から建物が見えるようにする
         const fp = SIGHT_FOOTPRINTS[a.kind];
         const rs = fp.halfAlongM + 1;
