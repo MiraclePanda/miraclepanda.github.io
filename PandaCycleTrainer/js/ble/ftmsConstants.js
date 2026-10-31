@@ -41,6 +41,9 @@ export const OP_SET_TARGET_HEART_RATE = 0x06;
 export const OP_START_OR_RESUME = 0x07;
 export const OP_STOP_OR_PAUSE = 0x08;
 export const OP_SET_INDOOR_BIKE_SIMULATION_PARAMS = 0x11;
+// Stop or Pause のパラメータ(1 byte)
+export const STOP_PARAM_STOP = 0x01;
+export const STOP_PARAM_PAUSE = 0x02;
 export const OP_RESPONSE_CODE = 0x80;
 
 // 上記OpCode値はBluetooth SIG "Fitness Machine Control Point" 定義に基づく

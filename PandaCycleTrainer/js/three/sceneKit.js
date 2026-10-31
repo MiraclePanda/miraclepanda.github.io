@@ -605,7 +605,10 @@ export const QUALITY_TIERS = [
   { name: 'low', maxPixelRatio: 0.6, shadows: false, envMap: false },
 ];
 // 走行画面の「描画品質」で選べるモード。'auto' は実測のフレーム間隔による自動調整。
-export const QUALITY_MODES = ['auto', 'high', 'medium', 'low'];
+// 'ultra' = 最高(実験): 段階は 'high' と同じ(qualityIndex 0)で、対応する景色(熱海)だけが
+// さらに重い描画(映り込む海・実在の地形・高解像度の影)を足す(s.ultra。景色側は s.onUltraChange で受ける)。
+// 自動調整では選ばれず、ユーザーが選んだときだけ使う。
+export const QUALITY_MODES = ['auto', 'ultra', 'high', 'medium', 'low'];
 const QUALITY_SAMPLE_FRAMES = 10;
 const SLOW_FRAME_MS = 45; // 約22fps未満が続いたら品質を下げる
 const VERY_SLOW_FRAME_MS = 180; // 桁違いに遅い(ソフトウェアGL等)なら最低品質へ直行する
@@ -632,20 +635,28 @@ export function applyQuality(s, index) {
     }
     m.needsUpdate = true;
   });
-  s.canvas.dataset.quality = tier.name;
+  const ultra = !!s.ultra && index === 0;
+  s.canvas.dataset.quality = ultra ? 'ultra' : tier.name;
+  s.onUltraChange?.(ultra);
   resizeScene(s);
-  s.onQualityChange?.(tier.name);
+  s.onQualityChange?.(ultra ? 'ultra' : tier.name);
 }
 
-/** URLの ?quality=high|medium|low で品質を固定できる(自動調整は無効になる)。 */
-export function forcedQualityIndex() {
+/** URLの ?quality=ultra|high|medium|low で品質を固定できる(自動調整は無効になる)。 */
+export function forcedQualityMode() {
   try {
     const name = new URLSearchParams(window.location.search).get('quality');
-    const index = QUALITY_TIERS.findIndex((t) => t.name === name);
-    return index >= 0 ? index : null;
+    return QUALITY_MODES.includes(name) && name !== 'auto' ? name : null;
   } catch {
     return null;
   }
+}
+
+/** forcedQualityMode の段階の番号(ultra は high と同じ 0)。指定なしなら null。 */
+export function forcedQualityIndex() {
+  const mode = forcedQualityMode();
+  if (mode === null) return null;
+  return mode === 'ultra' ? 0 : QUALITY_TIERS.findIndex((t) => t.name === mode);
 }
 
 /**
@@ -670,13 +681,14 @@ export function initialQualityIndex(renderer) {
  */
 export function setupQuality(s, mode = 'auto') {
   s.qualityIndex = 0;
-  const forced = forcedQualityIndex();
+  const forced = forcedQualityMode();
   if (forced !== null) {
     s.autoQuality = false;
     s.frameIntervals = [];
     s.lastDrawAt = null;
-    s.canvas.dataset.qualityMode = QUALITY_TIERS[forced].name;
-    applyQuality(s, forced);
+    s.ultra = forced === 'ultra';
+    s.canvas.dataset.qualityMode = forced;
+    applyQuality(s, forcedQualityIndex());
     return;
   }
   setQualityMode(s, mode);
@@ -684,10 +696,11 @@ export function setupQuality(s, mode = 'auto') {
 
 /**
  * 描画品質のモードを切り替える。'auto' なら端末に応じた初期段階から自動調整を再開し、
- * 'high' / 'medium' / 'low' ならその段階に固定する(自動調整は止める)。
+ * 'ultra' / 'high' / 'medium' / 'low' ならその段階に固定する(自動調整は止める)。
  */
 export function setQualityMode(s, mode) {
-  const index = QUALITY_TIERS.findIndex((t) => t.name === mode);
+  s.ultra = mode === 'ultra';
+  const index = s.ultra ? 0 : QUALITY_TIERS.findIndex((t) => t.name === mode);
   s.autoQuality = index < 0;
   s.frameIntervals = [];
   s.lastDrawAt = null;

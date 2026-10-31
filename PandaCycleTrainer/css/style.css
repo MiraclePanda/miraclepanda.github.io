@@ -152,12 +152,82 @@ p { line-height: 1.6; }
 .course-option p,
 .vehicle-option p { margin: 0.15rem 0 0; }
 
-/* GPX から読み込んだ実在コース */
-.gpx-course { align-items: center; flex-wrap: wrap; cursor: default; }
-.gpx-scenery { flex-basis: 100%; }
-.gpx-course-main { display: flex; gap: 0.6rem; align-items: flex-start; flex: 1; min-width: 0; cursor: pointer; }
-.gpx-course-main > div { flex: 1; min-width: 0; }
-.gpx-course .btn { margin: 0; flex-shrink: 0; }
+/* ③ コース選択: 分類ごとのタイル + 選択中コースの詳細パネル */
+.course-group + .course-group { margin-top: 0.8rem; }
+.course-group-title { margin: 0 0 0.35rem; font-size: 0.8rem; font-weight: bold; color: var(--color-muted); }
+.course-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.5rem; }
+.course-option.course-tile {
+  position: relative;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 58px;
+  padding: 0.5rem 0.6rem;
+  background: var(--color-card);
+}
+/* ラジオ(とGPXのファイル選択)はタイル全面に透明で重ね、タイルのどこを押しても選べるようにする */
+.course-tile > input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.course-tile:focus-within { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.course-option.course-tile.selected { box-shadow: 0 0 0 1px var(--color-primary) inset; }
+.course-tile.selected::after {
+  content: "✓";
+  position: absolute;
+  top: 3px;
+  right: 7px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  color: var(--color-primary);
+}
+.course-tile-icon { font-size: 1.6rem; line-height: 1; flex-shrink: 0; }
+.course-tile-body { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.course-tile-body strong { font-size: 0.92rem; line-height: 1.25; }
+.course-tile-body small { font-size: 0.72rem; color: var(--color-muted); line-height: 1.35; }
+.course-tile .elevation-chart { height: 22px; margin-top: 0.15rem; }
+.course-tile-flag {
+  align-self: flex-start;
+  margin-top: 0.15rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  background: #efe7fb;
+  color: #5b3d99;
+}
+.course-tile-add {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  padding: 0.5rem 0.6rem;
+  border: 1px dashed var(--color-primary);
+  border-radius: 8px;
+  cursor: pointer;
+  justify-content: center;
+  color: var(--color-primary);
+  font-size: 0.9rem;
+}
+.course-tile-add.busy { opacity: 0.6; }
+.course-detail {
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.8rem;
+  border-left: 4px solid var(--color-primary);
+  border-radius: 6px;
+  background: #f7faf8;
+}
+.course-detail h3 { margin: 0 0 0.2rem; font-size: 1rem; }
+.course-detail p { margin: 0.2rem 0; }
+.experimental-badge { background: #7a55c2; }
+.gpx-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.4rem; }
+.gpx-detail .gpx-scenery { flex: 1; min-width: 0; }
+.gpx-detail .btn { margin: 0; }
+.gpx-help { margin-top: 0.4rem; font-size: 0.85rem; }
+.gpx-help summary { cursor: pointer; color: var(--color-muted); }
 .gpx-badge {
   margin-left: 0.4rem;
   padding: 0.05rem 0.4rem;
@@ -170,8 +240,6 @@ p { line-height: 1.6; }
 }
 .elevation-chart { display: block; width: 100%; height: 48px; margin-top: 0.3rem; }
 .elevation-chart path { fill: rgba(47, 143, 78, 0.25); stroke: var(--color-primary); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.gpx-import { margin-top: 0.8rem; }
-.gpx-import .field { margin-bottom: 0.3rem; }
 
 .start-bar {
   text-align: center;
@@ -364,6 +432,19 @@ p { line-height: 1.6; }
 
 /* ---- 3D表示のツールバー(フルスクリーン・描画品質) ---- */
 .ride-stage { position: relative; }
+/* 実在の地形(地理院タイル)の出典表示。景色の右下に小さく出す */
+.scene-attribution {
+  position: absolute;
+  left: 6px;
+  bottom: 4px;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.scene-attribution[hidden] { display: none; }
 .scene-toolbar {
   display: flex;
   flex-wrap: wrap;

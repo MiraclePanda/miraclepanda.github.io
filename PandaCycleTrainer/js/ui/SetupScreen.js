@@ -36,6 +36,7 @@ import { GHOST_COLORS } from './ghostRace.js';
 import { TIME_OPTIONS, WEATHER_OPTIONS, supportsWeather } from './rideOptions.js';
 import { JourneyCard } from './JourneyCard.js';
 import { journeyTotalKm } from '../utils/journey.js';
+import { courseMeta, groupBuiltinCourses, tileName, courseSummary } from './courseCatalog.js';
 
 /**
  * 初期セットアップ画面。
@@ -255,7 +256,7 @@ export function SetupScreen({
 
   const formValid =
     distanceCheck.valid && weightCheck.valid && bikeWeightCheck.valid && advancedValid && !!courseId;
-  const canStart = formValid && deviceState.connected;
+  const canStart = formValid && deviceState.connected && !deviceState.connecting;
 
   // デモはトレーナー接続不要(入力内容が正しければ押せる)
   const canDemo = formValid;
@@ -287,6 +288,45 @@ export function SetupScreen({
     onDemo(buildConfig());
   };
 
+  // 選択中のコースの詳細パネル。GPX の実在コースは景色の切り替えと削除もここで行う。
+  const courseDetail = () => {
+    const meta = courseMeta(courseProfile);
+    const record = courseProfile.fixedLength ? (savedCourses ?? []).find((r) => r.profile.id === courseProfile.id) : null;
+    return h(
+      'div', { className: 'course-detail', 'aria-live': 'polite' },
+      h(
+        'h3', null,
+        `${meta.icon} ${record ? record.name : courseProfile.name}`,
+        courseProfile.tag && h('span', { className: 'gpx-badge tour-badge' }, courseProfile.tag),
+        meta.experimental && h('span', { className: 'gpx-badge experimental-badge', title: '実験中のコース' }, '🧪 実験'),
+        record && h('span', { className: 'gpx-badge' }, '実在コース')
+      ),
+      record
+        ? h('p', { className: 'muted small' }, gpxStatsLine(record.stats))
+        : h('p', { className: 'muted small' }, courseProfile.description),
+      meta.experimental && h(
+        'p', { className: 'muted small experimental-note' },
+        '🧪 景色をよりリアルにする実験中のコースです。描画品質を「最高(実験)」にすると、映り込む海や本物の地形で走れます(高性能なPC向け)。'
+      ),
+      record && h(
+        'div', { className: 'gpx-detail' },
+        h('div', { className: 'gpx-scenery' }, segmented(
+          '景色',
+          `scenery-${record.id}`,
+          GPX_SCENERY_OPTIONS.map((o) => ({ ...o, label: o.id === suggestScenery(record.stats) ? `${o.label}(おすすめ)` : o.label })),
+          record.profile.scenery,
+          (id) => handleSceneryChange(record, id)
+        )),
+        h('button', {
+          type: 'button',
+          className: 'btn btn-secondary btn-small',
+          onClick: () => setPendingDelete(record),
+          'aria-label': `${record.name}を削除`,
+        }, '削除')
+      )
+    );
+  };
+
   return h(
     'div',
     { className: 'screen setup-screen' },
@@ -301,7 +341,8 @@ export function SetupScreen({
             'div', { className: 'device-status connected' },
             h('p', null, '接続中: ', h('strong', null, deviceState.deviceName)),
             h('p', { className: 'muted' }, '制御モード: ', modeLabel(deviceState.controlMode)),
-            h('button', { className: 'btn btn-secondary', onClick: onDisconnectDevice }, '切断する')
+            h('button', { className: 'btn btn-secondary', onClick: onDisconnectDevice, disabled: deviceState.connecting }, '切断する'),
+            deviceState.error && h('p', { className: 'error-text' }, deviceState.error)
           )
         : h(
             'div', { className: 'device-status' },
@@ -314,7 +355,9 @@ export function SetupScreen({
           ),
       h(
         'p', { className: 'guidance-note' },
-        '毎回の走行開始時に、お使いのデバイスをその都度選択してください。'
+        deviceState.connected
+          ? '走行が終わっても接続は保たれるので、続けて次の走行を始められます。'
+          : 'ページを開くたびに、お使いのデバイスを選択して接続してください。'
       )
     ),
 
@@ -481,83 +524,51 @@ export function SetupScreen({
     h(
       'section', { className: 'card' },
       h('h2', null, '③ コース選択'),
-      h(
-        'div', { className: 'course-list' },
-        COURSE_PROFILES.map((c) =>
-          h(
-            'label',
-            { key: c.id, className: `course-option ${courseId === c.id ? 'selected' : ''}` },
-            h('input', {
-              type: 'radio',
-              name: 'course',
-              value: c.id,
-              checked: courseId === c.id,
-              onChange: () => selectCourse(c),
-            }),
-            h('div', null,
-              h('strong', null, c.name, c.tag && h('span', { className: 'gpx-badge tour-badge' }, c.tag)),
-              h('p', { className: 'muted small' }, c.description))
-          )
-        ),
-        (savedCourses ?? []).map((r) =>
-          h(
-            'div', { key: r.profile.id, className: `course-option gpx-course ${courseId === r.profile.id ? 'selected' : ''}` },
-            h(
-              'label', { className: 'gpx-course-main' },
-              h('input', {
-                type: 'radio',
-                name: 'course',
-                value: r.profile.id,
-                checked: courseId === r.profile.id,
-                onChange: () => selectCourse(r.profile),
-              }),
-              h(
-                'div', null,
-                h('strong', null, r.name, h('span', { className: 'gpx-badge' }, '実在コース')),
-                h('p', { className: 'muted small' }, gpxStatsLine(r.stats)),
-                h(ElevationChart, { profile: r.profile })
-              )
-            ),
-            h('button', {
-              type: 'button',
-              className: 'btn btn-secondary btn-small',
-              onClick: () => setPendingDelete(r),
-              'aria-label': `${r.name}を削除`,
-            }, '削除'),
-            // 景色は選択中のコースだけ変更できる(ラベルの入れ子を避けるため main の外に置く)
-            courseId === r.profile.id &&
-              h(
-                'div', { className: 'gpx-scenery' },
-                segmented(
-                  '景色',
-                  `scenery-${r.id}`,
-                  GPX_SCENERY_OPTIONS.map((o) => ({ ...o, label: o.id === suggestScenery(r.stats) ? `${o.label}(おすすめ)` : o.label })),
-                  r.profile.scenery,
-                  (id) => handleSceneryChange(r, id)
-                )
-              )
-          )
+      // 分類ごとの小さなタイルで選び、説明は選んだコースの分だけ下の詳細パネルに出す
+      // (コースが増えても縦に伸びにくいように)。ラジオボタンはタイル全面に透明で重ねてある。
+      groupBuiltinCourses(COURSE_PROFILES).map(({ group, courses }) =>
+        h(
+          'div', { key: group.id, className: 'course-group' },
+          h('p', { className: 'course-group-title' }, group.title),
+          h('div', { className: 'course-tiles' }, courses.map((c) => courseTile(c, courseId === c.id, () => selectCourse(c))))
         )
       ),
       h(
-        'div', { className: 'gpx-import' },
+        'div', { className: 'course-group' },
+        h('p', { className: 'course-group-title' }, '📍 実在コース(GPX)'),
         h(
-          'label', { className: 'field' },
-          h('span', null, '実在コースを GPX ファイルから読み込む'),
-          h('input', {
-            key: gpxFileKey,
-            type: 'file',
-            accept: '.gpx,application/gpx+xml,application/xml,text/xml',
-            disabled: gpxBusy,
-            onChange: handleGpxFile,
-            'aria-label': 'GPX ファイル',
-          })
+          'div', { className: 'course-tiles' },
+          (savedCourses ?? []).map((r) =>
+            courseTile(r.profile, courseId === r.profile.id, () => selectCourse(r.profile), {
+              name: r.name,
+              summary: gpxStatsLine(r.stats),
+              extra: h(ElevationChart, { profile: r.profile }),
+              className: 'gpx-course',
+            })
+          ),
+          h(
+            'label', { className: `course-tile course-tile-add${gpxBusy ? ' busy' : ''}` },
+            h('input', {
+              key: gpxFileKey,
+              type: 'file',
+              accept: '.gpx,application/gpx+xml,application/xml,text/xml',
+              disabled: gpxBusy,
+              onChange: handleGpxFile,
+              'aria-label': 'GPX ファイル',
+            }),
+            h('span', null, gpxBusy ? '読み込み中...' : '＋ GPX を読み込む')
+          )
         ),
         gpxMessage && h('p', { className: gpxMessage.error ? 'error-text' : 'muted small' }, gpxMessage.text),
-        h('p', { className: 'muted small' },
-          'Strava・RideWithGPS・Garmin Connect などで作成・書き出したルートの GPX を使えます。勾配は GPX の標高から計算し、景色は起伏に合わせて街並み・湖畔・山岳から自動で選ばれ、コースを選ぶと変更できます。',
-          '実在コースはループしないため、走行距離はコース全長までです。位置情報は勾配と道の曲がり方の計算にだけ使い、走行記録や TCX には含めません。')
-      )
+        h(
+          'details', { className: 'gpx-help' },
+          h('summary', null, 'GPX の実在コースについて'),
+          h('p', { className: 'muted small' },
+            'Strava・RideWithGPS・Garmin Connect などで作成・書き出したルートの GPX を使えます。勾配は GPX の標高から計算し、景色は起伏に合わせて街並み・湖畔・山岳から自動で選ばれ、コースを選ぶと下の詳細で変更できます。',
+            '実在コースはループしないため、走行距離はコース全長までです。位置情報は勾配と道の曲がり方の計算にだけ使い、走行記録や TCX には含めません。')
+        )
+      ),
+      courseDetail()
     ),
 
     h(
@@ -652,7 +663,7 @@ export function SetupScreen({
       'div', { className: 'start-bar' },
       h(
         'div', { className: 'start-buttons' },
-        h('button', { className: 'btn btn-primary btn-large', disabled: !canStart, onClick: handleStart }, '開始'),
+        h('button', { className: 'btn btn-primary btn-large', disabled: !canStart, onClick: handleStart }, deviceState.connected && deviceState.connecting ? '準備中...' : '開始'),
         h('button', { className: 'btn btn-secondary btn-large', disabled: !canDemo, onClick: handleDemo }, 'デモ')
       ),
       !canStart && h('p', { className: 'muted small' }, '入力内容とデバイス接続が両方完了すると開始できます。'),
@@ -678,6 +689,28 @@ export function SetupScreen({
 }
 
 /** 実在コースの集計の1行表示。 */
+/** ③ コース選択のタイル1枚。opts で GPX の実在コース用に名前・要約・標高断面を差し替える。 */
+function courseTile(profile, selected, onSelect, opts = {}) {
+  const meta = courseMeta(profile);
+  return h(
+    'label',
+    {
+      key: profile.id,
+      className: `course-option course-tile${selected ? ' selected' : ''}${opts.className ? ` ${opts.className}` : ''}`,
+      'data-tag': profile.tag ?? undefined,
+    },
+    h('input', { type: 'radio', name: 'course', value: profile.id, checked: selected, onChange: onSelect }),
+    !opts.extra && h('span', { className: 'course-tile-icon', 'aria-hidden': 'true' }, meta.icon),
+    h(
+      'span', { className: 'course-tile-body' },
+      h('strong', null, opts.name ?? tileName(profile.name)),
+      h('small', null, opts.summary ?? courseSummary(profile)),
+      opts.extra,
+      meta.experimental && h('span', { className: 'course-tile-flag', title: '実験中のコース' }, '🧪 実験')
+    )
+  );
+}
+
 function gpxStatsLine(stats) {
   const km = `${stats.distanceKm.toFixed(2)} km`;
   if (!stats.hasElevation) return `${km} ・ 標高データなし(平坦として走ります)`;

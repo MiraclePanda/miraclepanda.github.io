@@ -30,6 +30,7 @@ export class FtmsClient extends EventTarget {
     this.lastSentErgWatts = null;
     this.prePauseTarget = null; // { mode, value } 一時停止前の目標値
     this.isPaused = false;
+    this.sessionEnded = false; // endSession() 後、beginSession() で制御権を取り直すまで true
 
     // Simulation Parametersで送る転がり抵抗係数・空気抵抗係数。
     // セットアップ画面の詳細設定から setSimulationCoefficients() で上書きされる。
@@ -72,8 +73,9 @@ export class FtmsClient extends EventTarget {
 
   /**
    * デバイス選択ダイアログを表示し、FTMS対応デバイスへ接続する。
-   * 要件定義書1章「毎回の走行開始時にネイティブのデバイス選択ダイアログを表示し、
-   * 手動選択する(getDevices()等の自動再接続機能は使わない)」に対応。
+   * 要件定義書1章は「毎回の走行開始時にデバイス選択ダイアログを表示」だったが、ユーザーの指示で
+   * 走行終了後も接続を保つように変えた(endSession / beginSession)。ダイアログが出るのは
+   * 未接続のとき(ページを開いた直後・切断後)だけ。getDevices() による自動再接続は使わない。
    */
   async connect() {
     if (!navigator.bluetooth) {
@@ -100,6 +102,8 @@ export class FtmsClient extends EventTarget {
   }
 
   async _setUpConnection() {
+    // 新しい接続は接続シーケンスで制御権を取るので、beginSession() でのやり直しは不要
+    this.sessionEnded = false;
 
     this.server = await this.device.gatt.connect();
     const ftmsService = await this.server.getPrimaryService(C.FTMS_SERVICE);
@@ -392,6 +396,51 @@ export class FtmsClient extends EventTarget {
     this.lastSentErgWatts = clamped;
     this.queue.enqueueLatest('control-target', () => this._sendErgTarget(clamped), { name: 'set-erg' }).catch(() => {});
     return { sent: true, calculated: watts, actual: clamped };
+  }
+
+  /**
+   * 走行終了: 接続は切らずに、負荷を0にして(設定によっては Stop or Pause も送って)待機させる。
+   * 次の走行は beginSession() で制御権を取り直してから始める。失敗しても例外は投げない。
+   */
+  async endSession() {
+    this.isPaused = false;
+    this.prePauseTarget = null;
+    this.sessionEnded = true;
+    if (!this.isConnected) return;
+    try {
+      if (this.controlMode === 'simulation') {
+        this.lastSentGradePercent = 0;
+        await this.queue.enqueueLatest('control-target', () => this._sendSimulationParams(0), { name: 'end-zero' });
+      } else if (this.controlMode === 'erg') {
+        this.lastSentErgWatts = 0;
+        await this.queue.enqueueLatest('control-target', () => this._sendErgTarget(0), { name: 'end-zero' });
+      }
+      if (DeviceProfile.END_SESSION_SEND_PAUSE) {
+        await this.queue.enqueue(
+          () => this._writeControlPointAndAwait(new Uint8Array([C.OP_STOP_OR_PAUSE, C.STOP_PARAM_PAUSE]), C.OP_STOP_OR_PAUSE),
+          { name: 'end-pause' }
+        );
+      }
+    } catch (e) {
+      this._emit('warning', { message: `走行終了時のトレーナーへの送信に失敗しました(${e?.message ?? e})。接続は維持します。` });
+    }
+  }
+
+  /**
+   * 接続を保ったまま次の走行を始める: Request Control → Start or Resume → 初回目標値(勾配0% / 0W)。
+   * connect() 直後(endSession 前)は接続シーケンスで済んでいるので何もしない。
+   * 未接続なら例外を投げる(呼び出し側で接続し直してもらう)。
+   */
+  async beginSession() {
+    if (!this.sessionEnded) return { deviceName: this.device?.name, controlMode: this.controlMode };
+    if (!this.isConnected) throw new Error('トレーナーとの接続が切れています。もう一度接続してください。');
+    await this.queue.enqueue(() => this._requestControl(), { name: 'request-control' });
+    await this.queue.enqueue(() => this._startOrResume(), { name: 'start-or-resume' });
+    await delay(DeviceProfile.START_SETTLE_DELAY_MS);
+    const err = await this._sendInitialTarget(this.controlMode);
+    if (err) throw connectRetryError(err);
+    this.sessionEnded = false;
+    return { deviceName: this.device?.name, controlMode: this.controlMode };
   }
 
   /** 一時停止: トレーナーへ無負荷相当を送信し、直前の目標値を保存する。 */

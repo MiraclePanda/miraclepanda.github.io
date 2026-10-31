@@ -33,6 +33,12 @@ export const DeviceProfile = {
   // 置く待ち時間(ms)。直後の Simulation Parameters を一時的に拒否する機種があるため。
   START_SETTLE_DELAY_MS: 400,
 
+  // 走行終了時(接続は維持)に、負荷0の後で Stop or Pause(Pause, 0x02)も送るか。
+  // 次の走行開始時は Request Control → Start or Resume からやり直すので、送らなくても動く。
+  // TODO(要実機確認): DC1 が Pause を受けたあとも接続を保ち、次の Start or Resume で
+  // 負荷制御に戻るか。戻らない場合は false にする(負荷0のまま待機する)。
+  END_SESSION_SEND_PAUSE: true,
+
   // Indoor Bike Simulation Parametersに送る固定定数。
   // 屋内走行のため風速は常に0とする。
   WIND_SPEED_MPS: 0,
