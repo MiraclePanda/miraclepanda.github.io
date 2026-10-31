@@ -66,10 +66,8 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const [communicationWarning, setCommunicationWarning] = useState(false);
   const [loadRatioPercent, setLoadRatioPercent] = useState(initialLoadRatioPercent);
   // 描画品質: 'auto'(自動調整) か 'ultra' / 'high' / 'medium' / 'low' の固定。activeTierは実際に適用中の段階。
-  // 'ultra'(最高・実験)は対応する景色(熱海)でだけ選べ、他のコースでは保存値が ultra でも「高」で描く。
-  const [savedQualityMode, setQualityMode] = useState(loadRenderQuality);
-  const ultraSupported = courseProfile.scenery === 'atami';
-  const qualityMode = savedQualityMode === 'ultra' && !ultraSupported ? 'high' : savedQualityMode;
+  // 'ultra'(最高・実験)は全コースで選べる。景色ごとに、映り込む水面・実在の地形・高精細な影を足す。
+  const [qualityMode, setQualityMode] = useState(loadRenderQuality);
   const [activeTier, setActiveTier] = useState(null);
   // 景観(時間帯・天候)と視点。走行中に切り替えたら保存し、次の走行でも同じ設定から始める。
   const [environment, setEnvironment] = useState(() => initialEnvironment ?? loadEnvironment());
@@ -667,7 +665,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       h('span', null, '描画品質'),
       h(
         'select', { value: qualityMode, onChange: handleQualityChange, 'aria-label': '描画品質' },
-        (ultraSupported ? ['auto', 'ultra', 'high', 'medium', 'low'] : ['auto', 'high', 'medium', 'low']).map((mode) =>
+        ['auto', 'ultra', 'high', 'medium', 'low'].map((mode) =>
           h('option', { key: mode, value: mode },
             mode === 'auto' && activeTier ? `自動（現在: ${QUALITY_LABELS[activeTier]}）` : QUALITY_LABELS[mode])
         )

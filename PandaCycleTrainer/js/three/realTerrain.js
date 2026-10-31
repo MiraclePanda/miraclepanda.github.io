@@ -1,7 +1,7 @@
-// 実在の地形の遠景(実験。熱海サンビーチの描画品質「最高(実験)」で使う)。
+// 実在の地形の遠景(実験。描画品質「最高(実験)」で、熱海・河口湖・京都・奈良で使う。設定は gsiTerrain.js の REAL_TERRAIN)。
 //
 // 国土地理院の標高タイルと写真タイル(計算は gsiTerrain.js)から、ライダーのまわり約20km四方の
-// 山並み・海岸線・初島を1枚のメッシュにする。backdrops.js の富士山と同じく、空と一緒に回る遠景として
+// 山並み・海岸線・島(熱海なら初島、河口湖なら富士山)を1枚のメッシュにする。backdrops.js の富士山と同じく、空と一緒に回る遠景として
 // ライダーに付いて動き(走っても位置は変わらない)、フォグは使わず自前のシェーダーで
 // 光の色・強さと大気遠近(フォグ色へ溶かす)を走行環境から読む。
 // - 海(標高データなし)とライダーのまわり innerRadiusM の内側は描かない(海は水面、近くは手続き生成の街と山)。
@@ -19,6 +19,8 @@ import {
   sampleDemGrid,
   gridEastNorth,
   enToScene,
+  heightNearOrigin,
+  terrainHeights,
 } from './gsiTerrain.js';
 
 // 大気遠近: backdrops.js と同じ考え方(フォグ密度 × 距離 × 係数)。実際のフォグより弱く
@@ -70,14 +72,19 @@ async function loadMosaic(template, range, fill) {
   return { canvas, ctx, size, loaded };
 }
 
-/** 標高格子から地形のジオメトリ(回転前のシーン座標、標高は海面 = 0)を作る。 */
-export function buildTerrainGeometry(heights, gridN, en, bearingDeg) {
+/**
+ * 標高格子から地形のジオメトリ(回転前のシーン座標)を作る。
+ * ys / visible は gsiTerrain.js の terrainHeights() の結果(基準面からの高さと、描くかどうか)。
+ */
+export function buildTerrainGeometry(ys, visible, gridN, en, bearingDeg) {
   const positions = new Float32Array(gridN * gridN * 3);
   const uvs = new Float32Array(gridN * gridN * 2);
+  const vis = new Float32Array(gridN * gridN);
   for (let k = 0; k < gridN * gridN; k++) {
     const p = enToScene(en.e[k], en.n[k], bearingDeg);
     positions[k * 3] = p.x;
-    positions[k * 3 + 1] = heights[k];
+    positions[k * 3 + 1] = ys[k];
+    vis[k] = visible[k];
     positions[k * 3 + 2] = p.z;
     const i = k % gridN;
     const j = Math.floor(k / gridN);
@@ -91,14 +98,15 @@ export function buildTerrainGeometry(heights, gridN, en, bearingDeg) {
       const b = a + 1;
       const c = a + gridN;
       const d = c + 1;
-      // 4隅とも海なら作らない
-      if (heights[a] <= 0 && heights[b] <= 0 && heights[c] <= 0 && heights[d] <= 0) continue;
+      // 4隅とも描かない点(海・湖)なら作らない
+      if (!visible[a] && !visible[b] && !visible[c] && !visible[d]) continue;
       index.push(a, c, b, b, c, d);
     }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  g.setAttribute('aVisible', new THREE.BufferAttribute(vis, 1));
   g.setIndex(index);
   g.computeVertexNormals();
   // 向き(進行方向の符号)によって三角形が裏返ることがあるので、法線は上向きにそろえる
@@ -109,7 +117,7 @@ export function buildTerrainGeometry(heights, gridN, en, bearingDeg) {
   return g;
 }
 
-function createMaterial(innerRadiusM) {
+function createMaterial(innerRadiusM, openSideX) {
   return new THREE.ShaderMaterial({
     fog: false,
     lights: false,
@@ -124,13 +132,17 @@ function createMaterial(innerRadiusM) {
       uHazeK: { value: 0.0001 },
       uHazeMax: { value: HAZE_MAX },
       uInner: { value: innerRadiusM },
+      uOpenSideX: { value: openSideX },
     },
     vertexShader: /* glsl */ `
+      attribute float aVisible;
       varying vec3 vLocal;
       varying vec3 vNormalW;
       varying vec2 vUv;
+      varying float vVisible;
       void main() {
         vLocal = position;
+        vVisible = aVisible;
         vUv = uv;
         vNormalW = normalize(mat3(modelMatrix) * normal);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -146,17 +158,21 @@ function createMaterial(innerRadiusM) {
       uniform float uHazeK;
       uniform float uHazeMax;
       uniform float uInner;
+      uniform float uOpenSideX;
       varying vec3 vLocal;
       varying vec3 vNormalW;
       varying vec2 vUv;
+      varying float vVisible;
       void main() {
         float dist = length(vLocal.xz);
-        // 海(標高 0 以下)と、手続き生成の街・山が描くライダーのまわり(山側。海側は沖へ 400 m より先なら
-        // 本物の岬や島を見せる)は描かない。vLocal は回転前の座標で、−X が海側
-        if (vLocal.y < 0.5 || dist < 400.0 || (dist < uInner && vLocal.x > -400.0)) discard;
+        // 海・湖(vVisible = 0)と、手続き生成の景色が描くライダーのまわりは描かない。
+        // 水側(回転前の X < uOpenSideX。熱海の相模湾・河口湖)は 400 m より先なら本物の岬・島・対岸を見せる
+        if (vVisible < 0.5 || dist < 400.0 || (dist < uInner && vLocal.x > uOpenSideX)) discard;
         vec3 n = normalize(vNormalW);
         // 写真が無いときは標高で塗る(低い所は緑、高い所は茶色がかった灰色)
         vec3 byHeight = mix(vec3(0.16, 0.24, 0.13), vec3(0.3, 0.3, 0.26), smoothstep(150.0, 700.0, vLocal.y));
+        // 富士山のように高い山の上は雪(写真が無いときだけ)
+        byHeight = mix(byHeight, vec3(0.85, 0.87, 0.9), smoothstep(2500.0, 2900.0, vLocal.y));
         vec3 albedo = uHasMap > 0.5 ? texture2D(uMap, vUv).rgb : byHeight;
         // 写真には撮影時の日なた・日陰が焼き込まれているので、陰影は弱めにかける
         float diffuse = max(dot(n, normalize(uSunDir)), 0.0);
@@ -181,7 +197,8 @@ const _sun = new THREE.Vector3();
  * @param {number} [opts.anisotropy]
  */
 export function createRealTerrain(cfg, { onStatus, anisotropy = 4 } = {}) {
-  const material = createMaterial(cfg.innerRadiusM);
+  // openSideX が無い設定(京都・奈良)は水側を開けない(十分大きい値 = どの点も「水側でない」)
+  const material = createMaterial(cfg.innerRadiusM, cfg.openSideX ?? -1e9);
   const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
   mesh.name = 'real-terrain';
   mesh.frustumCulled = false;
@@ -214,8 +231,9 @@ export function createRealTerrain(cfg, { onStatus, anisotropy = 4 } = {}) {
         const rgba = dem.ctx.getImageData(0, 0, dem.size, dem.size).data;
         const heights = sampleDemGrid(rgba, dem.size, cfg.gridN);
         const en = gridEastNorth(range, cfg.gridN, cfg.origin);
+        const t = terrainHeights(heights, cfg, heightNearOrigin(heights, en));
         mesh.geometry.dispose();
-        mesh.geometry = buildTerrainGeometry(heights, cfg.gridN, en, cfg.bearingDeg);
+        mesh.geometry = buildTerrainGeometry(t.y, t.visible, cfg.gridN, en, cfg.bearingDeg);
         if (photo) {
           texture = new THREE.CanvasTexture(photo.canvas);
           texture.colorSpace = THREE.SRGBColorSpace;

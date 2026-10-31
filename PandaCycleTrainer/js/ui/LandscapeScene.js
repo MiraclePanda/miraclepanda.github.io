@@ -24,7 +24,7 @@ import { landmarkActors } from '../three/happeningsLayout.js';
 import { createBackdrop } from '../three/backdrops.js';
 import { createOcean } from '../three/oceanWater.js';
 import { createRealTerrain } from '../three/realTerrain.js';
-import { ATAMI_REAL_TERRAIN, GSI_ATTRIBUTION } from '../three/gsiTerrain.js';
+import { REAL_TERRAIN, GSI_ATTRIBUTION } from '../three/gsiTerrain.js';
 import { buildTourParts, placeTourObjects } from '../three/tourParts.js';
 
 const { forwardRef, useImperativeHandle } = React;
@@ -121,6 +121,9 @@ const TERRAIN_TILE_M = 5;
 const WATER_TILE_M = 18;
 // 海は水平線まで見えるので、水面とカメラの描画距離は十分大きくとる。
 const WATER_SIZE_M = 50000;
+// 描画品質「最高(実験)」で水面を映り込む水面にする景色(水面が見えるもの。京都・奈良は水面を地形の下に
+// 隠しているだけ、竜宮城は海の中なので対象外。描く手間が倍になるので見えない水面には使わない)
+const REFLECTIVE_WATER = new Set(['lakeside', 'mountain', 'atami', 'kawaguchiko']);
 const CAMERA_FAR_M = 25000;
 const GUARDRAIL_POST_SPACING_M = 4;
 const WALL_SEGMENT_M = 4;
@@ -399,17 +402,18 @@ function initScene(canvas, courseEngine, L, vehicle) {
   const backdrop = createBackdrop(courseEngine.profile.backdrop);
   if (backdrop) scene.add(backdrop.object);
 
-  // 熱海の描画品質「最高(実験)」: 映り込む海と、国土地理院のタイルから作る実在の地形の遠景(sceneKit の s.ultra)
-  const experimental = L.id === 'atami';
-  const ocean = experimental ? createOcean(water) : null;
-  const realTerrain = experimental
-    ? createRealTerrain(ATAMI_REAL_TERRAIN, { anisotropy, onStatus: () => updateUltraStatus(st) })
+  // 描画品質「最高(実験)」(sceneKit の s.ultra): 水面の見える景色は映り込む水面に、実在の場所をモデルにした
+  // 景色(熱海・河口湖・京都・奈良)は国土地理院のタイルから作る実在の地形の遠景を足す
+  const ocean = REFLECTIVE_WATER.has(L.id) ? createOcean(water) : null;
+  const realCfg = REAL_TERRAIN[L.id] ?? null;
+  const realTerrain = realCfg
+    ? createRealTerrain(realCfg, { anisotropy, onStatus: () => updateUltraStatus(st) })
     : null;
   if (realTerrain) scene.add(realTerrain.object);
 
   const st = {
     L, atmo, canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures: tex.all, waterNormal: tex.water,
-    ocean, realTerrain, ultraOn: false,
+    ocean, realTerrain, realCfg, ultraOn: false,
     onUltraChange: (on) => setUltra(st, on),
     root, inner, terrain, road, shoulder, water,
     pools: {
@@ -1132,29 +1136,25 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
   }
   if (st.realTerrain) {
     st.realTerrain.update({
-      enabled: st.ultraOn, skyHeading, baseY: st.water.position.y, sunDir: st.env.sunDir,
-      hemiLight: st.hemiLight, sunLight: st.sunLight, fog: st.scene.fog,
+      enabled: st.ultraOn, skyHeading,
+      // 基準面: 海・湖の景色は水面、京都・奈良はライダーのいる道路の高さ
+      baseY: st.realCfg.anchor === 'origin' ? st.rider.group.position.y : st.water.position.y,
+      sunDir: st.env.sunDir, hemiLight: st.hemiLight, sunLight: st.sunLight, fog: st.scene.fog,
     });
-    // 実在の地形に本物の初島があるので、手続き生成の初島は隠す
-    if (st.pools.islands) st.pools.islands.mesh.visible = !st.realTerrain.object.visible;
+    const real = st.realTerrain.object.visible;
+    // 実在の地形に本物の初島・富士山があるので、手続き生成のものは隠す
+    if (st.realCfg.hideIslands && st.pools.islands) st.pools.islands.mesh.visible = !real;
+    if (st.realCfg.hideBackdrop && st.backdrop) st.backdrop.object.visible = !real;
   }
   st.ocean?.render(st.renderer, st.scene, st.camera, t);
   st.renderer.render(st.scene, st.camera);
 }
 
-/** 描画品質「最高(実験)」の入り切り(熱海のみ。sceneKit の applyQuality から呼ばれる)。 */
+/** 描画品質「最高(実験)」の入り切り(sceneKit の applyQuality から呼ばれる。影の解像度は sceneKit が変える)。 */
 function setUltra(st, on) {
-  if (!st.ocean) return;
   st.ultraOn = on;
-  st.ocean.setEnabled(on);
-  // 影を細かく(4096)。サイズを変えたら影マップを作り直させる
-  const size = on ? 4096 : 2048;
-  if (st.sunLight.shadow.mapSize.x !== size) {
-    st.sunLight.shadow.mapSize.set(size, size);
-    st.sunLight.shadow.map?.dispose();
-    st.sunLight.shadow.map = null;
-  }
-  if (on) st.realTerrain.load();
+  st.ocean?.setEnabled(on);
+  if (on) st.realTerrain?.load();
   updateUltraStatus(st);
 }
 

@@ -14,6 +14,7 @@ import {
 } from '../three/sceneKit.js';
 import { normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
+import { createOcean } from '../three/oceanWater.js';
 
 const { forwardRef, useImperativeHandle } = React;
 
@@ -113,6 +114,8 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
     scene3d.cam.view = normalizeCameraView(cameraView, false);
 
     const resize = () => resizeScene(scene3d);
+    // 描画品質「最高(実験)」: 池の水面にボート・木々・空が映り込む
+    scene3d.onUltraChange = (on) => scene3d.ocean.setEnabled(on);
     scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
     scene3d.appliedQualityMode = qualityMode;
     setupQuality(scene3d, qualityMode);
@@ -120,6 +123,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
 
     return () => {
       window.removeEventListener('resize', resize);
+      scene3d.ocean.dispose();
       disposeScene(scene3d);
       sceneRef.current = null;
     };
@@ -234,6 +238,7 @@ function initScene(canvas, vehicle) {
 
   return {
     canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures, waterNormal,
+    ocean: createOcean(water),
     moored, others, rider,
     // 視点: view = 'chase' | 'fp'、crankRad = 目線の揺れ用のクランク角
     cam: { view: 'chase', crankRad: 0 },
@@ -559,6 +564,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm) {
 
   st.waterNormal.offset.set((t * 0.004) % 1, (t * 0.007) % 1);
   st.env.update();
+  st.ocean.render(st.renderer, st.scene, st.camera, t);
   st.renderer.render(st.scene, st.camera);
 }
 

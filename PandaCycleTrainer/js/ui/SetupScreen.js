@@ -306,7 +306,7 @@ export function SetupScreen({
         : h('p', { className: 'muted small' }, courseProfile.description),
       meta.experimental && h(
         'p', { className: 'muted small experimental-note' },
-        '🧪 景色をよりリアルにする実験中のコースです。描画品質を「最高(実験)」にすると、映り込む海や本物の地形で走れます(高性能なPC向け)。'
+        '🧪 景色をよりリアルにする実験中のコースです。描画品質を「最高(実験)」にすると、映り込む海や本物の地形で走れます(高性能なPC向け。「最高(実験)」は他のコースでも選べます)。'
       ),
       record && h(
         'div', { className: 'gpx-detail' },

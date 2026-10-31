@@ -605,8 +605,8 @@ export const QUALITY_TIERS = [
   { name: 'low', maxPixelRatio: 0.6, shadows: false, envMap: false },
 ];
 // 走行画面の「描画品質」で選べるモード。'auto' は実測のフレーム間隔による自動調整。
-// 'ultra' = 最高(実験): 段階は 'high' と同じ(qualityIndex 0)で、対応する景色(熱海)だけが
-// さらに重い描画(映り込む海・実在の地形・高解像度の影)を足す(s.ultra。景色側は s.onUltraChange で受ける)。
+// 'ultra' = 最高(実験): 段階は 'high' と同じ(qualityIndex 0)に、どの景色でも影を 4096 にし、
+// 景色ごとにさらに重い描画(映り込む水面・実在の地形)を足す(s.ultra。景色側は s.onUltraChange で受ける)。
 // 自動調整では選ばれず、ユーザーが選んだときだけ使う。
 export const QUALITY_MODES = ['auto', 'ultra', 'high', 'medium', 'low'];
 const QUALITY_SAMPLE_FRAMES = 10;
@@ -636,6 +636,16 @@ export function applyQuality(s, index) {
     m.needsUpdate = true;
   });
   const ultra = !!s.ultra && index === 0;
+  // 最高(実験)は影を細かく(2048 → 4096)。サイズを変えたら影マップを作り直させる
+  if (s.sunLight?.shadow) {
+    s.baseShadowSize ??= s.sunLight.shadow.mapSize.x;
+    const size = ultra ? Math.max(4096, s.baseShadowSize) : s.baseShadowSize;
+    if (s.sunLight.shadow.mapSize.x !== size) {
+      s.sunLight.shadow.mapSize.set(size, size);
+      s.sunLight.shadow.map?.dispose();
+      s.sunLight.shadow.map = null;
+    }
+  }
   s.canvas.dataset.quality = ultra ? 'ultra' : tier.name;
   s.onUltraChange?.(ultra);
   resizeScene(s);
