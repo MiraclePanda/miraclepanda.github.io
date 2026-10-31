@@ -274,7 +274,7 @@ export function buildRiderAvatar() {
 }
 
 // セットアップ画面「④ オプション」のバイク種別。見た目だけを切り替える(物理演算・負荷は同じ)。
-export const VEHICLES = ['bike', 'swan'];
+export const VEHICLES = ['bike', 'swan', 'turtle'];
 const SWAN_PADDLE_RADIUS_M = 0.36;
 
 /**
@@ -373,14 +373,118 @@ export function buildSwanBoat() {
   return { group, spinners: [paddle], spinRadiusM: SWAN_PADDLE_RADIUS_M, bobber: boat, camera: { sideM: 2.4, raiseM: 1.0, backM: 1.2, eyeM: 2.3 } };
 }
 
-/** バイク種別('bike' | 'swan')に応じたアバターを作る。 */
+/**
+ * パロディモード: 浦島太郎のようにウミガメ(アオウミガメ)の背に乗って進む。竜宮城・海底コース向け。
+ * 甲羅に赤い座布団を載せてライダーがまたがり、前びれで羽ばたいて泳ぐ(車輪の代わりに flippers を動かす)。
+ * 体は路面から浮かべてあり、スワンボートと同じく bobber でふわふわ揺れる。
+ */
+export function buildSeaTurtle() {
+  const group = new THREE.Group();
+  // 揺れは内側のグループにかける(外側のグループの位置は毎フレーム各シーンが設定する)。
+  const body = new THREE.Group();
+  group.add(body);
+
+  const shellMat = new THREE.MeshStandardMaterial({ color: 0x5f5a2a, roughness: 0.45 });
+  const scuteMat = new THREE.MeshStandardMaterial({ color: 0x8a7a3a, roughness: 0.4 });
+  const bellyMat = new THREE.MeshStandardMaterial({ color: 0xe8d9a4, roughness: 0.6 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0x86985a, roughness: 0.6 });
+  const blackMat = new THREE.MeshStandardMaterial({ color: 0x121212, roughness: 0.3 });
+  const cushionMat = new THREE.MeshStandardMaterial({ color: 0xc8243a, roughness: 0.7 });
+  const tasselMat = new THREE.MeshStandardMaterial({ color: 0xe8b830, roughness: 0.5 });
+  const jerseyMat = new THREE.MeshStandardMaterial({ color: 0x1f5fbf, roughness: 0.7 });
+  jerseyMat.userData.jersey = true; // 集団のライダーはこのマテリアルの色だけ変える(otherRiders.js)
+  const shortsMat = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.8 });
+  const riderSkinMat = new THREE.MeshStandardMaterial({ color: 0xe0b48f, roughness: 0.8 });
+  const helmetMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.35 });
+
+  const sphere = new THREE.SphereGeometry(1, 24, 16);
+  const add = (parent, geometry, material, [x, y, z], [sx, sy, sz] = [1, 1, 1], [rx, ry, rz] = [0, 0, 0]) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    mesh.scale.set(sx, sy, sz);
+    mesh.rotation.set(rx, ry, rz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    parent.add(mesh);
+    return mesh;
+  };
+
+  // 甲羅(楕円体)と腹甲。甲羅の中心は路面から 0.78m(腹は約 0.5m 浮いている)
+  const SHELL = { y: 0.78, rx: 0.72, ry: 0.3, rz: 0.98 };
+  add(body, sphere, shellMat, [0, SHELL.y, 0], [SHELL.rx, SHELL.ry, SHELL.rz]);
+  add(body, sphere, bellyMat, [0, SHELL.y - 0.1, 0.02], [SHELL.rx * 0.92, 0.14, SHELL.rz * 0.92]);
+  // 甲羅の亀甲模様: 六角形の甲板を表面に沿って並べる
+  const hex = new THREE.CylinderGeometry(1, 1, 1, 6);
+  const scutes = [[0, -0.55], [0, -0.12], [0, 0.55], [-0.38, -0.32], [0.38, -0.32], [-0.4, 0.3], [0.4, 0.3]];
+  for (const [x, z] of scutes) {
+    const u = x / SHELL.rx;
+    const v = z / SHELL.rz;
+    const k = Math.sqrt(Math.max(0, 1 - u * u - v * v));
+    const y = SHELL.y + SHELL.ry * k - 0.012;
+    // 表面の傾きに合わせて寝かせる
+    const tiltX = Math.atan2((SHELL.ry * v) / (SHELL.rz * k || 1), 1);
+    const tiltZ = -Math.atan2((SHELL.ry * u) / (SHELL.rx * k || 1), 1);
+    add(body, hex, scuteMat, [x, y, z], [0.19, 0.03, 0.19], [tiltX, 0, tiltZ]);
+  }
+  // 座布団(房つき)。ライダーはこの上にまたがる
+  add(body, new THREE.BoxGeometry(0.46, 0.07, 0.46), cushionMat, [0, SHELL.y + SHELL.ry + 0.02, 0.2], [1, 1, 1], [0.05, 0, 0]);
+  for (const sx of [-1, 1]) {
+    for (const z of [-0.02, 0.42]) add(body, sphere, tasselMat, [sx * 0.23, SHELL.y + SHELL.ry + 0.0, z], [0.035, 0.05, 0.035]);
+  }
+
+  // 首と頭(少し持ち上げて前を見る)
+  body.add(tube([0, SHELL.y - 0.02, -0.8], [0, SHELL.y + 0.06, -1.1], 0.15, skinMat));
+  add(body, sphere, skinMat, [0, SHELL.y + 0.1, -1.24], [0.2, 0.17, 0.27]);
+  for (const sx of [-1, 1]) add(body, sphere, blackMat, [sx * 0.13, SHELL.y + 0.17, -1.33], [0.035, 0.04, 0.035]);
+  // しっぽ
+  add(body, new THREE.ConeGeometry(0.07, 0.24, 8), skinMat, [0, SHELL.y - 0.04, 1.02], [1, 1, 1], [Math.PI / 2, 0, 0]);
+
+  // ひれ(付け根を中心に動かすので、付け根に置いたグループの子にする)
+  const flipper = (pivot, offset, scale, yaw) => {
+    const g = new THREE.Group();
+    g.position.set(...pivot);
+    add(g, sphere, skinMat, offset, scale, [0, yaw, 0]);
+    body.add(g);
+    return g;
+  };
+  const front = [-1, 1].map((sx) => flipper([sx * 0.58, SHELL.y - 0.04, -0.55], [sx * 0.5, 0, 0.12], [0.62, 0.05, 0.2], sx * 0.35));
+  const rear = [-1, 1].map((sx) => flipper([sx * 0.4, SHELL.y - 0.06, 0.72], [sx * 0.16, 0, 0.12], [0.24, 0.04, 0.15], -sx * 0.6));
+
+  // 甲羅にまたがるライダー(のんびり、背すじを伸ばして甲羅の前のふちに手をつく)
+  const seatY = SHELL.y + SHELL.ry + 0.06;
+  const hip = [0, seatY + 0.08, 0.22];
+  const shoulder = [0, seatY + 0.5, 0.02];
+  body.add(tube(hip, shoulder, 0.15, jerseyMat));
+  for (const sx of [-1, 1]) {
+    body.add(
+      tube([sx * 0.18, seatY + 0.48, 0.02], [sx * 0.3, seatY - 0.06, -0.42], 0.042, riderSkinMat),
+      tube([sx * 0.11, seatY + 0.06, 0.2], [sx * 0.42, seatY - 0.12, 0.0], 0.07, shortsMat),
+      tube([sx * 0.42, seatY - 0.12, 0.0], [sx * 0.52, seatY - 0.44, 0.14], 0.05, riderSkinMat)
+    );
+  }
+  add(body, new THREE.SphereGeometry(0.1, 14, 10), riderSkinMat, [0, seatY + 0.68, -0.02]);
+  add(body, new THREE.SphereGeometry(0.125, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), helmetMat, [0, seatY + 0.7, 0], [1, 0.9, 1.25]);
+
+  // 浦島太郎が乗れるくらいの大ガメ(実物より大きめ)にして、走行画面でもカメだと分かるようにする
+  body.scale.setScalar(1.15);
+  group.position.x = RIDER_X_M;
+  // カメラは少し右の斜め後ろから: 真後ろだと甲羅とライダーで頭が隠れてしまう
+  return {
+    group, spinners: [], spinRadiusM: 1, bobber: body, flippers: { front, rear, phase: 0 },
+    camera: { sideM: 1.2, raiseM: 0.2, backM: 0, eyeM: (seatY + 0.66) * 1.15 },
+  };
+}
+
+/** バイク種別('bike' | 'swan' | 'turtle')に応じたアバターを作る。 */
 export function createAvatar(vehicle) {
-  return vehicle === 'swan' ? buildSwanBoat() : buildRiderAvatar();
+  if (vehicle === 'swan') return buildSwanBoat();
+  if (vehicle === 'turtle') return buildSeaTurtle();
+  return buildRiderAvatar();
 }
 
 /**
  * 車輪(外輪)の回転とアバターの前傾(路面の勾配)・カーブでの傾き(roll、正 = 左へ倒れる)、
- * スワンボートの揺れを更新する。このフレームの経過時間(s)を rider.dt に残す(視点の揺れに使う)。
+ * スワンボート・ウミガメの揺れ(ウミガメはひれの羽ばたきも)を更新する。このフレームの経過時間(s)を rider.dt に残す(視点の揺れに使う)。
  */
 export function updateRiderAvatar(rider, clock, speedKmh, pitch, roll = 0) {
   const dt = Math.min(clock.getDelta(), 0.1);
@@ -391,6 +495,18 @@ export function updateRiderAvatar(rider, clock, speedKmh, pitch, roll = 0) {
   for (const spinner of rider.spinners) spinner.rotation.x -= delta;
   rider.group.rotation.x = pitch;
   rider.group.rotation.z = roll;
+  if (rider.flippers) {
+    // ウミガメ: 速く進むほど速く羽ばたく(止まっていてもゆっくり動かして浮いていられるように)
+    const f = rider.flippers;
+    f.phase += dt * Math.PI * 2 * (0.35 + Math.min(speedMps, 10) * 0.06);
+    const w = Math.sin(f.phase);
+    f.front.forEach((g, i) => {
+      const sx = i === 0 ? -1 : 1;
+      g.rotation.z = sx * w * 0.5;
+      g.rotation.y = -sx * w * 0.18;
+    });
+    f.rear.forEach((g, i) => { g.rotation.y = (i === 0 ? 1 : -1) * Math.sin(f.phase * 0.5) * 0.3; });
+  }
   if (rider.bobber) {
     // 水に浮いているかのように、ゆっくり上下しながら左右に揺れる(進むほど少し大きく)
     const t = clock.elapsedTime;

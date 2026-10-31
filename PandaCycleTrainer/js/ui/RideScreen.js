@@ -637,7 +637,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       envRow('時間帯', TIME_OPTIONS, environment.time, (id) => changeEnvironment({ time: id })),
       supportsWeather(courseProfile)
         ? envRow('天候', WEATHER_OPTIONS, environment.weather, (id) => changeEnvironment({ weather: id }))
-        : h('p', { className: 'fs-env-note' }, '上野不忍池コースは時間帯だけが反映されます。')
+        : h('p', { className: 'fs-env-note' }, `${courseProfile.name}は時間帯だけが反映されます。`)
     );
 
   // 一時停止中(ゴールのダイアログ中も含む)はループが draw を呼ばないため、視点・環境を

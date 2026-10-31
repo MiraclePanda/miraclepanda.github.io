@@ -15,7 +15,7 @@ import { LIMITS } from '../utils/validation.js';
 const KEY = 'pct_prefs_v1';
 
 const FIELDS = ['distanceKm', 'weightKg', 'bikeWeightKg', 'crr', 'cdaM2'];
-const VEHICLE_VALUES = ['bike', 'swan'];
+const VEHICLE_VALUES = ['bike', 'swan', 'turtle'];
 // courseId は組み込みコースの id か、GPX の実在コースの 'gpx-<数字>'。存在しない id は画面側で既定に戻す。
 const COURSE_ID_RE = /^[a-z][a-z0-9-]{0,39}$/;
 

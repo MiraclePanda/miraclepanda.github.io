@@ -265,6 +265,8 @@ export const COURSE_PROFILES = [
     name: '竜宮城・海底コース',
     tag: '観光地',
     scenery: 'ryugu',
+    // セットアップ画面で「ウミガメ」をすすめる(固定はしない: fixedVehicle と違いユーザーの選択のまま)
+    recommendedVehicle: 'turtle',
     description: '光の差し込む海の底を、サンゴと貝殻で縁取られた白い砂の道でめぐる観光コース(1周6km)。昆布の林や沈没船を抜け、竜宮門をくぐって竜宮城と乙姫さまの舞台へ。カメがときどき並んで泳いでくれます。',
     loopLengthKm: 6,
     crossfadeKm: 0.15,
