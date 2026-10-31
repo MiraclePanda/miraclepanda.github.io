@@ -22,6 +22,9 @@ import { createRoadsideActors } from '../three/roadsideActors.js';
 import { clearZones, inClearZone } from '../three/roadsideLayout.js';
 import { landmarkActors } from '../three/happeningsLayout.js';
 import { createBackdrop } from '../three/backdrops.js';
+import { createOcean } from '../three/oceanWater.js';
+import { createRealTerrain } from '../three/realTerrain.js';
+import { ATAMI_REAL_TERRAIN, GSI_ATTRIBUTION } from '../three/gsiTerrain.js';
 import { buildTourParts, placeTourObjects } from '../three/tourParts.js';
 
 const { forwardRef, useImperativeHandle } = React;
@@ -177,6 +180,8 @@ const MAX_BOATS = 16;
 export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
+  // 実在の地形(熱海の最高(実験))を出している間の出典表示。毎フレームの再描画を避けるため DOM を直接書き換える
+  const attributionRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
   // 品質段階の変化(自動調整による段階変更を含む)を親へ通知する。最新のコールバックを参照するためrefで持つ。
   const onQualityChangeRef = useRef(onQualityChange);
@@ -232,6 +237,7 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
     scene3d.cam.view = normalizeCameraView(cameraView);
 
     const resize = () => resizeScene(scene3d);
+    scene3d.attributionEl = attributionRef.current;
     scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
     scene3d.appliedQualityMode = qualityMode;
     setupQuality(scene3d, qualityMode);
@@ -239,6 +245,9 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
 
     return () => {
       window.removeEventListener('resize', resize);
+      // 差し替え中の水面マテリアル・実在の地形の写真はシーンをたどっても見つからないので先に解放する
+      scene3d.ocean?.dispose();
+      scene3d.realTerrain?.dispose();
       disposeScene(scene3d);
       sceneRef.current = null;
     };
@@ -265,6 +274,7 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
   return h(
     'div', { className: 'city-scene-wrap' },
     h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': getLandscape(landscape).id, 'data-vehicle': vehicle }),
+    h('div', { ref: attributionRef, className: 'scene-attribution', hidden: true }),
     renderError &&
       h(
         'div', { className: 'city-scene-fallback' },
@@ -389,8 +399,18 @@ function initScene(canvas, courseEngine, L, vehicle) {
   const backdrop = createBackdrop(courseEngine.profile.backdrop);
   if (backdrop) scene.add(backdrop.object);
 
+  // 熱海の描画品質「最高(実験)」: 映り込む海と、国土地理院のタイルから作る実在の地形の遠景(sceneKit の s.ultra)
+  const experimental = L.id === 'atami';
+  const ocean = experimental ? createOcean(water) : null;
+  const realTerrain = experimental
+    ? createRealTerrain(ATAMI_REAL_TERRAIN, { anisotropy, onStatus: () => updateUltraStatus(st) })
+    : null;
+  if (realTerrain) scene.add(realTerrain.object);
+
   const st = {
     L, atmo, canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures: tex.all, waterNormal: tex.water,
+    ocean, realTerrain, ultraOn: false,
+    onUltraChange: (on) => setUltra(st, on),
     root, inner, terrain, road, shoulder, water,
     pools: {
       trunks, canopies, conifers, farCones, farBlobs, rocks, railPosts, railBeams,
@@ -1110,7 +1130,53 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
       hemiLight: st.hemiLight, sunLight: st.sunLight, fog: st.scene.fog,
     });
   }
+  if (st.realTerrain) {
+    st.realTerrain.update({
+      enabled: st.ultraOn, skyHeading, baseY: st.water.position.y, sunDir: st.env.sunDir,
+      hemiLight: st.hemiLight, sunLight: st.sunLight, fog: st.scene.fog,
+    });
+    // 実在の地形に本物の初島があるので、手続き生成の初島は隠す
+    if (st.pools.islands) st.pools.islands.mesh.visible = !st.realTerrain.object.visible;
+  }
+  st.ocean?.render(st.renderer, st.scene, st.camera, t);
   st.renderer.render(st.scene, st.camera);
+}
+
+/** 描画品質「最高(実験)」の入り切り(熱海のみ。sceneKit の applyQuality から呼ばれる)。 */
+function setUltra(st, on) {
+  if (!st.ocean) return;
+  st.ultraOn = on;
+  st.ocean.setEnabled(on);
+  // 影を細かく(4096)。サイズを変えたら影マップを作り直させる
+  const size = on ? 4096 : 2048;
+  if (st.sunLight.shadow.mapSize.x !== size) {
+    st.sunLight.shadow.mapSize.set(size, size);
+    st.sunLight.shadow.map?.dispose();
+    st.sunLight.shadow.map = null;
+  }
+  if (on) st.realTerrain.load();
+  updateUltraStatus(st);
+}
+
+/** 実在の地形の読み込み状態を canvas の data 属性と出典表示に反映する。 */
+function updateUltraStatus(st) {
+  if (!st?.realTerrain) return;
+  const status = st.realTerrain.status;
+  st.canvas.dataset.realTerrain = st.ultraOn ? status : 'off';
+  const el = st.attributionEl;
+  if (!el) return;
+  if (st.ultraOn && status === 'ready') {
+    el.textContent = GSI_ATTRIBUTION;
+    el.hidden = false;
+  } else if (st.ultraOn && status === 'error') {
+    el.textContent = '実在の地形を読み込めませんでした(通信を確認してください)';
+    el.hidden = false;
+  } else if (st.ultraOn && status === 'loading') {
+    el.textContent = '実在の地形を読み込み中…';
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
 }
 
 /**

@@ -47,7 +47,7 @@ const POWER_AVG_TAU_S = 3;
 // 走行を楽しくする通知(画面上部のバナーにも出す種類)
 const FUN_TOAST_KINDS = ['happening', 'guide', 'journey', 'gourmet'];
 
-const QUALITY_LABELS = { auto: '自動', high: '高', medium: '中', low: '低' };
+const QUALITY_LABELS = { auto: '自動', ultra: '最高(実験)', high: '高', medium: '中', low: '低' };
 
 /**
  * 走行中画面。物理演算ループ・BLEデータ購読・記録・一時停止/終了/ゴール処理を統括する。
@@ -65,8 +65,11 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const [reconnectError, setReconnectError] = useState(null);
   const [communicationWarning, setCommunicationWarning] = useState(false);
   const [loadRatioPercent, setLoadRatioPercent] = useState(initialLoadRatioPercent);
-  // 描画品質: 'auto'(自動調整) か 'high' / 'medium' / 'low' の固定。activeTierは実際に適用中の段階。
-  const [qualityMode, setQualityMode] = useState(loadRenderQuality);
+  // 描画品質: 'auto'(自動調整) か 'ultra' / 'high' / 'medium' / 'low' の固定。activeTierは実際に適用中の段階。
+  // 'ultra'(最高・実験)は対応する景色(熱海)でだけ選べ、他のコースでは保存値が ultra でも「高」で描く。
+  const [savedQualityMode, setQualityMode] = useState(loadRenderQuality);
+  const ultraSupported = courseProfile.scenery === 'atami';
+  const qualityMode = savedQualityMode === 'ultra' && !ultraSupported ? 'high' : savedQualityMode;
   const [activeTier, setActiveTier] = useState(null);
   // 景観(時間帯・天候)と視点。走行中に切り替えたら保存し、次の走行でも同じ設定から始める。
   const [environment, setEnvironment] = useState(() => initialEnvironment ?? loadEnvironment());
@@ -499,9 +502,10 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       samples,
     };
 
-    // 要件定義書1章「毎回の走行開始時にネイティブのデバイス選択ダイアログを表示」に
-    // 対応するため、走行終了時にBLE接続を切断し、次回は再度手動選択させる。
-    ftmsClient.disconnect();
+    // 走行終了後もBLE接続は保つ(次の走行で再ペアリング不要にするため。要件定義書1章の
+    // 「毎回デバイス選択」をユーザーの指示で変更)。トレーナーは負荷0で待機させ、
+    // 次の開始時に App が beginSession() で制御権を取り直す。
+    ftmsClient.endSession();
     onFinish(record);
   };
 
@@ -663,7 +667,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       h('span', null, '描画品質'),
       h(
         'select', { value: qualityMode, onChange: handleQualityChange, 'aria-label': '描画品質' },
-        ['auto', 'high', 'medium', 'low'].map((mode) =>
+        (ultraSupported ? ['auto', 'ultra', 'high', 'medium', 'low'] : ['auto', 'high', 'medium', 'low']).map((mode) =>
           h('option', { key: mode, value: mode },
             mode === 'auto' && activeTier ? `自動（現在: ${QUALITY_LABELS[activeTier]}）` : QUALITY_LABELS[mode])
         )

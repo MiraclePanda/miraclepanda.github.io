@@ -100,10 +100,10 @@ export function savePrefs(patch = {}) {
   }
 }
 
-// 走行画面の「描画品質」(auto / high / medium / low)。セットアップ入力とは独立に、
+// 走行画面の「描画品質」(auto / ultra(最高・実験) / high / medium / low)。セットアップ入力とは独立に、
 // 変更した時点で保存し、次の走行でも同じ設定から始める。
 const RENDER_QUALITY_KEY = 'pct_render_quality_v1';
-const RENDER_QUALITY_VALUES = ['auto', 'high', 'medium', 'low'];
+const RENDER_QUALITY_VALUES = ['auto', 'ultra', 'high', 'medium', 'low'];
 
 export function loadRenderQuality() {
   try {

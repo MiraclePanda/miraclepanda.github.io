@@ -83,7 +83,7 @@ test('湖畔・山岳・熱海の景観: コース対応、道路は常に水面
   }
 });
 
-test('描画品質の保存: auto/high/medium/low のみ受け付け、既定は auto', async () => {
+test('描画品質の保存: auto/ultra/high/medium/low のみ受け付け、既定は auto', async () => {
   const store = new Map();
   const saved = globalThis.localStorage;
   globalThis.localStorage = {
@@ -95,8 +95,10 @@ test('描画品質の保存: auto/high/medium/low のみ受け付け、既定は
     assert.equal(loadRenderQuality(), 'auto');
     saveRenderQuality('medium');
     assert.equal(loadRenderQuality(), 'medium');
-    saveRenderQuality('ultra'); // 不正値は保存しない
-    assert.equal(loadRenderQuality(), 'medium');
+    saveRenderQuality('ultra'); // 最高(実験)。熱海でだけ選べるが、保存値としては有効
+    assert.equal(loadRenderQuality(), 'ultra');
+    saveRenderQuality('extreme'); // 不正値は保存しない
+    assert.equal(loadRenderQuality(), 'ultra');
     store.set('pct_render_quality_v1', 'bogus');
     assert.equal(loadRenderQuality(), 'auto', '壊れた保存値は自動に戻す');
   } finally {

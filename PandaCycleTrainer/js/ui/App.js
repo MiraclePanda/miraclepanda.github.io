@@ -56,7 +56,7 @@ export function App() {
     setDeviceState({ connected: false, connecting: false, deviceName: null, controlMode: null, error: null });
   }, []);
 
-  const handleStart = useCallback((config) => {
+  const handleStart = useCallback(async (config) => {
     // セットアップ画面は変更した時点で保存しているが、開始した設定は念のためここでも保存する
     savePrefs({
       // 実在コースの走行距離(コース全長)は組み込みコース用の前回値として残さない
@@ -71,6 +71,20 @@ export function App() {
       courseId: config.courseId,
       loadRatioPercent: config.loadRatioPercent,
     });
+    // 前の走行のあと接続を保っている場合は、制御権を取り直してトレーナーを負荷制御に戻す。
+    // 失敗したら接続を切り、セットアップ画面でつなぎ直してもらう。
+    const client = ftmsClientRef.current;
+    if (client.sessionEnded) {
+      setDeviceState((s) => ({ ...s, connecting: true, error: null }));
+      try {
+        await client.beginSession();
+        setDeviceState((s) => ({ ...s, connecting: false, controlMode: client.controlMode }));
+      } catch (err) {
+        await client.disconnect();
+        setDeviceState({ connected: false, connecting: false, deviceName: null, controlMode: null, error: err.message ?? String(err) });
+        return;
+      }
+    }
     // 詳細設定のCrr/CdAはSimulation Modeでトレーナーにも送る(物理演算側はRideScreenへ渡す)。
     ftmsClientRef.current.setSimulationCoefficients({ crr: config.crr, cdaM2: config.cdaM2 });
     // FTMS User Data Service (体重書き込み) はベストエフォート。結果は待たずに進める。
@@ -99,7 +113,12 @@ export function App() {
   }, []);
 
   const handleRideFinish = useCallback(async (record) => {
-    setDeviceState({ connected: false, connecting: false, deviceName: null, controlMode: null, error: null });
+    // 接続は保つ(RideScreen が endSession() 済み)。走行中の再接続でモードが変わっていることがあるので
+    // 表示はクライアントの現在値に合わせる。途中で切れていれば未接続に戻す。
+    const client = ftmsClientRef.current;
+    setDeviceState(client.isConnected
+      ? { connected: true, connecting: false, deviceName: client.device?.name || '(不明なデバイス)', controlMode: client.controlMode, error: null }
+      : { connected: false, connecting: false, deviceName: null, controlMode: null, error: null });
     let id = null;
     try {
       id = await saveRide(record);
