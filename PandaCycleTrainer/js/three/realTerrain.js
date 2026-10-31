@@ -31,13 +31,22 @@ async function loadBitmap(url) {
   return createImageBitmap(await res.blob());
 }
 
-/** 範囲のタイルを1枚のキャンバスに並べる。1枚でも読めなければ失敗(写真は欠けても続ける: allowMissing)。 */
-async function loadMosaic(template, range, allowMissing) {
+/**
+ * 範囲のタイルを1枚のキャンバスに並べる。読めなかったタイルは fill の色で塗る。
+ * 地理院の標高タイルは海だけの範囲にはタイルが無く 404 になる(熱海の範囲でも沖の数枚)ので、
+ * 標高は fill = 無効値の色(海)で埋めて続ける。1枚も読めなかったときだけ失敗にする
+ * (オフライン・CORS で弾かれたなど。理由は最初のエラーで返す)。
+ */
+async function loadMosaic(template, range, fill) {
   const size = range.tiles * TILE_PX;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, 0, size, size);
+  let loaded = 0;
+  let firstError = null;
   const jobs = [];
   for (let j = 0; j < range.tiles; j++) {
     for (let i = 0; i < range.tiles; i++) {
@@ -47,16 +56,18 @@ async function loadMosaic(template, range, allowMissing) {
           (bmp) => {
             ctx.drawImage(bmp, i * TILE_PX, j * TILE_PX);
             bmp.close?.();
+            loaded++;
           },
           (err) => {
-            if (!allowMissing) throw err;
+            firstError ??= err;
           }
         )
       );
     }
   }
   await Promise.all(jobs);
-  return { canvas, ctx, size };
+  if (loaded === 0) throw firstError ?? new Error(`タイルを読めませんでした: ${template}`);
+  return { canvas, ctx, size, loaded };
 }
 
 /** 標高格子から地形のジオメトリ(回転前のシーン座標、標高は海面 = 0)を作る。 */
@@ -195,8 +206,9 @@ export function createRealTerrain(cfg, { onStatus, anisotropy = 4 } = {}) {
       try {
         const range = tileRange({ ...cfg.origin, z: cfg.z, tiles: cfg.tiles, offsetEM: cfg.offsetEM, offsetNM: cfg.offsetNM });
         const [dem, photo] = await Promise.all([
-          loadMosaic(GSI_DEM_URL, range, false),
-          loadMosaic(GSI_PHOTO_URL, range, true).catch(() => null),
+          // 標高: 無いタイルは無効値 (128, 0, 0) = 海。写真: 無いタイルは山の緑で塗る(海の部分は描かないので目立たない)
+          loadMosaic(GSI_DEM_URL, range, 'rgb(128, 0, 0)'),
+          loadMosaic(GSI_PHOTO_URL, range, 'rgb(64, 84, 56)').catch(() => null),
         ]);
         if (disposed) return;
         const rgba = dem.ctx.getImageData(0, 0, dem.size, dem.size).data;
@@ -213,7 +225,10 @@ export function createRealTerrain(cfg, { onStatus, anisotropy = 4 } = {}) {
         }
         setStatus('ready');
       } catch (err) {
-        if (!disposed) setStatus('error', err);
+        if (disposed) return;
+        // 原因(HTTP の状態・CORS など)は開発者ツールのコンソールで確かめられるようにする
+        console.warn('実在の地形(地理院タイル)を読み込めませんでした:', err);
+        setStatus('error', err);
       }
     },
     /**
