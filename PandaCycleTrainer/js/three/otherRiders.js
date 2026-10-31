@@ -149,7 +149,7 @@ function drawLabel(label, text, colorHex) {
 
 /**
  * @param {THREE.Object3D} parent アバターを入れる親(シーン、または景色の inner グループ)
- * @param {string} vehicle 'bike' | 'swan'
+ * @param {string} vehicle 'bike' | 'swan' | 'turtle'
  * @param {THREE.Texture[]} textures シーンが破棄時に dispose するテクスチャの一覧(ラベルのテクスチャを足す)
  */
 export function createOtherRiders(parent, vehicle, textures) {

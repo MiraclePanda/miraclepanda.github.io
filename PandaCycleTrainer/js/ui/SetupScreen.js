@@ -583,11 +583,16 @@ export function SetupScreen({
         )
       ),
       fixedVehicle && h('p', { className: 'vehicle-lock-note' }, '🦢 上野不忍池コースはスワンボートで池を周回するため、バイク種別はスワンボートに固定されます。'),
+      !fixedVehicle && courseProfile.recommendedVehicle === 'turtle' && vehicle !== 'turtle' && h(
+        'p', { className: 'vehicle-lock-note vehicle-recommend-note' },
+        '🐢 竜宮城へはカメに乗って行くのが昔からの決まりです。 ',
+        h('button', { type: 'button', className: 'btn btn-secondary btn-small', onClick: () => setVehicle('turtle') }, 'ウミガメに乗る')
+      ),
       h('p', { className: 'field-title' }, '景観'),
       segmented('時間帯', 'envTime', TIME_OPTIONS, environment.time, (id) => changeEnvironment({ time: id })),
       supportsWeather(courseProfile)
         ? segmented('天候', 'envWeather', WEATHER_OPTIONS, environment.weather, (id) => changeEnvironment({ weather: id }))
-        : h('p', { className: 'muted small' }, '上野不忍池コースは時間帯だけが反映されます(天候は変わりません)。'),
+        : h('p', { className: 'muted small' }, `${courseProfile.name}は時間帯だけが反映されます(天候は変わりません)。`),
       h('p', { className: 'muted small' }, '※ 走行中の3D表示の見た目だけが変わります。速度・距離の計算やトレーナーの負荷は変わりません。景観は走行中にも切り替えられます。'),
 
       h('p', { className: 'field-title' }, '集団走行'),
@@ -739,6 +744,7 @@ function segmented(title, name, options, value, onChange) {
 const VEHICLE_OPTIONS = [
   { id: 'bike', name: '標準', description: 'ロードバイクで走ります。' },
   { id: 'swan', name: 'スワンボート', description: 'パロディモード。上野・不忍池のような足漕ぎスワンボートで道路を進みます。' },
+  { id: 'turtle', name: 'ウミガメ', description: 'パロディモード。浦島太郎のようにウミガメの背中に乗り、ひれで泳いで進みます。竜宮城・海底コースにおすすめ。' },
 ];
 
 function modeLabel(mode) {

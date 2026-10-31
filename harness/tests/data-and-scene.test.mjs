@@ -104,7 +104,7 @@ test('描画品質の保存: auto/high/medium/low のみ受け付け、既定は
   }
 });
 
-test('バイク種別の保存: bike/swan のみ復元し、不正値は未設定扱い', async () => {
+test('バイク種別の保存: bike/swan/turtle のみ復元し、不正値は未設定扱い', async () => {
   const store = new Map();
   const saved = globalThis.localStorage;
   globalThis.localStorage = {
@@ -116,6 +116,8 @@ test('バイク種別の保存: bike/swan のみ復元し、不正値は未設�
     savePrefs({ distanceKm: 10, weightKg: 60, bikeWeightKg: 8, crr: 0.004, cdaM2: 0.32, vehicle: 'swan' });
     assert.equal(loadPrefs().vehicle, 'swan');
     assert.equal(loadPrefs().distanceKm, 10);
+    savePrefs({ vehicle: 'turtle' }); // 竜宮城・海底コース向けのウミガメ
+    assert.equal(loadPrefs().vehicle, 'turtle');
     store.set('pct_prefs_v1', JSON.stringify({ vehicle: 'rocket' }));
     assert.equal(loadPrefs().vehicle, undefined, '未知の種別は既定(標準)に任せる');
   } finally {
@@ -146,6 +148,13 @@ test('デモ走行の仮想ライダー: 上りで踏み込み下りで緩め、
   }
   const p = smoothDemoPower(100, 200, 0.5);
   assert.ok(p > 100 && p < 200);
+});
+
+test('竜宮城・海底コース: ウミガメをすすめるが固定はしない', async () => {
+  const { getCourseProfile } = await import('../../PandaCycleTrainer/js/physics/courseProfiles.js');
+  const course = getCourseProfile('ryugu');
+  assert.equal(course.recommendedVehicle, 'turtle');
+  assert.equal(course.fixedVehicle, undefined);
 });
 
 test('上野不忍池: 1周1.2kmの反時計回りで常に左へ曲がる周回、岸から離れ、スワンボート固定', async () => {
