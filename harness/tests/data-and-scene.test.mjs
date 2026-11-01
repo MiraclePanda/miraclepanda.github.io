@@ -63,12 +63,12 @@ test('道路標高プロファイル: 現在地で0、上り勾配で前方が�
   assert.ok(interpolateElevation(prof, -100) < 0);
 });
 
-test('湖畔・山岳・熱海の景観: コース対応、道路は常に水面/谷底より高い、配置は決定的で道路上に出ない', async () => {
+test('湖畔・山岳の景観: コース対応、道路は常に水面/谷底より高い、配置は決定的で道路上に出ない', async () => {
   const { CourseEngine } = await import('../../PandaCycleTrainer/js/physics/courseEngine.js');
   const { COURSE_PROFILES, getCourseProfile } = await import('../../PandaCycleTrainer/js/physics/courseProfiles.js');
   const LL = await import('../../PandaCycleTrainer/js/three/landscapeLayout.js');
   assert.deepEqual(COURSE_PROFILES.map((p) => p.scenery), ['city', 'lakeside', 'mountain', 'atami', 'ueno', 'kawaguchiko', 'kyoto', 'nara', 'ryugu']);
-  for (const [courseId, id] of [['hilly', 'lakeside'], ['mountain', 'mountain'], ['atami', 'atami']]) {
+  for (const [courseId, id] of [['hilly', 'lakeside'], ['mountain', 'mountain']]) {
     const p = getCourseProfile(courseId);
     const ce = new CourseEngine(p, 100);
     const elev = LL.createElevationSampler((km) => ce.gradeAtKm(km));
@@ -95,7 +95,7 @@ test('描画品質の保存: auto/ultra/high/medium/low のみ受け付け、既
     assert.equal(loadRenderQuality(), 'auto');
     saveRenderQuality('medium');
     assert.equal(loadRenderQuality(), 'medium');
-    saveRenderQuality('ultra'); // 最高(実験)。熱海でだけ選べるが、保存値としては有効
+    saveRenderQuality('ultra'); // 最高(実験)
     assert.equal(loadRenderQuality(), 'ultra');
     saveRenderQuality('extreme'); // 不正値は保存しない
     assert.equal(loadRenderQuality(), 'ultra');
@@ -127,16 +127,30 @@ test('バイク種別の保存: bike/swan/turtle のみ復元し、不正値は�
   }
 });
 
-test('熱海サンビーチ: ヤシ・ホテル・パラソルは道路の外、初島は沖、熱海城は1周に1つ', async () => {
-  const LL = await import('../../PandaCycleTrainer/js/three/landscapeLayout.js');
-  const L = LL.LANDSCAPES.atami;
-  const edge = LL.roadEdgeM(L);
-  const { town } = LL.collectLandscapeObjects(L, 3800, 4200, { farToM: 5000 });
-  assert.ok(town.palms.length > 30 && town.hotels.length > 0 && town.parasols.length > 0);
-  for (const o of [...town.palms, ...town.hotels, ...town.parasols, ...town.lamps]) assert.ok(Math.abs(o.d) > edge);
-  for (const ps of town.parasols) assert.ok(ps.d < -(edge + L.town.promenadeM), 'パラソルは砂浜(海側)');
-  assert.ok(town.islands.every((i) => i.d < -3000), '初島は沖合');
-  assert.equal(town.castles.filter((c) => c.s === 4500).length, 1);
+test('熱海サンビーチ(PLATEAU・国道135号): 同梱データとコースの勾配・方位が整合し、出典を持つ', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { getCourseProfile } = await import('../../PandaCycleTrainer/js/physics/courseProfiles.js');
+  const { ATAMI_COURSE_DATA: D } = await import('../../PandaCycleTrainer/js/physics/atamiCourseData.js');
+  const A = await import('../../PandaCycleTrainer/js/three/atamiRealLayout.js');
+  const raw = JSON.parse(readFileSync(new URL('../../PandaCycleTrainer/js/data/atami-plateau.json', import.meta.url)));
+  const data = A.decodeAtamiData(raw);
+  const route = A.createAtamiRoute(data.route);
+  // 1周 = 往復 + Uターン2回 = コースプロファイルの1周
+  assert.equal(route.lapM, D.loopLengthM);
+  assert.equal(getCourseProfile('atami').loopLengthKm * 1000, D.loopLengthM);
+  assert.equal(getCourseProfile('atami').cornering, true);
+  assert.ok(data.buildings.length > 3000, 'PLATEAU の建物');
+  assert.match(data.attribution, /PLATEAU/);
+  assert.match(data.attribution, /国土地理院/);
+  // 1周で出発点の高さに戻り、Uターン・継ぎ目でも線が途切れない
+  const climb = D.grades.reduce((s, g) => s + (g / 100) * D.gradeStepM, 0);
+  assert.ok(Math.abs(climb) < 1);
+  const a = route.place(-0.5, 0);
+  for (let s = 0; s <= route.lapM + 1; s += 0.5) {
+    const b = route.place(s, 0);
+    assert.ok(Math.hypot(b.x - a.x, b.y - a.y) < 0.6, `s=${s}`);
+    Object.assign(a, b);
+  }
 });
 
 test('デモ走行の仮想ライダー: 上りで踏み込み下りで緩め、値は範囲内', async () => {

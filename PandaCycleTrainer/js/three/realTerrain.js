@@ -117,7 +117,7 @@ export function buildTerrainGeometry(ys, visible, gridN, en, bearingDeg) {
   return g;
 }
 
-function createMaterial(innerRadiusM, openSideX) {
+function createMaterial(innerRadiusM, openSideX, innerBox, minDistM) {
   return new THREE.ShaderMaterial({
     fog: false,
     lights: false,
@@ -133,6 +133,8 @@ function createMaterial(innerRadiusM, openSideX) {
       uHazeMax: { value: HAZE_MAX },
       uInner: { value: innerRadiusM },
       uOpenSideX: { value: openSideX },
+      uMinDist: { value: minDistM },
+      uBox: { value: innerBox ? new THREE.Vector4(innerBox.minX, innerBox.maxX, innerBox.minZ, innerBox.maxZ) : new THREE.Vector4(1, -1, 1, -1) },
     },
     vertexShader: /* glsl */ `
       attribute float aVisible;
@@ -159,6 +161,8 @@ function createMaterial(innerRadiusM, openSideX) {
       uniform float uHazeMax;
       uniform float uInner;
       uniform float uOpenSideX;
+      uniform float uMinDist;
+      uniform vec4 uBox;
       varying vec3 vLocal;
       varying vec3 vNormalW;
       varying vec2 vUv;
@@ -167,7 +171,9 @@ function createMaterial(innerRadiusM, openSideX) {
         float dist = length(vLocal.xz);
         // 海・湖(vVisible = 0)と、手続き生成の景色が描くライダーのまわりは描かない。
         // 水側(回転前の X < uOpenSideX。熱海の相模湾・河口湖)は 400 m より先なら本物の岬・島・対岸を見せる
-        if (vVisible < 0.5 || dist < 400.0 || (dist < uInner && vLocal.x > uOpenSideX)) discard;
+        if (vVisible < 0.5 || dist < uMinDist || (dist < uInner && vLocal.x > uOpenSideX)) discard;
+        // 実在の座標に組んだ景色(熱海)は、近景の地形の範囲(矩形)の内側を描かない
+        if (vLocal.x > uBox.x && vLocal.x < uBox.y && vLocal.z > uBox.z && vLocal.z < uBox.w) discard;
         vec3 n = normalize(vNormalW);
         // 写真が無いときは標高で塗る(低い所は緑、高い所は茶色がかった灰色)
         vec3 byHeight = mix(vec3(0.16, 0.24, 0.13), vec3(0.3, 0.3, 0.26), smoothstep(150.0, 700.0, vLocal.y));
@@ -198,7 +204,8 @@ const _sun = new THREE.Vector3();
  */
 export function createRealTerrain(cfg, { onStatus, anisotropy = 4 } = {}) {
   // openSideX が無い設定(京都・奈良)は水側を開けない(十分大きい値 = どの点も「水側でない」)
-  const material = createMaterial(cfg.innerRadiusM, cfg.openSideX ?? -1e9);
+  // innerBox(回転前のシーン座標の矩形 { minX, maxX, minZ, maxZ })の内側も描かない(熱海: 近景の地形の範囲)
+  const material = createMaterial(cfg.innerRadiusM, cfg.openSideX ?? -1e9, cfg.innerBox ?? null, cfg.minDistM ?? 400);
   const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
   mesh.name = 'real-terrain';
   mesh.frustumCulled = false;

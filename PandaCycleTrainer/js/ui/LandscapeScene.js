@@ -1,7 +1,6 @@
 import { h, useRef, useEffect, useState } from './h.js';
 import THREE from '../three/three.js';
-import { mulberry32, FLOOR_HEIGHT_M } from '../three/cityLayout.js';
-import { createCityTextures, createFacadeMaterial, createFacadeGeometry, FACADE_TILE } from '../three/cityMaterials.js';
+import { mulberry32 } from '../three/cityLayout.js';
 import {
   getLandscape, roadEdgeM, roadCenterX, roadSlopeX, lateralX,
   createElevationSampler, createFloorModel, terrainHeightM, terrainColor, collectLandscapeObjects,
@@ -42,13 +41,6 @@ const ATMOSPHERE = {
     // 左後方の高い太陽: 正面の山並みが順光で立体的に見える
     sunDir: new THREE.Vector3(-0.45, 0.72, 0.3).normalize(),
     hemiSky: 0xd2e1f3, hemiGround: 0x6a6a5c, fog: 0.00034, water: 0x3a6c70,
-  },
-  atami: {
-    zenith: '#2f7ad6', horizon: '#d9e8f2', ground: '#a3b6bc', sunColor: '#fff4e0',
-    // 熱海は東向きの海岸: 左前方(相模湾の上)の太陽が海面にきらめく
-    sunDir: new THREE.Vector3(-0.55, 0.55, -0.6).normalize(),
-    // 空気が澄んだ晴天(沖合5kmの初島まで見えるよう、フォグは薄め)
-    hemiSky: 0xd4e6f7, hemiGround: 0x8a8272, fog: 0.00018, water: 0x2a6f93,
   },
   // 秋晴れの京都: 左前方の太陽が通りの町家に斜めの日差しを落とす。京都タワー・西山が霞みすぎないよう薄めのフォグ
   kyoto: {
@@ -121,9 +113,9 @@ const TERRAIN_TILE_M = 5;
 const WATER_TILE_M = 18;
 // 海は水平線まで見えるので、水面とカメラの描画距離は十分大きくとる。
 const WATER_SIZE_M = 50000;
-// 描画品質「最高(実験)」で水面を映り込む水面にする景色(水面が見えるもの。京都・奈良は水面を地形の下に
+// 描画品質「最高(実験)」で水面を映り込む水面にする景色(水面が見えるもの。熱海は AtamiScene。京都・奈良は水面を地形の下に
 // 隠しているだけ、竜宮城は海の中なので対象外。描く手間が倍になるので見えない水面には使わない)
-const REFLECTIVE_WATER = new Set(['lakeside', 'mountain', 'atami', 'kawaguchiko']);
+const REFLECTIVE_WATER = new Set(['lakeside', 'mountain', 'kawaguchiko']);
 const CAMERA_FAR_M = 25000;
 const GUARDRAIL_POST_SPACING_M = 4;
 const WALL_SEGMENT_M = 4;
@@ -154,16 +146,6 @@ const MAX_GUARDRAIL = 160;
 const MAX_DELINEATORS = 40;
 const MAX_WALL_SEGMENTS = 140;
 const MAX_HOUSES = 220; // 京都は町並みの奥まで家が建ち並ぶ
-// 熱海サンビーチの配置物
-const MAX_HOTELS_PER_STYLE = 70;
-const MAX_PALMS = 120;
-const MAX_LAMPS = 30;
-const MAX_TOWN_RAIL_POSTS = 220;
-const MAX_PARASOLS = 90;
-const MAX_GROINS = 8;
-const TOWN_RAIL_SPACING_M = 2.5;
-const CASTLE_SCALE = 1.8;
-const HOTEL_STYLES = ['stucco', 'concrete', 'glass'];
 const MAX_BOATS = 16;
 
 /**
@@ -177,13 +159,13 @@ const MAX_BOATS = 16;
  * 道路のカーブは2通り(配置アダプター、createPlacement):
  * - コースプロファイルに curve があるコース(丘陵・山岳)は routeLayout.js の
  *   createAnchoredRoute で、組み直しのアンカー地点を原点とする平面上のカーブ道路に沿って置く。
- * - curve がないコース(熱海)は従来どおり景色側の L.curves による横ずらしの蛇行
+ * - curve がないコースは従来どおり景色側の L.curves による横ずらしの蛇行
  *   (lateralX/roadCenterX/roadSlopeX)。見た目を変えないため、計算式もそのまま使う。
  */
 export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
-  // 実在の地形(熱海の最高(実験))を出している間の出典表示。毎フレームの再描画を避けるため DOM を直接書き換える
+  // 実在の地形(最高(実験))を出している間の出典表示。毎フレームの再描画を避けるため DOM を直接書き換える
   const attributionRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
   // 品質段階の変化(自動調整による段階変更を含む)を親へ通知する。最新のコールバックを参照するためrefで持つ。
@@ -225,11 +207,10 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
     const pools = scene3d.pools;
     scene3d.env = createEnvironmentController(scene3d, {
       base: baseAtmo(scene3d.atmo), hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
-      wetMaterials: [scene3d.road.material, ...(scene3d.town ? [scene3d.town.promenade.material] : [])],
-      // 夜はデリニエーター(視線誘導標)の反射と、熱海の遊歩道の街灯・京都の提灯を明るくする
+      wetMaterials: [scene3d.road.material],
+      // 夜はデリニエーター(視線誘導標)の反射を明るくする
       glowMaterials: [
         { material: pools.delineatorLens.mesh.material, night: 4 },
-        ...(pools.lampGlobes ? [{ material: pools.lampGlobes.mesh.material, night: 6 }] : []),
         ...(scene3d.tour ? scene3d.tour.glowMaterials : []),
       ],
       headlightParent: scene3d.rider.group,
@@ -377,7 +358,6 @@ function initScene(canvas, courseEngine, L, vehicle) {
     houseBodies.mesh, houseRoofs.mesh, boatHulls.mesh, boatSails.mesh
   );
 
-  const town = L.town ? buildTownParts(inner, anisotropy, tex) : null;
   // 観光地コース(京都・奈良・河口湖・竜宮城の海底)の町並み・名物。海底は地形・砂の道に水面の光の模様を重ねる
   // (テクスチャ座標1あたりのメートルと、沿う向きの繰り返しの長さ)
   const tour = L.tour
@@ -403,7 +383,7 @@ function initScene(canvas, courseEngine, L, vehicle) {
   if (backdrop) scene.add(backdrop.object);
 
   // 描画品質「最高(実験)」(sceneKit の s.ultra): 水面の見える景色は映り込む水面に、実在の場所をモデルにした
-  // 景色(熱海・河口湖・京都・奈良)は国土地理院のタイルから作る実在の地形の遠景を足す
+  // 景色(河口湖・京都・奈良)は国土地理院のタイルから作る実在の地形の遠景を足す
   const ocean = REFLECTIVE_WATER.has(L.id) ? createOcean(water) : null;
   const realCfg = REAL_TERRAIN[L.id] ?? null;
   const realTerrain = realCfg
@@ -419,10 +399,8 @@ function initScene(canvas, courseEngine, L, vehicle) {
     pools: {
       trunks, canopies, conifers, farCones, farBlobs, rocks, railPosts, railBeams,
       delineatorPosts, delineatorLens, walls, houseBodies, houseRoofs, boatHulls, boatSails,
-      ...(town ? town.pools : {}),
       ...(tour ? tour.pools : {}),
     },
-    town,
     tour,
     rider, elev, floor,
     // 他のライダー(ゴースト・集団)。世界と一緒に動くよう inner に置く。プールは初めて描画範囲に入ったときに作る
@@ -735,12 +713,6 @@ function buildRoad(st, anchorS) {
   };
   fill(st.road, roadCols, ROAD_TILE_M, 0, [[0, 1]]);
   fill(st.shoulder, shoulderCols, SHOULDER_TILE_M, -0.03, [[0, 1], [2, 3]]);
-  if (st.town) {
-    // 海側の遊歩道・山側の歩道(縁石の高さ分だけ上げた舗装の帯)
-    const t = L.town;
-    fill(st.town.promenade, [{ x: -(edge + t.promenadeM), u: 0 }, { x: -edge, u: t.promenadeM / TOWN_PAVING_TILE_M }], TOWN_PAVING_TILE_M, 0.15, [[0, 1]]);
-    fill(st.town.sidewalk, [{ x: edge, u: 0 }, { x: edge + t.sidewalkM, u: t.sidewalkM / TOWN_PAVING_TILE_M }], TOWN_PAVING_TILE_M, 0.15, [[0, 1]]);
-  }
 }
 
 function placeObjects(st, anchorS, floorM) {
@@ -870,204 +842,9 @@ function placeObjects(st, anchorS, floorM) {
     pushInstance(p.boatSails, x, y, z, b.scale, b.scale, b.scale, 0, b.yaw);
   }
 
-  if (objects.town) placeTownObjects(st, objects.town, floorM, { groundAt, local });
   if (objects.tour) placeTourObjects(st, objects.tour, { groundAt, local, blocked, floorM });
 
   for (const pool of Object.values(p)) commitPool(pool);
-}
-
-// ---- 熱海サンビーチの部品 ----
-
-const TOWN_PAVING_TILE_M = 2;
-
-/** 熱海用のメッシュ・プールを作ってinnerに加える。都市の外壁シェーダー・歩道テクスチャを流用する。 */
-function buildTownParts(inner, anisotropy, tex) {
-  const city = createCityTextures(anisotropy);
-  tex.all.push(...city.all);
-
-  const paving = new THREE.MeshStandardMaterial({ map: city.sidewalk, roughness: 0.85 });
-  const promenade = new THREE.Mesh(new THREE.BufferGeometry(), paving);
-  const sidewalk = new THREE.Mesh(new THREE.BufferGeometry(), paving);
-  for (const m of [promenade, sidewalk]) {
-    m.receiveShadow = true;
-    m.frustumCulled = false;
-  }
-  inner.add(promenade, sidewalk);
-
-  const facadeGeo = createFacadeGeometry();
-  const pools = {};
-  for (const style of HOTEL_STYLES) {
-    const bayM = style === 'glass' ? 1.8 : FLOOR_HEIGHT_M;
-    const material = createFacadeMaterial({
-      ...city.facades[style],
-      bayM, floorM: FLOOR_HEIGHT_M, tileBays: FACADE_TILE.cellBays, tileFloors: FACADE_TILE.cellFloors, sinkM: FLOOR_HEIGHT_M,
-    });
-    pools[`hotel_${style}`] = makePool(facadeGeo, material, MAX_HOTELS_PER_STYLE);
-  }
-  const box = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
-  pools.hotelRoofs = makePool(box, new THREE.MeshStandardMaterial({ color: 0x9c9890, roughness: 0.9 }), MAX_HOTELS_PER_STYLE * HOTEL_STYLES.length);
-  pools.palmTrunks = makePool(new THREE.CylinderGeometry(0.26, 0.42, 1, 10).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ color: 0x7c6a52, roughness: 1 }), MAX_PALMS);
-  pools.palmCrowns = makePool(buildPalmCrownGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.8, side: THREE.DoubleSide }), MAX_PALMS);
-  const lamp = buildPromenadeLampGeometry();
-  pools.lampPoles = makePool(lamp.pole, new THREE.MeshStandardMaterial({ color: 0x40474d, roughness: 0.5, metalness: 0.5 }), MAX_LAMPS);
-  pools.lampGlobes = makePool(lamp.globes, new THREE.MeshStandardMaterial({ color: 0xfaf8f0, emissive: 0x555247, roughness: 0.3 }), MAX_LAMPS, { cast: false });
-  const white = new THREE.MeshStandardMaterial({ color: 0xf4f4f0, roughness: 0.4 });
-  pools.townRailPosts = makePool(new THREE.CylinderGeometry(0.045, 0.045, 1, 8).translate(0, 0.5, 0), white, MAX_TOWN_RAIL_POSTS);
-  pools.townRailBeams = makePool(new THREE.BoxGeometry(0.07, 0.07, 1), white, MAX_TOWN_RAIL_POSTS * 2);
-  pools.parasolCanopies = makePool(new THREE.ConeGeometry(1.25, 0.55, 12, 1, true), new THREE.MeshStandardMaterial({ roughness: 0.7, side: THREE.DoubleSide }), MAX_PARASOLS);
-  pools.parasolPoles = makePool(new THREE.CylinderGeometry(0.025, 0.025, 2.3, 6).translate(0, 1.15, 0), white, MAX_PARASOLS);
-  pools.groins = makePool(box, new THREE.MeshStandardMaterial({ color: 0xa9a59c, roughness: 0.95 }), MAX_GROINS);
-  pools.islands = makePool(new THREE.SphereGeometry(1, 40, 16), new THREE.MeshStandardMaterial({ color: 0x4d6b47, roughness: 1 }), 4, { cast: false });
-  const castle = buildCastleGeometries();
-  pools.castleStone = makePool(castle.stone, new THREE.MeshStandardMaterial({ color: 0x9a958a, roughness: 1 }), 4);
-  pools.castleWalls = makePool(castle.walls, new THREE.MeshStandardMaterial({ color: 0xf3f1ea, roughness: 0.7 }), 4);
-  pools.castleRoofs = makePool(castle.roofs, new THREE.MeshStandardMaterial({ color: 0x3b4850, roughness: 0.6, metalness: 0.2 }), 4);
-  for (const pool of Object.values(pools)) inner.add(pool.mesh);
-  return { promenade, sidewalk, pools };
-}
-
-/** カナリーヤシの樹冠: 放射状に垂れ下がる羽状の葉(V字断面のリボン)を16枚。 */
-function buildPalmCrownGeometry() {
-  const parts = [];
-  const fronds = 16;
-  for (let f = 0; f < fronds; f++) {
-    const yaw = (f / fronds) * Math.PI * 2 + (f % 2) * 0.2;
-    const lift = f % 3 === 0 ? 0.9 : f % 3 === 1 ? 0.45 : 0.15; // 若い葉は上向き、古い葉は垂れる
-    const length = 4.2 + (f % 4) * 0.25;
-    const segs = 8;
-    const positions = [];
-    const idx = [];
-    for (let i = 0; i <= segs; i++) {
-      const t = i / segs;
-      // 付け根から上へ伸び、先端に向かって弓なりに垂れる
-      const r = length * t;
-      const y = Math.sin(t * Math.PI * 0.55) * lift * 2.2 - t * t * 2.1;
-      const half = 0.55 * Math.sin(Math.PI * Math.min(1, t * 1.15)) + 0.04;
-      const droop = half * 0.45;
-      for (const side of [-1, 0, 1]) {
-        const lx = side * half;
-        const ly = y - (side !== 0 ? droop : 0);
-        positions.push(Math.cos(yaw) * r - Math.sin(yaw) * lx, ly, Math.sin(yaw) * r + Math.cos(yaw) * lx);
-      }
-      if (i < segs) {
-        const a = i * 3;
-        idx.push(a, a + 1, a + 3, a + 1, a + 4, a + 3, a + 1, a + 2, a + 4, a + 2, a + 5, a + 4);
-      }
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(new Array((positions.length / 3) * 2).fill(0), 2));
-    g.setIndex(idx);
-    g.computeVertexNormals();
-    parts.push(g);
-  }
-  parts.push(new THREE.SphereGeometry(0.55, 10, 8).scale(1, 0.8, 1).translate(0, -0.2, 0)); // 葉の付け根
-  return mergeGeometries(parts);
-}
-
-/** 遊歩道の街灯(高さ約5m、2灯の球形ランプ)。 */
-function buildPromenadeLampGeometry() {
-  const pole = mergeGeometries([
-    new THREE.CylinderGeometry(0.12, 0.16, 0.5, 10).translate(0, 0.25, 0),
-    new THREE.CylinderGeometry(0.06, 0.08, 4.8, 10).translate(0, 2.4, 0),
-    new THREE.BoxGeometry(1.2, 0.06, 0.06).translate(0, 4.7, 0),
-  ]);
-  const globes = mergeGeometries([
-    new THREE.SphereGeometry(0.22, 14, 10).translate(-0.6, 4.95, 0),
-    new THREE.SphereGeometry(0.22, 14, 10).translate(0.6, 4.95, 0),
-    new THREE.SphereGeometry(0.2, 14, 10).translate(0, 5.1, 0),
-  ]);
-  return { pole, globes };
-}
-
-/** 熱海城: 石垣の上に白壁と黒っぽい瓦屋根を重ねた天守(高さ約33m)。 */
-function buildCastleGeometries() {
-  const frustum = (rTop, rBottom, height, y) => new THREE.CylinderGeometry(rTop, rBottom, height, 4, 1).rotateY(Math.PI / 4).translate(0, y + height / 2, 0);
-  const stone = frustum(12, 16, 9, 0);
-  const walls = mergeGeometries([
-    new THREE.BoxGeometry(16, 6, 14).translate(0, 12, 0),
-    new THREE.BoxGeometry(12, 5, 10.5).translate(0, 19.7, 0),
-    new THREE.BoxGeometry(8.5, 4.5, 7.5).translate(0, 26.45, 0),
-  ]);
-  const roofs = mergeGeometries([
-    frustum(8, 13.5, 2.2, 15),
-    frustum(5.5, 10, 2, 22.2),
-    new THREE.ConeGeometry(7.5, 4, 4, 1).rotateY(Math.PI / 4).translate(0, 30.7, 0),
-    new THREE.BoxGeometry(9, 0.8, 1.2).translate(0, 32.4, 0), // 大棟
-  ]);
-  return { stone, walls, roofs };
-}
-
-function placeTownObjects(st, town, floorM, { groundAt, local }) {
-  const { L, elev, anchorElev, pools: p } = st;
-
-  for (const pm of town.palms) {
-    const [x, y, z] = local(pm.s, pm.d, elev.elevAt(pm.s) + 0.15);
-    const height = 7.5 * pm.scale;
-    pushInstance(p.palmTrunks, x, y - 0.2, z, pm.scale, height, pm.scale, pm.lean, 0);
-    // 幹はX軸まわりに傾けている(Rx: (0,h,0) → (0, h·cos, h·sin))ので、樹冠は傾いた幹の先端に置く
-    pushInstance(p.palmCrowns, x, y - 0.2 + height * Math.cos(pm.lean), z + height * Math.sin(pm.lean), pm.scale, pm.scale, pm.scale, 0, pm.yaw, 0x557f33);
-  }
-  for (const lp of town.lamps) {
-    const [x, y, z, yaw] = local(lp.s, lp.d, elev.elevAt(lp.s) + 0.15);
-    pushInstance(p.lampPoles, x, y, z, 1, 1, 1, 0, yaw + Math.PI / 2);
-    pushInstance(p.lampGlobes, x, y, z, 1, 1, 1, 0, yaw + Math.PI / 2);
-  }
-  // 遊歩道の手すり(白い支柱と2段の横桟)
-  for (const run of town.railRuns) {
-    let prev = null;
-    for (let s = Math.ceil(run.fromS / TOWN_RAIL_SPACING_M) * TOWN_RAIL_SPACING_M; s <= run.toS; s += TOWN_RAIL_SPACING_M) {
-      const [x, y, z] = local(s, run.d, elev.elevAt(s) + 0.15);
-      pushInstance(p.townRailPosts, x, y, z, 1, 1.1, 1);
-      if (prev) {
-        const dx = x - prev[0];
-        const dy = y - prev[1];
-        const dz = z - prev[2];
-        const len = Math.hypot(dx, dy, dz);
-        const yaw = Math.atan2(-dx, -dz);
-        const pitch = Math.asin(dy / len);
-        for (const hgt of [1.08, 0.55]) {
-          pushInstanceYawPitch(p.townRailBeams, (x + prev[0]) / 2, (y + prev[1]) / 2 + hgt, (z + prev[2]) / 2, 1, 1, len, yaw, pitch);
-        }
-      }
-      prev = [x, y, z];
-    }
-  }
-  // ホテル: 坂に建つものは谷側の地面まで基礎を下ろす
-  for (const ht of town.hotels) {
-    const groundC = groundAt(ht.s, ht.d);
-    const base = ht.hillside
-      ? Math.min(groundAt(ht.s, ht.d - ht.depthM / 2), groundC) - 1
-      : groundC - FLOOR_HEIGHT_M;
-    const top = groundC + ht.floors * FLOOR_HEIGHT_M;
-    const [x, , z, yaw] = local(ht.s, ht.d, 0);
-    pushInstanceYawPitch(p[`hotel_${ht.style}`], x, base - anchorElev, z, ht.depthM, top - base, ht.widthM, yaw, 0, ht.tint);
-    pushInstanceYawPitch(p.hotelRoofs, x, top - anchorElev, z, ht.depthM + 0.4, 0.7, ht.widthM + 0.4, yaw, 0);
-  }
-  for (const ps of town.parasols) {
-    const hgt = groundAt(ps.s, ps.d);
-    if (hgt < floorM + 0.5 || hgt > elev.elevAt(ps.s) - 1.5) continue; // 砂浜の上だけ(水際・護岸の上は除く)
-    const [x, y, z] = local(ps.s, ps.d, hgt);
-    pushInstance(p.parasolPoles, x, y - 0.3, z, 1, 1, 1, ps.tilt, 0);
-    pushInstance(p.parasolCanopies, x, y + 2.05, z - Math.sin(ps.tilt) * 2, 1, 1, 1, ps.tilt, 0, ps.color);
-  }
-  for (const g of town.groins) {
-    const [x0, , z0, yaw] = local(g.s, g.fromD, 0);
-    const [x1, , z1] = local(g.s, g.toD, 0);
-    const len = Math.hypot(x1 - x0, z1 - z0);
-    const bottom = floorM - 8 - anchorElev;
-    pushInstanceYawPitch(p.groins, (x0 + x1) / 2, bottom, (z0 + z1) / 2, len, 8 + 1.8, 5, yaw, 0);
-  }
-  for (const is of town.islands) {
-    const [x, , z] = local(is.s, is.d, 0);
-    pushInstance(p.islands, x, floorM - 25 - anchorElev, z, 1300, 72, 850);
-  }
-  for (const c of town.castles) {
-    const hgt = groundAt(c.s, c.d);
-    const [x, y, z, yaw] = local(c.s, c.d, hgt - 2);
-    // 遠く(数百m先)の山上でも天守と分かるよう、実物よりやや大きめに描く
-    for (const pool of [p.castleStone, p.castleWalls, p.castleRoofs]) pushInstance(pool, x, y, z, CASTLE_SCALE, CASTLE_SCALE, CASTLE_SCALE, 0, yaw);
-  }
 }
 
 // ---- 毎フレームの更新 ----
@@ -1116,7 +893,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
   const riderX = RIDER_X_M + myLaneM;
   const riderPos = worldPoint(st, dist, dist, riderX, 0);
   st.rider.group.position.set(riderPos[0], riderPos[1], riderPos[2]);
-  // カーブでは内側へ傾ける(curve のない熱海・直線では k = 0 で従来どおり)
+  // カーブでは内側へ傾ける(curve のないコース・直線では k = 0 で従来どおり)
   const roll = riderRollRad(st.curve ? curvatureAtM(st.curve, st.loopM, dist) : 0, speedKmh / 3.6);
   updateRiderAvatar(st.rider, st.clock, speedKmh, pitch, roll);
   updateOthers(st, others, dist);
@@ -1142,8 +919,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
       sunDir: st.env.sunDir, hemiLight: st.hemiLight, sunLight: st.sunLight, fog: st.scene.fog,
     });
     const real = st.realTerrain.object.visible;
-    // 実在の地形に本物の初島・富士山があるので、手続き生成のものは隠す
-    if (st.realCfg.hideIslands && st.pools.islands) st.pools.islands.mesh.visible = !real;
+    // 実在の地形に本物の富士山があるので、手続き生成のものは隠す
     if (st.realCfg.hideBackdrop && st.backdrop) st.backdrop.object.visible = !real;
   }
   st.ocean?.render(st.renderer, st.scene, st.camera, t);
@@ -1246,17 +1022,13 @@ function updateActors(st, actors, dist) {
 
 /**
  * 道路上の地点 (s, d) の地面の、路面からの高さ(m、負なら路面より低い)。車道・路肩は 0、
- * 熱海の遊歩道・歩道は舗装の帯の高さ、水面より低い所は水面の高さとする。
+ * 水面より低い所は水面の高さとする。
  */
 function groundOffsetM(st, s, d) {
   const { L } = st;
   const edge = roadEdgeM(L);
   const a = Math.abs(d);
   if (a <= edge) return 0;
-  if (st.town) {
-    const u = a - edge;
-    if (d < 0 ? u <= L.town.promenadeM : u <= L.town.sidewalkM) return 0.15;
-  }
   const roadE = st.elev.elevAt(s);
   const floorM = st.floor.floorAt(s);
   return Math.max(floorM, terrainHeightM(L, d, s, roadE, floorM)) - roadE;

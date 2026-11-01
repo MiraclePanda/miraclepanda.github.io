@@ -31,13 +31,21 @@ export class CourseEngine {
 
   /**
    * 指定した走行距離(km)でコーナーを曲がるための上限速度(m/s)。コーナーの減速は
-   * 方位の表を持つ GPX の実在コース(ループしない)だけ。それ以外・コーナーの無い地点は Infinity。
+   * 方位の表を持つ GPX の実在コース(ループしない)と、cornering: true の組み込みの実在コース
+   * (熱海。1周の表を周回ごとに使う)だけ。それ以外・コーナーの無い地点は Infinity。
    */
   speedLimitMpsAt(distanceKm) {
     if (this._cornerLimits === undefined) {
-      this._cornerLimits = this.profile.fixedLength ? buildCornerSpeedLimits(this.profile.curve) : null;
+      const { fixedLength, cornering, curve } = this.profile;
+      this._cornerLimits = fixedLength || cornering ? buildCornerSpeedLimits(curve) : null;
     }
-    return cornerSpeedLimitAt(this._cornerLimits, distanceKm * 1000);
+    let m = distanceKm * 1000;
+    if (!this.profile.fixedLength && this._cornerLimits) {
+      const loopM = this.profile.loopLengthKm * 1000;
+      m %= loopM;
+      if (m < 0) m += loopM;
+    }
+    return cornerSpeedLimitAt(this._cornerLimits, m);
   }
 
   /** 指定した走行距離(km)における勾配(%)を返す。 */

@@ -190,20 +190,20 @@ export function terrainHeights(heights, cfg, originM, seaM = -5) {
 // innerRadiusM の内側は手続き生成の景色が描くので実地形は描かない(地形の列は路肩から約3.5kmまで)。
 // openSideX: 回転前の X がこれより小さい側(水側)では、innerRadiusM の内側でも 400 m より先なら描く。
 export const REAL_TERRAIN = {
-  // 熱海サンビーチ。基準点は親水公園の前あたりの海岸通り。海岸線に沿って南南西へ走る(左手が相模湾)。
-  // 範囲は西の山並み(岩戸山・十国峠)から沖の初島まで入るよう、中心を東南東へずらす。
+  // 熱海サンビーチ(js/ui/AtamiScene.js)。景色は実在の座標(原点 = スタート地点、北が −Z)に組んであるので
+  // 走る向きに回さず(bearingDeg 0)、AtamiScene が origin をデータの原点に、innerBox を近景の地形の範囲に
+  // 差し替えて、その外側(西の山並み・十国峠から沖の初島まで)だけを描く。
   atami: {
-    origin: { lon: 139.0768, lat: 35.0962 },
-    bearingDeg: 200,
+    origin: { lon: 139.075236, lat: 35.095088 },
+    bearingDeg: 0,
     anchor: 'sea',
     z: 13,
     tiles: 5,
     offsetEM: 1500,
     offsetNM: -1500,
     gridN: 200,
-    innerRadiusM: 1900,
-    openSideX: -400,
-    hideIslands: true,
+    innerRadiusM: 0,
+    minDistM: 0,
   },
   // 河口湖の北岸(大石公園のあたり)。湖を左手に西へ走ると、左手(南)の湖の向こうに本物の富士山(約18km)。
   // 富士山まで入るよう z12(1枚約8km)で、中心を南へずらす。本物の富士山が出たら手続き生成の富士山は隠す。
