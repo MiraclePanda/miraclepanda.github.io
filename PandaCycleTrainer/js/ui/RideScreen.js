@@ -6,6 +6,7 @@ import { Dashboard } from './Dashboard.js';
 import { CityScene } from './CityScene.js';
 import { LandscapeScene } from './LandscapeScene.js';
 import { PondScene } from './PondScene.js';
+import { AtamiScene } from './AtamiScene.js';
 import { FullscreenHud } from './FullscreenHud.js';
 import {
   loadRenderQuality,
@@ -707,7 +708,10 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
         ? h(CityScene, sceneProps)
         : courseProfile.scenery === 'ueno'
           ? h(PondScene, sceneProps)
-          : h(LandscapeScene, { ...sceneProps, landscape: courseProfile.scenery }),
+          : courseProfile.scenery === 'atami'
+            // 熱海は実在の街(PLATEAU の建物・国土地理院の地形と道路)を実在の座標に組んだ専用の景色
+            ? h(AtamiScene, sceneProps)
+            : h(LandscapeScene, { ...sceneProps, landscape: courseProfile.scenery }),
       isFullscreen &&
         h(
           FullscreenHud,

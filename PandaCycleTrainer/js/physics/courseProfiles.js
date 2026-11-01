@@ -3,7 +3,7 @@
 // 各points配列は [距離km, 勾配%] の制御点で、区間は線形補間する。
 // loopLengthKm はこのプロファイル自体の1周分の長さ(最後の制御点の距離)。
 // scenery は走行中の3D表示の景色: 'city'(街並み、CityScene)/'lakeside'(湖を見下ろす
-// 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ)/'ueno'(上野不忍池)/観光地コース専用の
+// 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ。実在の街、js/ui/AtamiScene.js)/'ueno'(上野不忍池)/観光地コース専用の
 // 'kawaguchiko'(河口湖)・'kyoto'(京都・東山の町並み)・'nara'(奈良公園)・'ryugu'(竜宮城の海底)。
 // uenoはPondScene(js/three/pondLayout.js)、ほかの city 以外は LandscapeScene(js/three/landscapeLayout.js。
 // 観光地の町並み・名物は js/three/tourLayout.js、竜宮城の海底は js/three/ryuguLayout.js)で描く。
@@ -14,8 +14,7 @@
 // 方位 heading(m) = Σ amp·(sin(2π·n·m/L + φ) − sin φ)。nが整数なのでループ境界で連続する。
 // 未指定(または空配列)のコースは従来どおりの直線。3D表示の見た目だけに使い、物理・勾配・
 // 距離・記録には影響しない(js/three/routeLayout.js で道路の平面形状に変換する)。
-// 熱海は海岸線沿いの直線(LandscapeScene 既存のゆるい蛇行)を維持するため、上野は PondScene が
-// 独自の周回ルートを持つため、どちらも指定しない。
+// 上野は PondScene が独自の周回ルートを持つため指定しない。熱海は実在の道の方位の表(GPX と同じ形)。
 // 観光地コース(tag: '観光地')は専用の景色を使い、次の項目を持つ:
 //   backdrop: 遠景(現在は 'fuji' = 富士山。LandscapeScene が空と一緒に回る遠景として描く)
 //   landmarks: [{ km, kind, side, lateralM, yaw?, viewM? }] 1周ごとに置く名所(js/three/happeningsLayout.js)。
@@ -26,6 +25,8 @@
 //   localFood: { name, unit, kcal } 消費カロリーのグルメ換算で優先する名物(js/utils/gourmet.js)
 // happenings: 沿道のハプニングの種類ごとの出やすさ(省略時は既定。null ならハプニングなし)。
 // いずれも見た目と通知だけで、物理・勾配・トレーナーへの指示には影響しない。
+
+import { ATAMI_COURSE_DATA } from './atamiCourseData.js';
 
 export const COURSE_PROFILES = [
   {
@@ -101,21 +102,15 @@ export const COURSE_PROFILES = [
     id: 'atami',
     name: '熱海サンビーチコース',
     scenery: 'atami',
-    description: '相模湾に面した熱海サンビーチ沿いの海岸通り。ヤシ並木の遊歩道と砂浜、ホテル街を眺めて走る平坦基調のコース。',
-    loopLengthKm: 6,
-    crossfadeKm: 0.15,
-    // 上り下りが打ち消し合い、1周で標高がほぼ変わらない(海岸線から離れない)ようにしている。
-    points: [
-      [0, 0],
-      [0.8, 1.0],
-      [1.6, 0],
-      [2.4, -1.0],
-      [3.2, 0],
-      [4.0, 0.8],
-      [4.8, -0.8],
-      [5.6, 0],
-      [6, 0],
-    ],
+    description: '国道135号の海岸沿いを、サンビーチから錦ヶ浦の手前と伊豆山で折り返す実在の道(1周7.6km)。PLATEAU の建物と国土地理院の地形・道路で熱海の街並みを再現。',
+    // 実在の道(atamiCourseData.js、tools/atami-plateau/build.py が生成): 1周 = 往復 + Uターン2回。
+    // 勾配は国土地理院の標高から、方位の表は道路中心線から。ほかの組み込みコースと違い、
+    // GPX の実在コースと同じくコーナー(とUターン)の手前で減速する(cornering)。周回はする。
+    loopLengthKm: ATAMI_COURSE_DATA.loopLengthM / 1000,
+    crossfadeKm: 0,
+    cornering: true,
+    curve: { type: 'table', stepM: ATAMI_COURSE_DATA.headingStepM, headings: ATAMI_COURSE_DATA.headings },
+    points: ATAMI_COURSE_DATA.grades.map((g, i) => [(i * ATAMI_COURSE_DATA.gradeStepM) / 1000, g]),
   },
   {
     id: 'ueno',

@@ -60,10 +60,17 @@ test('corner speed limits: no limit on straights, realistic speeds at a junction
 });
 
 test('corner speed limits: built-in courses and old Fourier GPX courses are unaffected', () => {
-  for (const p of COURSE_PROFILES) {
+  for (const p of COURSE_PROFILES.filter((c) => !c.cornering)) {
     const e = new CourseEngine(p, 10);
     for (let km = 0; km < p.loopLengthKm; km += 0.25) assert.equal(e.speedLimitMpsAt(km), Infinity, p.id);
   }
+  // 実在の道を往復する熱海(cornering: true)だけは、周回コースでもUターンで減速する(約14km/h)
+  const atami = COURSE_PROFILES.find((c) => c.id === 'atami');
+  const e = new CourseEngine(atami, 10);
+  let min = Infinity;
+  for (let km = 0; km < atami.loopLengthKm; km += 0.002) min = Math.min(min, e.speedLimitMpsAt(km));
+  assert.ok(min > 2 && min < 6, `Uターンの上限速度 ${min} m/s`);
+  assert.equal(e.speedLimitMpsAt(atami.loopLengthKm + 1.15), e.speedLimitMpsAt(1.15), '周回ごとに同じ');
   assert.equal(buildCornerSpeedLimits([[25, 3, 0]]), null);
   assert.equal(cornerSpeedLimitAt(null, 100), Infinity);
 });

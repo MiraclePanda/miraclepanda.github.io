@@ -7,7 +7,7 @@ import {
 
 const unit = (v) => { const l = Math.hypot(...v); return v.map((x) => x / l); };
 
-// 各シーンの「昼・晴れ」の値(CityScene / LandscapeScene の湖畔・熱海 / PondScene と同じ形)
+// 各シーンの「昼・晴れ」の値(CityScene / LandscapeScene の湖畔 / 熱海 / PondScene と同じ形。熱海は旧版の値を代表例として残す)
 const BASES = {
   city: {
     zenith: '#3f78c2', horizon: '#c9d9e6', ground: '#9aa3a8', sunColor: '#fff1dc', sunDir: unit([-0.5558, 0.7276, 0.4042]),
