@@ -26,4 +26,4 @@ CYCPLUS DC1 などの FTMS 対応スマートトレーナーと Web Bluetooth �
 - 機能変更は原則として上流で行い、ここへは同期します(手順は `.claude/skills/sync-pandacycletrainer/SKILL.md`)。
 - 熱海サンビーチと観光地コースの景色のデータ(`PandaCycleTrainer/js/data/*.json`)は上流の生成スクリプトが PLATEAU と国土地理院のデータから作ったもので、画面に出典を表示しています。
 - `harness/` はエージェント用の検証ハーネスです(`node harness/verify.mjs`。公開対象外)。
-- 開発初期に検証用として作った単一ファイル版「DC1 Virtual Ride」(旧ルート `index.html`)は削除しました。
+- ルートの `index.html` は `PandaCycleTrainer/` への転送ページです。開発初期に検証用として作った単一ファイル版「DC1 Virtual Ride」は削除しました。

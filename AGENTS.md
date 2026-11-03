@@ -10,10 +10,11 @@ GitHub Pages (`https://miraclepanda.github.io/`) の公開リポジトリ。**ma
 | パス | 内容 | 構成 |
 |---|---|---|
 | `PandaCycleTrainer/` | **PandaCycleTrainer**。上流 `MiraclePanda/PandaCycleTrainer` のミラー | React 18 UMD(unpkg) + ES モジュール + Three.js r186(ESM, jsDelivr) / IndexedDB |
+| `index.html` | `PandaCycleTrainer/` への転送ページ | 静的 HTML(meta refresh + location.replace) |
 | `harness/` | エージェント用の検証ハーネス(公開対象外) | Node 22 標準機能のみ |
 
 CYCPLUS DC1 等の FTMS スマートトレーナーに Web Bluetooth で接続する仮想サイクリングアプリ。
-サイトのルート(`https://miraclepanda.github.io/`)にはページを置いていない(開発初期の検証用 DC1 Virtual Ride は削除済み)。
+サイトのルート(`https://miraclepanda.github.io/`)の `index.html` は `PandaCycleTrainer/` への転送専用(開発初期の検証用 DC1 Virtual Ride は削除済み)。
 Chrome / Edge(PC・Android)のみ対応、HTTPS か localhost が必須。
 
 > ⚠️ `PandaCycleTrainer/` は上流リポジトリのミラー(README に反映元コミットを記載)。
