@@ -17,9 +17,8 @@ CYCPLUS DC1 等の FTMS スマートトレーナーに Web Bluetooth で接続�
 サイトのルート(`https://miraclepanda.github.io/`)の `index.html` は `PandaCycleTrainer/` への転送専用(開発初期の検証用 DC1 Virtual Ride は削除済み)。
 Chrome / Edge(PC・Android)のみ対応、HTTPS か localhost が必須。
 
-> ⚠️ `PandaCycleTrainer/` は上流リポジトリのミラー(README に反映元コミットを記載)。
-> 機能変更は原則として上流で行い、ここへは同期する。ここで直接直す場合は README の反映元情報と
-> 上流への還元方法をユーザーに確認すること。
+> ⚠️ `PandaCycleTrainer/` は上流リポジトリのミラー(反映元コミットは同期コミットの件名「PandaCycleTrainer を上流 <SHA> に同期」に記録。README には上流の URL や反映元を書かない — 上流リポジトリは非公開のため)。
+> 機能変更は原則として上流で行い、ここへは同期する。ここで直接直す場合は 上流への還元方法をユーザーに確認すること。
 
 ## 2. PandaCycleTrainer のアーキテクチャ
 

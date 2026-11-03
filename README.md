@@ -21,9 +21,7 @@ CYCPLUS DC1 などの FTMS 対応スマートトレーナーと Web Bluetooth �
 
 ## このリポジトリについて
 - GitHub Pages(`https://miraclepanda.github.io/`)の公開リポジトリです。`main` へのマージがそのまま本番公開になります。
-- [`PandaCycleTrainer/`](PandaCycleTrainer/) は上流リポジトリ [MiraclePanda/PandaCycleTrainer](https://github.com/MiraclePanda/PandaCycleTrainer) のアプリ本体(`index.html`, `css/`, `js/`)のミラーです。テスト・開発用設定は含みません。詳しい仕様は上流の README を参照してください。
-- 反映元コミット: `f3d4e12`(2026-11-03「観光地コース(京都・奈良・富士山/河口湖)を実在の街に作り直し、熱海の「実験」表記を外す(#27)」まで)
-- 機能変更は原則として上流で行い、ここへは同期します(手順は `.claude/skills/sync-pandacycletrainer/SKILL.md`)。
-- 熱海サンビーチと観光地コースの景色のデータ(`PandaCycleTrainer/js/data/*.json`)は上流の生成スクリプトが PLATEAU と国土地理院のデータから作ったもので、画面に出典を表示しています。
+- [`PandaCycleTrainer/`](PandaCycleTrainer/) にアプリ本体(`index.html`, `css/`, `js/`)を配置しています。
+- 熱海サンビーチと観光地コースの景色のデータ(`PandaCycleTrainer/js/data/*.json`)は PLATEAU と国土地理院のデータから生成したもので、画面に出典を表示しています。
 - `harness/` はエージェント用の検証ハーネスです(`node harness/verify.mjs`。公開対象外)。
 - ルートの `index.html` は `PandaCycleTrainer/` への転送ページです。開発初期に検証用として作った単一ファイル版「DC1 Virtual Ride」は削除しました。
