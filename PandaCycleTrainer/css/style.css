@@ -1136,3 +1136,32 @@ p { line-height: 1.6; }
   .tamatebako-smoke span, .tamatebako-result { animation: none; opacity: 1; }
   .tamatebako-smoke { display: none; }
 }
+
+/* 景色の準備中(走行開始前)の表示。景色の上に重ね、準備ができると消える */
+.scene-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 1rem;
+  text-align: center;
+  color: #fff;
+  background: rgba(16, 24, 36, 0.62);
+  border-radius: inherit;
+}
+.scene-loading strong { font-size: 1.15rem; }
+.scene-loading span { font-size: 0.85rem; max-width: 34rem; }
+.scene-loading .scene-loading-note { opacity: 0.8; font-size: 0.78rem; }
+.scene-loading-spinner {
+  width: 34px;
+  height: 34px;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: scene-loading-spin 0.9s linear infinite;
+}
+@keyframes scene-loading-spin { to { transform: rotate(360deg); } }

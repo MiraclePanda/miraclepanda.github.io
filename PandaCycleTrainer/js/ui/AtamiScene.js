@@ -13,6 +13,7 @@ import {
 import {
   bakeSky, createAvatar,
   makePool, pushInstance, commitPool, applyQuality, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  reportReadyAfterDraw,
 } from '../three/sceneKit.js';
 import { createCineDirector, normalizeCameraView } from '../three/cameraViews.js';
 import { placeOnRoad, actorLateral, groundAboveRoadM, updateRide } from './realSceneShared.js';
@@ -60,7 +61,7 @@ const MAX_PARASOLS = 140;
  * 毎フレームはライダー・カメラ・影の範囲・他のライダー・ハプニングだけを動かす。データは非同期に読むので、
  * 読み終わるまでは空だけを描く(canvas の data-atami-data = loading / ready / error)。
  */
-export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
+export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const attributionRef = useRef(null);
@@ -68,6 +69,13 @@ export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle
   const [dataError, setDataError] = useState(false);
   const onQualityChangeRef = useRef(onQualityChange);
   onQualityChangeRef.current = onQualityChange;
+  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
+  useEffect(() => {
+    if (renderError) onReadyRef.current?.();
+  }, [renderError]);
 
   useImperativeHandle(ref, () => ({
     draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
@@ -76,6 +84,7 @@ export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle
       try {
         adaptQuality(s);
         drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
+        reportReadyAfterDraw(s);
       } catch (err) {
         setRenderError(String(err));
       }
@@ -98,6 +107,7 @@ export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle
     }
     st.attributionEl = attributionRef.current;
     st.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+    st.onReady = () => onReadyRef.current?.();
     st.appliedQualityMode = qualityMode;
     st.envSetting = environment;
     st.cam.view = normalizeCameraView(cameraView);
@@ -119,6 +129,8 @@ export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle
         console.warn('熱海の街のデータを読み込めませんでした:', err);
         canvas.dataset.atamiData = 'error';
         setDataError(true);
+        // 街のデータが無くても走行と記録は続けられるので、走行を始める
+        onReadyRef.current?.();
       }
     );
     const resize = () => resizeScene(st);

@@ -36,7 +36,7 @@ import {
 import { demoRiderTarget, smoothDemoPower } from '../physics/demoRider.js';
 import { ConfirmDialog } from './Modal.js';
 import { fmtTime } from '../utils/format.js';
-import { createHappeningDirector, seedForCourse, DEFAULT_HAPPENING_WEIGHTS } from '../three/happeningsLayout.js';
+import { createHappeningDirector, seedForCourse, DEFAULT_HAPPENING_WEIGHTS, landmarkActors } from '../three/happeningsLayout.js';
 import { guideEventsBetween } from '../utils/tourGuide.js';
 import { kcalFromWorkKj, gourmetLine, gourmetMilestone } from '../utils/gourmet.js';
 import { citiesPassed, journeyToast, journeyTotalKm } from '../utils/journey.js';
@@ -46,6 +46,8 @@ const SAMPLE_INTERVAL_MS = 1000;
 const TOAST_MS = 4600;
 // 3秒平均パワーの時定数(一次遅れ)
 const POWER_AVG_TAU_S = 3;
+// 景色の準備を待つ上限(これを過ぎたら景色の準備を待たずに走行を始める)
+const SCENE_READY_TIMEOUT_MS = 60000;
 
 // 走行を楽しくする通知(画面上部のバナーにも出す種類)
 const FUN_TOAST_KINDS = ['happening', 'guide', 'journey', 'gourmet'];
@@ -97,7 +99,16 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
 
   const rafIdRef = useRef(null);
   const lastFrameTimeRef = useRef(null);
-  const isRunningRef = useRef(true); // paused/goal-dialog中はfalse
+  const isRunningRef = useRef(false); // 景色の準備中・paused/goal-dialog中はfalse
+  // 景色(3Dシーン)の準備ができるまでは走行を始めない(「読み込み中」を出す)。描画品質「最高(実験)」では
+  // 実在の地形の読み込み・シェーダーのコンパイルで数秒かかり、その間に走り出すと画面が固まって見えるため。
+  // 準備ができたら走行時間を0から数え始める。
+  const [sceneReady, setSceneReady] = useState(false);
+  const sceneReadyRef = useRef(false);
+  const readyTimeoutRef = useRef(null);
+  const warmFramesRef = useRef(0);
+  // 準備中にトレーナーが切断された(再接続して doResume されるまで、準備ができても走り出さない)
+  const holdStartRef = useRef(false);
 
   const latestPowerRef = useRef(0);
   const latestCadenceRef = useRef(null);
@@ -184,6 +195,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     };
     const onCommWarning = (ev) => setCommunicationWarning(!!ev.detail.warning);
     const onDisconnected = () => {
+      if (!sceneReadyRef.current) holdStartRef.current = true;
       doPause({ silent: true });
       setShowReconnectDialog(true);
     };
@@ -202,6 +214,11 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
 
     startLoop();
     if (!demo) startSampling(); // デモは走行記録を残さない
+    // 景色がいつまでも準備できない(読み込みが止まった等)ときも、走行はできるようにする
+    readyTimeoutRef.current = setTimeout(() => {
+      if (!sceneReadyRef.current) console.warn('景色の準備が時間内に終わらなかったため、走行を始めます');
+      handleSceneReady();
+    }, SCENE_READY_TIMEOUT_MS);
     // 日本縦断の起点(これまでの走行記録の合計距離)。デモは記録しないので日本縦断も進めない
     let alive = true;
     if (!demo) {
@@ -212,6 +229,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
 
     return () => {
       alive = false;
+      clearTimeout(readyTimeoutRef.current);
       stopLoop();
       stopSampling();
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -231,10 +249,45 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       lastFrameTimeRef.current = now;
       if (isRunningRef.current) {
         stepPhysics(dt);
+      } else if (!sceneReadyRef.current) {
+        drawWhileLoading();
       }
       rafIdRef.current = requestAnimationFrame(tick);
     };
     rafIdRef.current = requestAnimationFrame(tick);
+  };
+
+  // 準備中はスタート地点を描き続けて、シーンに組み立て・初回描画を進めさせる(物理・時間は進めない)。
+  // 最初の2フレームは描かない: 「読み込み中」の表示を先に画面へ出してから、重い初回描画に入る。
+  const drawWhileLoading = () => {
+    warmFramesRef.current += 1;
+    if (warmFramesRef.current <= 2 || !cityRef.current) return;
+    const drawArgs = {
+      distanceKm: 0,
+      speedKmh: 0,
+      others: packRef.current.map(packOther),
+      myLaneOffsetM: myLaneRef.current,
+      // スタート地点の名所(ハプニングは走り出してから)
+      actors: happeningsRef.current ? landmarkActors(courseProfile, 0) : undefined,
+    };
+    lastDrawArgsRef.current = drawArgs;
+    cityRef.current.draw(drawArgs);
+  };
+
+  // シーンから「準備ができた」(または景色なしで走るしかない)と知らされたら走行を始める
+  const handleSceneReady = () => {
+    if (sceneReadyRef.current) return;
+    sceneReadyRef.current = true;
+    clearTimeout(readyTimeoutRef.current);
+    startTimeRef.current = Date.now();
+    lastFrameTimeRef.current = performance.now();
+    setSceneReady(true);
+    if (holdStartRef.current) {
+      // 準備中に切断された: 一時停止の扱いにして、再接続後の doResume で走り出す
+      pauseStartedAtRef.current = Date.now();
+      return;
+    }
+    isRunningRef.current = true;
   };
 
   const stopLoop = () => {
@@ -450,6 +503,11 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
 
   const doResume = useCallback(() => {
     if (isRunningRef.current) return;
+    if (!sceneReadyRef.current) {
+      // まだ景色の準備中(準備中に切断→再接続した): 準備ができたら走り出す
+      holdStartRef.current = false;
+      return;
+    }
     if (pauseStartedAtRef.current) {
       totalPausedMsRef.current += Date.now() - pauseStartedAtRef.current;
       pauseStartedAtRef.current = null;
@@ -685,7 +743,9 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     cameraView,
     qualityMode,
     onQualityChange: setActiveTier,
+    onReady: handleSceneReady,
   };
+  const loadingUltra = qualityMode === 'ultra' || activeTier === 'ultra';
 
   return h(
     'div', { className: 'screen ride-screen' },
@@ -717,6 +777,15 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
               // 京都・奈良・河口湖も実在の街(PLATEAU または国土地理院の建物の形・地形・道路)
               ? h(RealTownScene, { ...sceneProps, town: courseProfile.scenery })
               : h(LandscapeScene, { ...sceneProps, landscape: courseProfile.scenery }),
+      // 景色の準備ができるまでは走行を始めない(フルスクリーンでも見えるよう ride-stage の中に出す)
+      !sceneReady &&
+        h(
+          'div', { className: 'scene-loading', role: 'status', 'aria-live': 'polite' },
+          h('div', { className: 'scene-loading-spinner', 'aria-hidden': 'true' }),
+          h('strong', null, '景色を読み込み中…'),
+          h('span', null, '準備ができると走行が始まります(それまではペダルを回しても進みません)。'),
+          loadingUltra && h('span', { className: 'scene-loading-note' }, '描画品質「最高(実験)」は、実在の地形の読み込みなどで準備に時間がかかります。')
+        ),
       isFullscreen &&
         h(
           FullscreenHud,
@@ -736,7 +805,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
           // H: 操作(一時停止・視点・環境・描画品質・全画面を終了)
           h(
             'div', { className: 'fs-toolbar' },
-            h('button', { className: 'btn', onClick: handlePauseButton }, paused ? '再開' : '一時停止'),
+            h('button', { className: 'btn', onClick: handlePauseButton, disabled: !sceneReady }, paused ? '再開' : '一時停止'),
             viewButton('btn fs-view-btn'),
             h(
               'button',
@@ -772,7 +841,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     ),
     h(
       'div', { className: 'ride-controls' },
-      h('button', { className: 'btn btn-secondary btn-large', onClick: handlePauseButton }, paused ? '再開' : '一時停止'),
+      h('button', { className: 'btn btn-secondary btn-large', onClick: handlePauseButton, disabled: !sceneReady }, paused ? '再開' : '一時停止'),
       h('button', { className: 'btn btn-danger btn-large', onClick: handleEndRequest }, demo ? 'デモを終了' : '終了')
     ),
     h('p', { className: 'guidance-note' }, '走行中はタブを閉じないでください。リロード・タブクローズ時のセッション復元機能はありません。'),

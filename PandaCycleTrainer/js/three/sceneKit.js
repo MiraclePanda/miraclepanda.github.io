@@ -740,6 +740,32 @@ export function adaptQuality(s) {
   }
 }
 
+// ---- 走行開始の準備 ----
+
+/**
+ * 景色の準備ができたか(走行画面はそれまで走行を始めず「読み込み中」を出す)。
+ * 実データを読み込むシーン(熱海・実在の街)は ready: false で始まり、組み立てが終わると true になる。
+ * 描画品質「最高(実験)」では、遠景の実在の地形(地理院タイル)を読み終える(または失敗する)まで待つ
+ * (走り出してから地形の組み立て・初回描画で止まらないように)。
+ */
+export function sceneReadyForRide(s) {
+  if (s.ready === false) return false;
+  const rt = s.realTerrain;
+  return !s.ultraOn || !rt || rt.status === 'ready' || rt.status === 'error';
+}
+
+/**
+ * 準備のできた最初の描画の後に、s.onReady を1回だけ呼ぶ。描画(最初のシェーダーのコンパイルを含む)で
+ * 止まっていた時間が明けた次のフレームで知らせるので、走行はその後の軽いフレームから始まる。
+ */
+export function reportReadyAfterDraw(s) {
+  if (s.readyReported || !sceneReadyForRide(s)) return;
+  s.readyReported = true;
+  requestAnimationFrame(() => {
+    if (!s.disposed) s.onReady?.();
+  });
+}
+
 // ---- リサイズ・破棄 ----
 
 export function resizeScene(s) {
