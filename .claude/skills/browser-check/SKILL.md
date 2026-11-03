@@ -11,8 +11,7 @@ ES モジュールは `file://` では読み込めないため、必ずローカ
 ```bash
 python3 -m http.server 8000   # リポジトリ直下で。run_in_background を使う
 ```
-- 新版: http://localhost:8000/PandaCycleTrainer/
-- 旧版: http://localhost:8000/
+- http://localhost:8000/PandaCycleTrainer/
 
 ## 確認できること(ブラウザ操作ツールがある場合)
 - コンソールにエラーがないこと(特に CDN の import 失敗、React の警告)

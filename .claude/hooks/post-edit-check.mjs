@@ -12,7 +12,7 @@ const input = JSON.parse(raw || '{}');
 const file = input.tool_input?.file_path ?? '';
 const root = process.env.CLAUDE_PROJECT_DIR ?? input.cwd ?? process.cwd();
 
-const isAppSource = /\/PandaCycleTrainer\/.*\.(js|html)$/.test(file) || file === join(root, 'index.html');
+const isAppSource = /\/PandaCycleTrainer\/.*\.(js|html)$/.test(file);
 if (!isAppSource) process.exit(0);
 
 const r = spawnSync(process.execPath, [join(root, 'harness/verify.mjs'), '--static'], { encoding: 'utf8', cwd: root });

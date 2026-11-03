@@ -13,7 +13,7 @@ const input = JSON.parse(raw || '{}');
 if (input.stop_hook_active) process.exit(0);
 
 const root = process.env.CLAUDE_PROJECT_DIR ?? input.cwd ?? process.cwd();
-const status = spawnSync('git', ['status', '--porcelain', '--', 'index.html', 'PandaCycleTrainer', 'harness'], {
+const status = spawnSync('git', ['status', '--porcelain', '--', 'PandaCycleTrainer', 'harness'], {
   encoding: 'utf8',
   cwd: root,
 });
