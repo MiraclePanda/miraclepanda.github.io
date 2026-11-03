@@ -5,8 +5,9 @@
 // scenery は走行中の3D表示の景色: 'city'(街並み、CityScene)/'lakeside'(湖を見下ろす
 // 丘陵)/'mountain'(山岳)/'atami'(熱海サンビーチ。実在の街、js/ui/AtamiScene.js)/'ueno'(上野不忍池)/観光地コース専用の
 // 'kawaguchiko'(河口湖)・'kyoto'(京都・東山の町並み)・'nara'(奈良公園)・'ryugu'(竜宮城の海底)。
-// uenoはPondScene(js/three/pondLayout.js)、ほかの city 以外は LandscapeScene(js/three/landscapeLayout.js。
-// 観光地の町並み・名物は js/three/tourLayout.js、竜宮城の海底は js/three/ryuguLayout.js)で描く。
+// uenoはPondScene(js/three/pondLayout.js)、kawaguchiko・kyoto・nara は実在の街の RealTownScene
+// (js/three/realTownLayout.js。データは tools/real-towns/build.py が生成)、ほかの city 以外は
+// LandscapeScene(js/three/landscapeLayout.js。竜宮城の海底は js/three/ryuguLayout.js)で描く。
 // fixedLength: true のコース(GPX から読み込んだ実在コース、js/physics/realCourse.js)は
 // ループせず、走行距離をコース長(loopLengthKm)以下に制限する。
 // fixedVehicle があるコースは、オプションのバイク種別に関わらずその乗り物で走る。
@@ -16,7 +17,7 @@
 // 距離・記録には影響しない(js/three/routeLayout.js で道路の平面形状に変換する)。
 // 上野は PondScene が独自の周回ルートを持つため指定しない。熱海は実在の道の方位の表(GPX と同じ形)。
 // 観光地コース(tag: '観光地')は専用の景色を使い、次の項目を持つ:
-//   backdrop: 遠景(現在は 'fuji' = 富士山。LandscapeScene が空と一緒に回る遠景として描く)
+//   backdrop: 遠景('fuji' = 作り物の富士山。LandscapeScene が空と一緒に回る遠景として描く。現在は未使用)
 //   landmarks: [{ km, kind, side, lateralM, yaw?, viewM? }] 1周ごとに置く名所(js/three/happeningsLayout.js)。
 //     kind は大鳥居・五重塔・三重塔・三門・楼門・大仏殿・清水の舞台・浮見堂・竜宮門・竜宮城・乙姫の舞台・
 //     玉手箱(LANDMARK_KINDS)。
@@ -27,6 +28,55 @@
 // いずれも見た目と通知だけで、物理・勾配・トレーナーへの指示には影響しない。
 
 import { ATAMI_COURSE_DATA } from './atamiCourseData.js';
+import { KYOTO_TOWN_DATA } from './realTowns/kyoto.js';
+import { NARA_TOWN_DATA } from './realTowns/nara.js';
+import { FUJI_TOWN_DATA } from './realTowns/fuji.js';
+
+// 実在の街の観光地コース(tools/real-towns/build.py が生成した js/physics/realTowns/*.js)の共通部分:
+// 1周の長さ・方位の表・勾配。熱海と同じく、コーナー(とUターン)の手前で減速する(cornering)。
+function townCourse(d) {
+  return {
+    loopLengthKm: d.loopLengthM / 1000,
+    crossfadeKm: 0,
+    cornering: true,
+    curve: { type: 'table', stepM: d.headingStepM, headings: d.headings },
+    points: townPoints(d),
+  };
+}
+
+// 勾配の表 → 制御点。最後の点が1周の終わりに届かなければ、1周の終わりに最初の勾配の点を足す(周回の継ぎ目)
+function townPoints(d) {
+  const pts = d.grades.map((g, i) => [(i * d.gradeStepM) / 1000, g]);
+  const lap = d.loopLengthM / 1000;
+  if (pts[pts.length - 1][0] < lap - 1e-9) pts.push([lap, d.grades[0]]);
+  return pts;
+}
+
+/** 名所(生成データの sights から、keys の順に)。 */
+function townLandmarks(d, keys) {
+  return keys.map((k) => {
+    const { km, kind, side, lateralM, yaw, viewM } = d.sights[k];
+    const m = { km, kind, side, lateralM };
+    if (yaw !== undefined) m.yaw = yaw;
+    if (viewM !== undefined) m.viewM = viewM;
+    return m;
+  });
+}
+
+/**
+ * バスガイド。[名所の key(null なら1周の最初/最後), その位置からのずれ km, title, sub]。
+ * 名所が null でずれが負なら1周の終わりから数える。
+ */
+function townGuide(d, rows) {
+  const lap = d.loopLengthM / 1000;
+  return rows
+    .map(([key, off, title, sub]) => {
+      const base = key ? d.sights[key].km : off < 0 ? lap : 0;
+      const km = Math.round((base + off) * 1000) / 1000;
+      return { km: Math.min(lap - 0.01, Math.max(0, km)), title, sub };
+    })
+    .sort((a, b) => a.km - b.km);
+}
 
 export const COURSE_PROFILES = [
   {
@@ -134,40 +184,22 @@ export const COURSE_PROFILES = [
     name: '富士山・河口湖コース',
     tag: '観光地',
     scenery: 'kawaguchiko',
-    backdrop: 'fuji',
-    description: '紅葉の河口湖の湖畔をぐるりと一周。湖の向こうに富士山を眺め、忠霊塔・河口湖大橋・遊覧船・もみじ回廊・大鳥居をめぐる観光コース(1周20km)。',
-    loopLengthKm: 20,
-    crossfadeKm: 0.2,
-    curve: [[30, 3, 1.1], [14, 8, 0.4], [5, 19, 2.4]],
-    points: [
-      [0, 0],
-      [2, 1],
-      [4, -0.5],
-      [6, 1.5],
-      [8, 0],
-      [10, -1],
-      [12, 1],
-      [14, 2],
-      [16, -1.5],
-      [18, -1],
-      [20, 0],
-    ],
-    landmarks: [
-      // 新倉山浅間公園の忠霊塔(朱塗りの五重塔)。山の中腹に建つので遠くから見える
-      { km: 6, kind: 'pagodaRed', side: 1, lateralM: 55, viewM: 900 },
-      { km: 15, kind: 'torii', side: 0, lateralM: 0 },
-    ],
-    guide: [
-      { km: 0.3, title: '左手に見えますのが富士山でございます', sub: '標高3776m。本日もたいへん大きゅうございます。' },
-      { km: 3, title: '河口湖の湖畔を走ります', sub: '湖面に逆さ富士が映る……かもしれません。紅葉もちょうど見ごろでございます。' },
-      { km: 5.4, title: '右手の山の上に見えますのが忠霊塔でございます', sub: '富士山・五重塔・紅葉の三点セット。本来は少し離れた富士吉田にございますが、本日は特別に寄せております。' },
-      { km: 8.6, title: '左手に河口湖大橋が見えてまいります', sub: '湖を渡る全長500mほどの橋でございます。本日は渡らずに眺めるだけでございます。' },
-      { km: 10, title: 'ただいま折り返し地点でございます', sub: 'ほうとうの看板が見えても、まだ寄り道は早うございます。' },
-      { km: 11.5, title: '湖の上をご覧ください、遊覧船でございます', sub: '戦国武将の御座船のような姿。お殿様気分で手を振ってみましょう。' },
-      { km: 12.6, title: 'もみじ回廊に入ります', sub: '真っ赤なもみじのトンネルでございます。見とれてペダルが止まらないようご注意ください。' },
-      { km: 14.8, title: '間もなく大鳥居をくぐります', sub: '富士山の神様にごあいさつを。' },
-      { km: 17, title: '間もなく1周でございます', sub: 'お忘れ物のないよう、ペダルは回し続けてください。' },
-    ],
+    description: `河口湖大橋のたもとから、河口湖の北岸を西へ。湖の向こうに本物の富士山を眺めながら、河口の集落・大石公園を通ってもみじ回廊の近くまで行き、同じ道を戻る実在の道(1周${(FUJI_TOWN_DATA.loopLengthM / 1000).toFixed(1)}km)。地形・湖・道路・建物の形は国土地理院のデータから(この辺りは PLATEAU が無いため、建物の高さは推定)。`,
+    // 実在の道(js/physics/realTowns/fuji.js、tools/real-towns/build.py が生成): 1周 = 往復 + Uターン2回。
+    // 富士山は遠景の地形(国土地理院の標高)そのものなので、作り物の遠景(backdrop)は使わない
+    ...townCourse(FUJI_TOWN_DATA),
+    landmarks: townLandmarks(FUJI_TOWN_DATA, ['chureito', 'torii']),
+    guide: townGuide(FUJI_TOWN_DATA, [
+      [null, 0.05, '富士山・河口湖へようこそ', '本日のガイドはわたくし、パンダがつとめます。左手の湖の向こうに見えますのが、本物の富士山でございます。'],
+      [null, 0.9, '河口湖の北岸を西へまいります', '湖面に逆さ富士が映る……かもしれません。紅葉もちょうど見ごろでございます。'],
+      ['chureito', -0.2, '右手の山の上に見えますのが忠霊塔でございます', '富士山・五重塔・紅葉の三点セット。本来は少し離れた富士吉田にございますが、本日は特別に寄せております。'],
+      ['kawaguchi', -0.05, '河口の集落に入ります', '富士山へお参りする人たちが泊まった、古い御師(おし)の町でございます。'],
+      ['torii', -0.15, '間もなく大鳥居をくぐります', '富士山の神様にごあいさつを。'],
+      ['oishi', -0.1, '大石公園でございます', '湖と富士山をいっぺんに眺められる花の公園。ラベンダーとコキアが名物でございます。'],
+      ['momiji', -0.25, 'もみじ回廊が近づいてまいりました', '真っ赤なもみじのトンネルでございます。見とれてペダルが止まらないようご注意ください。'],
+      ['momiji', 0.03, 'ここで折り返しでございます', 'ほうとうの看板が見えても、まだ寄り道は早うございます。'],
+      [null, -0.4, '間もなく1周でございます', '河口湖大橋のたもとで折り返し。お忘れ物のないよう、ペダルは回し続けてください。'],
+    ]),
     localFood: { name: 'ほうとう', unit: '杯', kcal: 550 },
   },
   {
@@ -175,43 +207,23 @@ export const COURSE_PROFILES = [
     name: '京都・東山コース',
     tag: '観光地',
     scenery: 'kyoto',
-    description: '平安神宮の大鳥居から、知恩院の三門、八坂神社、祇園白川、八坂の塔を経て清水の舞台へ。京町家が軒を連ねる石畳の道と紅葉の東山をのんびりめぐる観光コース(1周8km)。',
-    loopLengthKm: 8,
-    crossfadeKm: 0.15,
-    curve: [[22, 3, 0.6], [10, 8, 2.2], [5, 17, 1.0]],
-    points: [
-      [0, 0],
-      [1, 1.5],
-      [2, 3],
-      [3, 0.5],
-      [4, -1],
-      [5, 2],
-      [6, -2],
-      [7, -1.5],
-      [8, 0],
-    ],
-    // 実際の東山の名所の並び(北から南へ)。建物の形は js/three/sightModels.js
-    landmarks: [
-      { km: 0.8, kind: 'torii', side: 0, lateralM: 0 },
-      { km: 1.7, kind: 'sanmon', side: 1, lateralM: 6, yaw: -Math.PI / 2, viewM: 700 },
-      { km: 2.6, kind: 'romon', side: 1, lateralM: 2, yaw: -Math.PI / 2, viewM: 500 },
-      { km: 4.3, kind: 'pagoda', side: 1, lateralM: 2, viewM: 900 },
-      { km: 4.95, kind: 'romon', side: 1, lateralM: 4, yaw: -Math.PI / 2, viewM: 500 },
-      { km: 5.08, kind: 'pagoda3', side: 1, lateralM: 26, viewM: 800 },
-      { km: 5.3, kind: 'kiyomizu', side: 1, lateralM: 50, yaw: -Math.PI / 2, viewM: 1500 },
-    ],
-    guide: [
-      { km: 0.2, title: '京都・東山へようこそ', sub: '本日のガイドはわたくし、パンダがつとめます。東山は紅葉の見ごろでございます。' },
-      { km: 0.6, title: '平安神宮の大鳥居でございます', sub: '高さ約24m。自転車でくぐれる鳥居としては、たぶん日本有数でございます。' },
-      { km: 1.45, title: '右手に見えますのが知恩院の三門でございます', sub: '日本最大級の木造の門。くぐるには自転車を降りて石段を上る必要がございます。' },
-      { km: 2.35, title: '朱塗りの門は八坂神社の西楼門でございます', sub: '「祇園さん」の愛称で親しまれております。' },
-      { km: 3, title: '左手は祇園白川でございます', sub: '柳並木と石畳、町家の格子。舞妓さんを見かけても、よそ見運転はご遠慮ください。' },
-      { km: 4.05, title: '正面に八坂の塔が見えてまいりました', sub: '坂の上に五重塔。京都らしい景色の代表選手でございます。' },
-      { km: 4.8, title: '清水寺の仁王門と三重塔でございます', sub: 'ここからは清水坂。ゆっくり上りましょう。' },
-      { km: 5.15, title: '右手の崖の上が清水の舞台でございます', sub: '139本の柱が支える懸造り。くれぐれも飛び降りないでください。' },
-      { km: 6.5, title: '清水の舞台から飛び降りるつもりで', sub: '……ラストスパートしなくても大丈夫です。のんびりどうぞ。' },
-      { km: 7.05, title: '左手遠くに見えますのが京都タワーでございます', sub: '灯台をイメージした塔。ろうそくではございません。' },
-    ],
+    description: `平安神宮の大鳥居から神宮道を南へ、知恩院の三門・円山公園・ねねの道・八坂の塔を経て清水寺の仁王門まで上り、同じ道を戻る実在の道(1周${(KYOTO_TOWN_DATA.loopLengthM / 1000).toFixed(1)}km)。PLATEAU の建物と国土地理院の地形・道路で東山の町並みを再現。清水坂は本物の上り坂です。`,
+    // 実在の道(js/physics/realTowns/kyoto.js、tools/real-towns/build.py が生成): 1周 = 往復 + Uターン2回。
+    // 名所の位置(1周の中の km・左右・道からの距離)も実在の位置からの生成値
+    ...townCourse(KYOTO_TOWN_DATA),
+    landmarks: townLandmarks(KYOTO_TOWN_DATA, ['heianTorii', 'chionin', 'yasaka', 'yasakaPagoda', 'niomon', 'kiyomizuPagoda', 'kiyomizu']),
+    guide: townGuide(KYOTO_TOWN_DATA, [
+      [null, 0.05, '京都・東山へようこそ', '本日のガイドはわたくし、パンダがつとめます。平安神宮の前から、本物の東山の町並みを南へまいります。'],
+      ['heianTorii', -0.12, '平安神宮の大鳥居でございます', '高さ約24m。自転車でくぐれる鳥居としては、たぶん日本有数でございます。'],
+      ['chionin', -0.22, '左手に見えますのが知恩院の三門でございます', '日本最大級の木造の門。くぐるには自転車を降りて石段を上る必要がございます。'],
+      ['yasaka', -0.18, '円山公園と八坂神社でございます', '「祇園さん」の愛称で親しまれております。公園のしだれ桜は春の名物。本日は紅葉で失礼いたします。'],
+      ['yasaka', 0.2, 'ねねの道に入ります', '豊臣秀吉の妻・ねねが晩年を過ごした高台寺へ続く石畳の道。人力車にお気をつけください。'],
+      ['yasakaPagoda', -0.18, '正面に八坂の塔が見えてまいりました', '坂の上に五重塔。京都らしい景色の代表選手でございます。'],
+      ['niomon', -0.4, 'ここから清水坂でございます', '本物の上り坂。ゆっくり上りましょう。お土産屋さんの試食は、ペダルを止めてからどうぞ。'],
+      ['niomon', -0.06, '清水寺の仁王門と三重塔でございます', '右手の上の方が清水の舞台。139本の柱が支える懸造りでございます。'],
+      ['niomon', 0.06, 'ここで折り返しでございます', '清水の舞台から飛び降りるつもりで……下り坂は、くれぐれもゆっくりどうぞ。'],
+      [null, -0.35, '間もなく1周でございます', '平安神宮の大鳥居で折り返し。お忘れ物のないよう、ペダルは回し続けてください。'],
+    ]),
     localFood: { name: '生八つ橋', unit: '個', kcal: 50 },
   },
   {
@@ -219,40 +231,25 @@ export const COURSE_PROFILES = [
     name: '奈良公園コース',
     tag: '観光地',
     scenery: 'nara',
-    description: '鹿がのんびり暮らす奈良公園を一周。猿沢池と興福寺の五重塔、東大寺の南大門と大仏殿、若草山、春日大社の石灯籠の参道、浮見堂をめぐる観光コース(1周6km)。鹿によく会います。',
-    loopLengthKm: 6,
-    crossfadeKm: 0.15,
-    curve: [[24, 2, 0.3], [10, 6, 1.7], [4, 13, 0.9]],
-    points: [
-      [0, 0],
-      [1, 2],
-      [2, 1],
-      [3, -1.5],
-      [4, -2],
-      [5, 1],
-      [6, 0],
-    ],
+    description: `鹿がのんびり暮らす奈良公園を一周する実在の道(1周${(NARA_TOWN_DATA.loopLengthM / 1000).toFixed(1)}km)。猿沢池から三条通を東へ、一の鳥居・春日大社の参道・東大寺の南大門と大仏殿・若草山の麓・浮見堂をめぐります。建物の形・地形・道路は国土地理院のデータから(この辺りは PLATEAU が無いため、建物の高さは推定)。鹿によく会います。`,
+    // 実在の道(js/physics/realTowns/nara.js、tools/real-towns/build.py が生成): 周回
+    ...townCourse(NARA_TOWN_DATA),
     // 鹿によく会う
     happenings: { cat: 1, panda: 1, cheer: 1, aid: 1, deer: 6 },
-    // 池・若草山・参道の位置は js/three/landscapeLayout.js の LANDSCAPES.nara.tour と揃えている
-    landmarks: [
-      { km: 0.8, kind: 'pagoda', side: -1, lateralM: 92, viewM: 900 },
-      { km: 1.65, kind: 'sanmon', side: 1, lateralM: 6, yaw: -Math.PI / 2, viewM: 700 },
-      { km: 1.65, kind: 'daibutsuden', side: 1, lateralM: 170, yaw: -Math.PI / 2, viewM: 2500 },
-      { km: 3.35, kind: 'torii', side: 0, lateralM: 0 },
-      { km: 4.75, kind: 'ukimido', side: -1, lateralM: 42.8, yaw: Math.PI / 2, viewM: 600 },
-    ],
-    guide: [
-      { km: 0.2, title: '奈良公園へようこそ', sub: '鹿が約1300頭暮らしています。道は譲ってあげましょう。' },
-      { km: 0.55, title: '左手は猿沢池でございます', sub: '池の向こうに興福寺の五重塔。水面に映る姿が見どころでございます。' },
-      { km: 0.85, title: '興福寺の五重塔でございます', sub: '高さ約50m。木造の塔では日本で2番目の高さです。' },
-      { km: 1.4, title: '右手に東大寺の南大門が見えてまいります', sub: '門の奥が大仏殿。世界最大級の木造建築で、中では大仏さまがお待ちです(自転車は入れません)。' },
-      { km: 2.45, title: '右手に見えますのが若草山でございます', sub: '三つの笠を重ねたような芝の山。1月の山焼きが有名でございます。' },
-      { km: 3.2, title: '間もなく春日大社の一の鳥居をくぐります', sub: '鹿は神様のお使いとされています。' },
-      { km: 3.5, title: '参道の石灯籠をご覧ください', sub: '春日大社には約3000基の灯籠がございます。数えながら走るのはおすすめいたしません。' },
-      { km: 4.55, title: '左手の池に浮かぶのが浮見堂でございます', sub: '鷺池に浮かぶ六角のお堂。橋を渡ってひと休み……は、ペダルを止めてからどうぞ。' },
-      { km: 5.3, title: '鹿せんべいの売店が見えてまいりました', sub: '走りながらは渡せませんので、気持ちだけお渡しください。' },
-    ],
+    landmarks: townLandmarks(NARA_TOWN_DATA, ['kofukuji', 'ichinoTorii', 'nandaimon', 'daibutsuden', 'ukimido']),
+    guide: townGuide(NARA_TOWN_DATA, [
+      [null, 0.04, '奈良公園へようこそ', '鹿が約1300頭暮らしています。道は譲ってあげましょう。'],
+      ['kofukuji', -0.1, '左手に見えますのが興福寺の五重塔でございます', '高さ約50m。木造の塔では日本で2番目の高さです。'],
+      ['ichinoTorii', -0.15, '間もなく春日大社の一の鳥居をくぐります', '鹿は神様のお使いとされています。'],
+      ['kasuga', -0.1, '春日大社の参道でございます', '奥の本殿まで約3000基の灯籠が続きます。数えながら走るのはおすすめいたしません。'],
+      ['nandaimon', -0.25, '左手に東大寺の南大門が見えてまいります', '門の左右には運慶・快慶の金剛力士像。にらまれても止まらずにどうぞ。'],
+      ['daibutsuden', -0.05, '左手の奥が大仏殿でございます', '世界最大級の木造建築。中では大仏さまがお待ちです(自転車は入れません)。'],
+      ['wakakusa', -0.15, '右手に見えますのが若草山でございます', '三つの笠を重ねたような芝の山。1月の山焼きが有名でございます。'],
+      ['tobihino', 0.05, '飛火野でございます', '鹿がいちばん多い芝生の原っぱ。鹿せんべいを持っていると囲まれます。'],
+      ['ukimido', -0.15, '左手の池に浮かぶのが浮見堂でございます', '鷺池に浮かぶ六角のお堂。橋を渡ってひと休み……は、ペダルを止めてからどうぞ。'],
+      ['araike', -0.05, '荒池のほとりを走ります', '鹿せんべいの売店が見えても、走りながらは渡せません。気持ちだけお渡しください。'],
+      ['sarusawa', -0.15, '間もなく猿沢池でございます', '池に映る五重塔が見どころ。1周おつかれさまでございます。'],
+    ]),
     localFood: { name: '柿の葉寿司', unit: '個', kcal: 50 },
   },
   {

@@ -210,6 +210,69 @@ function paintStucco(p, rand) {
   });
 }
 
+// ---- 実在の街の観光地コース(RealTownScene)の低い家の外壁 ----
+
+/** 戸建て住宅: 窯業系サイディングの横目地と、小さめの引き違い窓(1ベイに1つ、ときどき無い)。 */
+function paintHouse(p, rand) {
+  const size = CELL * TILE_BAYS;
+  p.rect(0, 0, size, size, '#e9e4da', 235);
+  speckle(p.c, size, size, rand, 1800, { alpha: 0.07, maxSize: 2 });
+  for (let y = 0; y < size; y += 16) {
+    p.c.fillStyle = 'rgba(110,100,90,0.18)';
+    p.c.fillRect(0, y, size, 1);
+  }
+  paintCells(p, rand, (x, y) => {
+    if (rand() < 0.25) return;
+    const w = 56 + Math.floor(rand() * 30);
+    const ox = x + Math.floor((CELL - w) / 2);
+    p.rect(ox - 4, y + 34, w + 8, 60, '#6f6a64', 150, 120);
+    p.glass(ox, y + 38, w, 52, rand, { tint: [88, 104, 118], curtains: 0.8 });
+    p.rect(ox + w / 2 - 1, y + 38, 3, 52, '#6f6a64', 150, 120);
+  });
+}
+
+/** 京町家: 1階は焦げ茶の格子(千本格子)、上は漆喰の壁に虫籠窓。 */
+function paintMachiya(p, rand) {
+  const size = CELL * TILE_BAYS;
+  paintCells(p, rand, (x, y) => {
+    // 上半分: 漆喰と虫籠窓
+    p.rect(x, y, CELL, 56, '#ece6d6', 235);
+    if (rand() < 0.7) {
+      p.rect(x + 30, y + 14, 68, 28, '#5a4d40', 220);
+      for (let bx = x + 34; bx < x + 96; bx += 9) p.rect(bx, y + 14, 4, 28, '#e4dccb', 230);
+    }
+    // 下半分: 格子(縦の細い木を詰めて並べる)と、柱・腰板
+    p.rect(x, y + 56, CELL, 72, '#3b2b20', 225);
+    for (let bx = x + 3; bx < x + CELL; bx += 6) p.rect(bx, y + 60, 3, 54, '#6b4d36', 215);
+    p.rect(x, y + 56, 6, 72, '#2c2018', 225);
+    p.rect(x, y + 114, CELL, 14, '#4a3828', 230);
+    p.rect(x, y + 52, CELL, 6, '#2b2520', 200);
+  });
+  speckle(p.c, size, size, rand, 1500, { alpha: 0.06, maxSize: 2 });
+}
+
+const TOWN_FACADE_PAINTERS = { house: paintHouse, machiya: paintMachiya };
+
+/**
+ * 実在の街の観光地コースだけで使う外壁(戸建て住宅・京町家)のテクスチャ。createCityTextures と同じ形
+ * ({ style: { map, ormMap } })で、createFacadeMaterial にそのまま渡せる。
+ * @returns {{ facades: Record<string, {map, ormMap}>, all: THREE.Texture[] }}
+ */
+export function createTownFacadeTextures(anisotropy) {
+  const all = [];
+  const facades = {};
+  let seed = 701;
+  for (const [style, paint] of Object.entries(TOWN_FACADE_PAINTERS)) {
+    const p = dualPainter(CELL * TILE_BAYS, CELL * TILE_FLOORS);
+    paint(p, mulberry32(seed++));
+    const map = toTexture(p.color, { anisotropy });
+    const ormMap = toTexture(p.orm, { srgb: false, anisotropy });
+    all.push(map, ormMap);
+    facades[style] = { map, ormMap };
+  }
+  return { facades, all };
+}
+
 // 1階の店舗(1タイル = 4ベイ × 1階、各セル128×128px)。
 const SIGN_COLORS = ['#1f5d8c', '#b8332c', '#2f6b3a', '#f2b632', '#3a3a3a', '#e8e4da', '#7a3b6e'];
 

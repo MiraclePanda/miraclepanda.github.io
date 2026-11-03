@@ -86,8 +86,10 @@ const TERRAIN_CHUNK_CELLS = 48;
  * 標高の格子 → 地形のメッシュ(頂点カラー)を TERRAIN_CHUNK_CELLS 四方の区画に分けた Group。
  * skipBox の内側のセル(近景が描く範囲)は作らない。法線と色は格子全体で求めてから分けるので、区画の境目も滑らか。
  * @param {object} opts.buildings 建物(近景の地面の色に使う)。opts.route, opts.sides は砂浜の範囲
+ * @param {Function} [opts.colorAt] 頂点の色を決める関数 (k, h, normalY, builtUp, noise) → sRGB(実在の街のコース用。
+ *   省略時は熱海の groundColor)
  */
-export function buildTerrainMesh(grid, material, { buildings = null, route = null, sides = null, skipBox = null } = {}) {
+export function buildTerrainMesh(grid, material, { buildings = null, route = null, sides = null, skipBox = null, colorAt = null } = {}) {
   const { nx, ny, step, x0, y0, h } = grid;
   const pos = new Float32Array(nx * ny * 3);
   const uv = new Float32Array(nx * ny * 2);
@@ -129,7 +131,9 @@ export function buildTerrainMesh(grid, material, { buildings = null, route = nul
   const c = new THREE.Color();
   for (let k = 0; k < nx * ny; k++) {
     const noise = fract(Math.sin(k * 12.9898) * 43758.5453);
-    const rgb = groundColor(h[k], nrm[k * 3 + 1], built ? built[k] : 0, beach ? beach[k] === 1 : false, noise);
+    const rgb = colorAt
+      ? colorAt(k, h[k], nrm[k * 3 + 1], built ? built[k] : 0, noise)
+      : groundColor(h[k], nrm[k * 3 + 1], built ? built[k] : 0, beach ? beach[k] === 1 : false, noise);
     c.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
     col[k * 3] = c.r;
     col[k * 3 + 1] = c.g;
@@ -191,16 +195,22 @@ function fract(v) {
 
 /**
  * 走るルートの車道と歩道のリボン。車道は U が全幅(0..1)、V が距離(roadTileM ごと)。
- * 歩道は車道の端から外へ sidewalkAt(t, side) m、路面より 15cm 高い。両端はUターン用の半円でふさぐ。
+ * 歩道は車道の端から外へ sidewalkAt(t, side) m、路面より 15cm 高い。両端はUターン用の半円でふさぐ
+ * (周回のルート route.loop は閉じた輪なので、ふさがない)。
  */
 export function buildRouteMeshes(route, { roadTileM, sidewalkAt, paveTileM = 2 }) {
   const T = route.oneWayM;
+  const loop = !!route.loop;
   const c = {};
   const road = { pos: [], uv: [], idx: [] };
   const walk = { pos: [], uv: [], idx: [] };
   let rows = 0;
-  for (let t = 0; t <= T + 1e-6; t += 2) {
-    route.center(Math.min(t, T), c);
+  const ts = [];
+  for (let t = 0; t <= T + 1e-6; t += 2) ts.push(t);
+  // 周回は輪を閉じる(最後の行 = 最初の行の地点)
+  if (loop && ts[ts.length - 1] < T - 1e-6) ts.push(T);
+  for (const t of ts) {
+    route.center(loop && t >= T ? T - 1e-6 : Math.min(t, T), c);
     // 右(北へ走るとき)= (ty, −tx)
     const rx = c.ty;
     const ry = -c.tx;
@@ -226,7 +236,7 @@ export function buildRouteMeshes(route, { roadTileM, sidewalkAt, paveTileM = 2 }
     rows++;
   }
   // Uターンする両端を半円でふさぐ(車道の色)
-  for (const endT of [0, T]) {
+  for (const endT of loop ? [] : [0, T]) {
     route.center(endT, c);
     const sgn = endT === 0 ? -1 : 1;
     const fx = c.tx * sgn;
@@ -319,15 +329,18 @@ function densify(pts, stepM) {
  * 外壁の UV は都市の外壁シェーダー(cityMaterials.js)のタイル単位(ベイ数 / タイルのベイ数, 階 / タイルの階数)。
  * 基礎は地面(地形の格子)の一番低い所より下まで下ろし、斜面でも浮かない。
  * @param {(i:number) => boolean} [skip] 置かない建物(熱海城の位置など)
- * @returns {{ walls: Map<string, THREE.BufferGeometry[]>, roofs: THREE.BufferGeometry[], count: number }}
+ * @param {(b, i:number) => object} [look] 見た目(既定は熱海の buildingLook)
+ * @param {(b, look) => boolean} [gable] 切妻屋根にする建物(低い戸建て・町家など)。外形がほぼ長方形のものだけ
+ *   切妻にし、外壁は軒の高さまで、その上に屋根を載せる(高さの合計は PLATEAU の高さのまま)
+ * @returns {{ walls: Map<string, THREE.BufferGeometry[]>, roofs: THREE.BufferGeometry[], pitched: THREE.BufferGeometry[], count: number }}
  */
-export function buildBuildingGeometries(buildings, heightAt, { skip } = {}) {
+export function buildBuildingGeometries(buildings, heightAt, { skip, look: lookFn = buildingLook, gable = null } = {}) {
   const chunks = new Map(); // key → { style → arrays, roof arrays }
   const color = new THREE.Color();
   let count = 0;
   buildings.forEach((b, index) => {
     if (skip?.(index)) return;
-    const look = buildingLook(b, index);
+    const look = lookFn(b, index);
     const ring = b.ring;
     let ground = Infinity;
     let cx = 0;
@@ -339,14 +352,24 @@ export function buildBuildingGeometries(buildings, heightAt, { skip } = {}) {
     }
     cx /= ring.length;
     cy /= ring.length;
-    const top = b.base + b.height;
+    let top = b.base + b.height;
     if (!(top > ground + 1)) return;
     const bottom = Math.min(ground, b.base) - 0.8;
     const key = `${Math.floor(cx / BUILDING_CHUNK_M)},${Math.floor(cy / BUILDING_CHUNK_M)}`;
     let ch = chunks.get(key);
     if (!ch) {
-      ch = { walls: {}, roof: { pos: [], col: [], idx: [] } };
+      ch = { walls: {}, roof: { pos: [], col: [], idx: [] }, pitched: { pos: [], col: [] } };
       chunks.set(key, ch);
+    }
+    const rect = gable && gable(b, look) ? gableRect(ring) : null;
+    if (rect) {
+      // 切妻屋根: 外壁は軒まで、屋根の棟が元の高さ(上限は軒 + 屋根の高さ)
+      const roofH = Math.min(3.2, Math.max(1.2, rect.shortM * 0.32));
+      const eave = Math.max(ground + 2.4, top - roofH * 0.55);
+      color.setHex(look.roof).convertSRGBToLinear();
+      pushGableRoof(ch.pitched, rect, eave, roofH, color);
+      top = eave;
+      count++;
     }
     const w = (ch.walls[look.style] ??= { pos: [], uv: [], col: [], idx: [] });
     color.setHex(look.tint).convertSRGBToLinear();
@@ -367,6 +390,7 @@ export function buildBuildingGeometries(buildings, heightAt, { skip } = {}) {
       // 外形は反時計回り(上から見て)なので、外向きの面になる巻き順
       w.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
     }
+    if (rect) return;
     // 屋根(陸屋根)。外形を三角形に分割する
     const contour = ring.map(([x, y]) => new THREE.Vector2(x, y));
     const tris = THREE.ShapeUtils.triangulateShape(contour, []);
@@ -390,6 +414,7 @@ export function buildBuildingGeometries(buildings, heightAt, { skip } = {}) {
   });
   const walls = new Map();
   const roofs = [];
+  const pitched = [];
   for (const ch of chunks.values()) {
     for (const [style, w] of Object.entries(ch.walls)) {
       const g = new THREE.BufferGeometry();
@@ -410,8 +435,102 @@ export function buildBuildingGeometries(buildings, heightAt, { skip } = {}) {
     const n = g.attributes.normal;
     for (let k = 0; k < n.count; k++) n.setXYZ(k, 0, 1, 0);
     roofs.push(g);
+    if (ch.pitched.pos.length) {
+      const pg = new THREE.BufferGeometry();
+      pg.setAttribute('position', new THREE.Float32BufferAttribute(ch.pitched.pos, 3));
+      pg.setAttribute('color', new THREE.Float32BufferAttribute(ch.pitched.col, 3));
+      pg.computeVertexNormals();
+      pitched.push(pg);
+    }
   }
-  return { walls, roofs, count };
+  return { walls, roofs, pitched, count };
+}
+
+/**
+ * 外形(反時計回り)を、一番長い辺の向きにそろえた長方形で近似する。外形の面積が長方形の 75% 未満
+ * (L字・凹んだ形)なら null。{ cx, cy, ux, uy(長い向き), halfLong, halfShort, shortM }。
+ */
+function gableRect(ring) {
+  let best = 0;
+  let ux = 1;
+  let uy = 0;
+  for (let k = 0; k < ring.length; k++) {
+    const [ax, ay] = ring[k];
+    const [bx, by] = ring[(k + 1) % ring.length];
+    const L = Math.hypot(bx - ax, by - ay);
+    if (L > best) {
+      best = L;
+      ux = (bx - ax) / L;
+      uy = (by - ay) / L;
+    }
+  }
+  let u0 = Infinity;
+  let u1 = -Infinity;
+  let v0 = Infinity;
+  let v1 = -Infinity;
+  let area = 0;
+  for (let k = 0; k < ring.length; k++) {
+    const [x, y] = ring[k];
+    const [x2, y2] = ring[(k + 1) % ring.length];
+    area += x * y2 - x2 * y;
+    const u = x * ux + y * uy;
+    const v = -x * uy + y * ux;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u);
+    v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+  }
+  const rectArea = (u1 - u0) * (v1 - v0);
+  if (!(rectArea > 0) || Math.abs(area / 2) < rectArea * 0.75) return null;
+  let cu = (u0 + u1) / 2;
+  let cv = (v0 + v1) / 2;
+  let hl = (u1 - u0) / 2;
+  let hs = (v1 - v0) / 2;
+  let ax = ux;
+  let ay = uy;
+  // 棟は長い向きに通す
+  if (hs > hl) {
+    [hl, hs] = [hs, hl];
+    ax = -uy;
+    ay = ux;
+    const nu = cv;
+    cv = -cu;
+    cu = nu;
+  }
+  // (cu, cv) は (ax, ay) とその左の向きの座標
+  const cx = cu * ax - cv * ay;
+  const cy = cu * ay + cv * ax;
+  return { cx, cy, ux: ax, uy: ay, halfLong: hl, halfShort: hs, shortM: 2 * hs };
+}
+
+const EAVE_OVERHANG_M = 0.45;
+
+/** 切妻屋根(2枚の屋根面と2枚の妻壁)の三角形を非インデックスで足す(面ごとに法線が分かれる)。 */
+function pushGableRoof(out, r, eave, roofH, color) {
+  const L = r.halfLong + EAVE_OVERHANG_M;
+  const S = r.halfShort + EAVE_OVERHANG_M;
+  const vx = -r.uy;
+  const vy = r.ux;
+  const P = (a, b) => [r.cx + r.ux * a + vx * b, r.cy + r.uy * a + vy * b];
+  const e1 = P(-L, -S);
+  const e2 = P(L, -S);
+  const e3 = P(L, S);
+  const e4 = P(-L, S);
+  const r1 = P(-L, 0);
+  const r2 = P(L, 0);
+  const y0 = eave - 0.1;
+  const y1 = eave + roofH;
+  const tri = (a, ya, b, yb, c, yc) => {
+    // 上(+Y)から見て反時計回り(地図座標)なら外向き。シーンは (x, y, −北)
+    out.pos.push(a[0], ya, -a[1], b[0], yb, -b[1], c[0], yc, -c[1]);
+    for (let i = 0; i < 3; i++) out.col.push(color.r, color.g, color.b);
+  };
+  // 屋根面(右側 −S と左側 +S)
+  tri(e1, y0, e2, y0, r2, y1);
+  tri(e1, y0, r2, y1, r1, y1);
+  tri(e3, y0, e4, y0, r1, y1);
+  tri(e3, y0, r1, y1, r2, y1);
+  // 妻壁(両端の三角形)
+  tri(e2, y0, e3, y0, r2, y1);
+  tri(e4, y0, e1, y0, r1, y1);
 }
 
 // ---- 海沿いの遊歩道の部品 ----
