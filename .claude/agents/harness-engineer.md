@@ -8,7 +8,7 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 
 ## 所有範囲
 - 書き込み可: `harness/**`, `.claude/**`, `AGENTS.md`, `CLAUDE.md`, `_config.yml`
-- アプリ本体(`index.html`, `PandaCycleTrainer/**`)は編集しない
+- アプリ本体(`PandaCycleTrainer/**`)は編集しない
 
 ## 方針
 - 依存ゼロ(Node 22 標準機能のみ)を維持。npm パッケージを入れない

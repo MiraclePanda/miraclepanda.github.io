@@ -9,11 +9,11 @@ GitHub Pages (`https://miraclepanda.github.io/`) の公開リポジトリ。**ma
 
 | パス | 内容 | 構成 |
 |---|---|---|
-| `index.html` | **DC1 Virtual Ride**(旧版)。1ファイル完結 | 素の JS + Three.js r160 (UMD, jsDelivr) / localStorage |
-| `PandaCycleTrainer/` | **PandaCycleTrainer**(新版)。上流 `MiraclePanda/PandaCycleTrainer` のミラー | React 18 UMD(unpkg) + ES モジュール + Three.js r186(ESM, jsDelivr) / IndexedDB |
+| `PandaCycleTrainer/` | **PandaCycleTrainer**。上流 `MiraclePanda/PandaCycleTrainer` のミラー | React 18 UMD(unpkg) + ES モジュール + Three.js r186(ESM, jsDelivr) / IndexedDB |
 | `harness/` | エージェント用の検証ハーネス(公開対象外) | Node 22 標準機能のみ |
 
-どちらも CYCPLUS DC1 等の FTMS スマートトレーナーに Web Bluetooth で接続する仮想サイクリングアプリ。
+CYCPLUS DC1 等の FTMS スマートトレーナーに Web Bluetooth で接続する仮想サイクリングアプリ。
+サイトのルート(`https://miraclepanda.github.io/`)にはページを置いていない(開発初期の検証用 DC1 Virtual Ride は削除済み)。
 Chrome / Edge(PC・Android)のみ対応、HTTPS か localhost が必須。
 
 > ⚠️ `PandaCycleTrainer/` は上流リポジトリのミラー(README に反映元コミットを記載)。
@@ -71,7 +71,6 @@ python3 -m http.server 8000       # 実ブラウザ確認: http://localhost:8000
 | `scene3d-engineer` | `PandaCycleTrainer/js/three/**`, `js/ui/CityScene.js`, `js/ui/LandscapeScene.js`, `js/ui/PondScene.js`, `js/ui/AtamiScene.js`, `js/ui/RealTownScene.js`, `js/ui/realSceneShared.js` | 3D 街並み・湖畔/山岳/熱海・観光地の実在の街・不忍池の景観, 描画パフォーマンス |
 | `ui-engineer` | `PandaCycleTrainer/js/ui/**`(CityScene/LandscapeScene/PondScene/AtamiScene/RealTownScene/realSceneShared除く), `js/main.js`, `css/**`, `PandaCycleTrainer/index.html` | 画面・状態遷移・スタイル |
 | `data-engineer` | `PandaCycleTrainer/js/storage/**`, `js/utils/**` | 履歴保存, TCX, 入力検証, 表示フォーマット |
-| `legacy-dc1-maintainer` | ルート `index.html` | 旧版 DC1 Virtual Ride の保守 |
 | `harness-engineer` | `harness/**`, `.claude/**`, `AGENTS.md`, `CLAUDE.md` | 検証ハーネス・エージェント基盤 |
 | `verifier` | (読み取り専用) | 検証の実行と合否報告 |
 | `code-reviewer` | (読み取り専用) | 差分レビュー |

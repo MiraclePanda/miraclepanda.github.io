@@ -75,17 +75,7 @@ for (const html of [join(PCT, 'index.html')]) {
   }
 }
 
-// 4. ルートの単一ファイル版 (DC1 Virtual Ride) のインラインスクリプト構文チェック
-{
-  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
-  const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-  scripts.forEach((code, i) => {
-    const r = spawnSync(process.execPath, ['--input-type=commonjs', '--check'], { input: code, encoding: 'utf8' });
-    if (r.status !== 0) fail(`構文エラー: index.html インラインscript #${i}\n${r.stderr.trim().split('\n').slice(0, 4).join('\n')}`);
-  });
-}
-
-// 5. スモークテスト (node:test)
+// 4. スモークテスト (node:test)
 if (!staticOnly && failures.length === 0) {
   const tests = walk(join(ROOT, 'harness', 'tests'), (p) => p.endsWith('.test.mjs'));
   const r = spawnSync(process.execPath, ['--test', ...tests], { encoding: 'utf8', cwd: ROOT });
