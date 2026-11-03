@@ -29,7 +29,7 @@ GitHub Pages上では `https://miraclepanda.github.io/PandaCycleTrainer/` から
 - **その他**: デモ走行（トレーナー不要の自動走行）、バイク種別（標準/スワンボート）、詳細設定（転がり抵抗・空気抵抗係数・FTP）、セットアップの選択と負荷率の記憶（変更した時点で保存）
 
 ### ミラーについて
-- 反映元コミット: `139a624`（2026-11-01「熱海サンビーチを PLATEAU の実在の街(国道135号の海岸沿い)に作り直す(#26)」まで）
+- 反映元コミット: `f3d4e12`（2026-11-03「観光地コース(京都・奈良・富士山/河口湖)を実在の街に作り直し、熱海の「実験」表記を外す(#27)」まで）
 - 熱海サンビーチの景色のデータ `PandaCycleTrainer/js/data/atami-plateau.json` は上流の `tools/atami-plateau/build.py` が PLATEAU（熱海市 2023年度）と国土地理院のデータから生成したもので、画面に出典を表示しています。
 - アプリ本体（`index.html`, `css/`, `js/`）のみを配置しており、テスト・開発用設定は含みません。
 - 機能変更は原則として上流で行い、ここへは同期します（手順は `.claude/skills/sync-pandacycletrainer/SKILL.md`）。

@@ -298,16 +298,11 @@ export function SetupScreen({
         'h3', null,
         `${meta.icon} ${record ? record.name : courseProfile.name}`,
         courseProfile.tag && h('span', { className: 'gpx-badge tour-badge' }, courseProfile.tag),
-        meta.experimental && h('span', { className: 'gpx-badge experimental-badge', title: '実験中のコース' }, '🧪 実験'),
         record && h('span', { className: 'gpx-badge' }, '実在コース')
       ),
       record
         ? h('p', { className: 'muted small' }, gpxStatsLine(record.stats))
         : h('p', { className: 'muted small' }, courseProfile.description),
-      meta.experimental && h(
-        'p', { className: 'muted small experimental-note' },
-        '🧪 景色をよりリアルにする実験中のコースです。描画品質を「最高(実験)」にすると、映り込む海や本物の地形で走れます(高性能なPC向け。「最高(実験)」は他のコースでも選べます)。'
-      ),
       record && h(
         'div', { className: 'gpx-detail' },
         h('div', { className: 'gpx-scenery' }, segmented(
@@ -705,8 +700,7 @@ function courseTile(profile, selected, onSelect, opts = {}) {
       'span', { className: 'course-tile-body' },
       h('strong', null, opts.name ?? tileName(profile.name)),
       h('small', null, opts.summary ?? courseSummary(profile)),
-      opts.extra,
-      meta.experimental && h('span', { className: 'course-tile-flag', title: '実験中のコース' }, '🧪 実験')
+      opts.extra
     )
   );
 }

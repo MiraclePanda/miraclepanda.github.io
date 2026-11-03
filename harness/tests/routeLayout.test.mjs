@@ -16,9 +16,9 @@ const ANCHOR_OPTS = { behindM: 232, aheadM: 3632, stepM: 4 };
 const curvedProfiles = COURSE_PROFILES.filter((p) => Array.isArray(p.curve) && p.curve.length > 0);
 const loopM = (p) => p.loopLengthKm * 1000;
 
-test('curved course profiles exist (flat, hilly, mountain, tourist courses) atami follows the real road (heading table), ueno stays straight', () => {
-  assert.deepEqual(curvedProfiles.map((p) => p.id), ['flat', 'hilly', 'mountain', 'fuji', 'kyoto', 'nara', 'ryugu']);
-  assert.equal(getCourseProfile('atami').curve.type, 'table');
+test('curved course profiles exist (flat, hilly, mountain, ryugu); atami and the real towns follow the real road (heading table), ueno stays straight', () => {
+  assert.deepEqual(curvedProfiles.map((p) => p.id), ['flat', 'hilly', 'mountain', 'ryugu']);
+  for (const id of ['atami', 'fuji', 'kyoto', 'nara']) assert.equal(getCourseProfile(id).curve.type, 'table');
   assert.equal(getCourseProfile('ueno').curve, undefined);
 });
 

@@ -190,15 +190,6 @@ p { line-height: 1.6; }
 .course-tile-body strong { font-size: 0.92rem; line-height: 1.25; }
 .course-tile-body small { font-size: 0.72rem; color: var(--color-muted); line-height: 1.35; }
 .course-tile .elevation-chart { height: 22px; margin-top: 0.15rem; }
-.course-tile-flag {
-  align-self: flex-start;
-  margin-top: 0.15rem;
-  padding: 0 0.3rem;
-  border-radius: 999px;
-  font-size: 0.62rem;
-  background: #efe7fb;
-  color: #5b3d99;
-}
 .course-tile-add {
   position: relative;
   display: flex;
@@ -222,7 +213,6 @@ p { line-height: 1.6; }
 }
 .course-detail h3 { margin: 0 0 0.2rem; font-size: 1rem; }
 .course-detail p { margin: 0.2rem 0; }
-.experimental-badge { background: #7a55c2; }
 .gpx-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.4rem; }
 .gpx-detail .gpx-scenery { flex: 1; min-width: 0; }
 .gpx-detail .btn { margin: 0; }

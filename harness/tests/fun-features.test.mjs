@@ -154,7 +154,8 @@ test('tourist courses have guide, landmarks and local food; ueno has no happenin
     assert.ok(p.localFood.kcal > 0);
     assert.equal(p.points[p.points.length - 1][0], p.loopLengthKm);
   }
-  assert.equal(getCourseProfile('fuji').backdrop, 'fuji');
+  // 富士山は実在の地形(遠景の格子)で描くので、作り物の遠景は使わない
+  assert.equal(getCourseProfile('fuji').backdrop, undefined);
   assert.equal(getCourseProfile('ueno').happenings, null);
   assert.ok(getCourseProfile('nara').happenings.deer > 0);
 });
@@ -162,12 +163,13 @@ test('tourist courses have guide, landmarks and local food; ueno has no happenin
 test('guideEventsBetween fires each announcement once per loop', () => {
   const p = getCourseProfile('kyoto');
   const all = [];
-  for (let d = 0; d < 16000; d += 37) all.push(...guideEventsBetween(p, d, d + 37));
+  const twoLaps = p.loopLengthKm * 2000;
+  for (let d = 0; d < twoLaps - 1; d += 37) all.push(...guideEventsBetween(p, d, Math.min(twoLaps - 1, d + 37)));
   assert.equal(all.length, p.guide.length * 2);
   assert.equal(all[0].kind, 'guide');
   assert.equal(all[0].title, p.guide[0].title);
   assert.deepEqual(guideEventsBetween(p, 500, 500), []);
-  assert.deepEqual(guideEventsBetween({ ...p, fixedLength: true }, 8000, 16000), []);
+  assert.deepEqual(guideEventsBetween({ ...p, fixedLength: true }, twoLaps / 2, twoLaps), []);
   assert.deepEqual(guideEventsBetween(getCourseProfile('flat'), 0, 10000), []);
 });
 

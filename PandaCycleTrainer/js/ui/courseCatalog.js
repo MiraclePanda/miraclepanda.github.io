@@ -7,7 +7,7 @@ export const COURSE_GROUPS = [
   { id: 'outing', title: '🗾 観光・おでかけ' },
 ];
 
-// 並び順もこの順。熱海は景色を作り直している実験中のコースなので、観光・おでかけの最後に置く。
+// 並び順もこの順。
 const CATALOG = [
   { id: 'flat', group: 'training', icon: '🏙️' },
   { id: 'hilly', group: 'training', icon: '🌳' },
@@ -17,14 +17,14 @@ const CATALOG = [
   { id: 'kyoto', group: 'outing', icon: '⛩️' },
   { id: 'nara', group: 'outing', icon: '🦌' },
   { id: 'ryugu', group: 'outing', icon: '🐢' },
-  { id: 'atami', group: 'outing', icon: '🏖️', experimental: true },
+  { id: 'atami', group: 'outing', icon: '🏖️' },
 ];
 
-/** コースの表示情報 { group, icon, experimental }。 */
+/** コースの表示情報 { group, icon }。 */
 export function courseMeta(profile) {
-  if (profile.fixedLength) return { group: 'gpx', icon: '📍', experimental: false };
+  if (profile.fixedLength) return { group: 'gpx', icon: '📍' };
   const m = CATALOG.find((c) => c.id === profile.id);
-  return m ? { experimental: false, ...m } : { group: 'outing', icon: '🚲', experimental: false };
+  return m ?? { group: 'outing', icon: '🚲' };
 }
 
 /** グループごとに並べた組み込みコース [{ group, courses }]。 */

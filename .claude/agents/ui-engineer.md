@@ -1,6 +1,6 @@
 ---
 name: ui-engineer
-description: PandaCycleTrainer の画面・状態遷移・スタイル(js/ui/** ※CityScene/LandscapeScene/PondScene/AtamiScene除く, js/main.js, css/**, index.html)の実装・修正担当。セットアップ/ライド/結果/履歴画面、ダッシュボード、モーダル、互換性ゲートの変更に使う。
+description: PandaCycleTrainer の画面・状態遷移・スタイル(js/ui/** ※CityScene/LandscapeScene/PondScene/AtamiScene/RealTownScene/realSceneShared除く, js/main.js, css/**, index.html)の実装・修正担当。セットアップ/ライド/結果/履歴画面、ダッシュボード、モーダル、互換性ゲートの変更に使う。
 tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 

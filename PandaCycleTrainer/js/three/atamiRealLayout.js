@@ -77,6 +77,8 @@ export function decodeAtamiData(raw) {
   const n = r.x.length;
   const route = {
     stepM: r.stepM, n, startTM: r.startTM, uturnM: r.uturnM,
+    // 'outback' = 片道の線を往復(熱海)、'loop' = 閉じた線を周回(最後の点 = 最初の点)。onWater = 池の上
+    mode: r.mode === 'loop' ? 'loop' : 'outback', onWater: !!r.onWater,
     x: Float64Array.from(r.x), y: Float64Array.from(r.y), z: Float64Array.from(r.z),
     halfWidth: Float64Array.from(r.halfWidth), bridge: Uint8Array.from(r.bridge),
     lengthM: (n - 1) * r.stepM,
@@ -109,6 +111,8 @@ export function decodeAtamiData(raw) {
   return {
     origin: raw.origin, attribution: raw.attribution, route, terrain, outer, buildings, streets,
     landmarks: raw.landmarks ?? [],
+    // 湖・池の水面 [{ level, x0, y0, x1, y1 }](熱海は海面 0 の海だけなので無い)
+    waters: raw.waters ?? [],
   };
 }
 
@@ -155,15 +159,20 @@ export function createAtamiRoute(route) {
   const { x, y, z, halfWidth, stepM, n } = route;
   const T = route.lengthM;
   const t0 = route.startTM;
-  const U = route.uturnM;
-  const lapM = 2 * T + 2 * U;
+  const loop = route.mode === 'loop';
+  const U = loop ? 0 : route.uturnM;
+  const lapM = loop ? T : 2 * T + 2 * U;
 
-  // 接線(中心差分を正規化)
+  // 接線(中心差分を正規化)。周回の線は端をまたいで(最後の点 = 最初の点)
   const tx = new Float64Array(n);
   const ty = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    const a = Math.max(0, i - 2);
-    const b = Math.min(n - 1, i + 2);
+    let a = Math.max(0, i - 2);
+    let b = Math.min(n - 1, i + 2);
+    if (loop && (i < 2 || i > n - 3)) {
+      a = (i - 2 + (n - 1)) % (n - 1);
+      b = (i + 2) % (n - 1);
+    }
     const dx = x[b] - x[a];
     const dy = y[b] - y[a];
     const len = Math.hypot(dx, dy) || 1;
@@ -172,6 +181,7 @@ export function createAtamiRoute(route) {
   }
 
   function center(t, out = {}) {
+    if (loop) t = ((t % T) + T) % T;
     const f = Math.min(n - 1, Math.max(0, t / stepM));
     const i = Math.min(n - 2, Math.floor(f));
     const u = f - i;
@@ -199,6 +209,7 @@ export function createAtamiRoute(route) {
   function legAt(s) {
     let m = s % lapM;
     if (m < 0) m += lapM;
+    if (loop) return { t: (t0 + m) % T, dir: 1, turn: null };
     if (m <= t0) return { t: t0 - m, dir: -1, turn: null };
     if (m < t0 + U) return { t: 0, dir: -1, turn: { frac: (m - t0) / U, endT: 0 } };
     if (m <= t0 + U + T) return { t: m - t0 - U, dir: 1, turn: null };
@@ -249,7 +260,7 @@ export function createAtamiRoute(route) {
   }
 
   // Uターンの中央(1周の中の位置)
-  const turnS = [t0 + U / 2, t0 + 1.5 * U + T];
+  const turnS = loop ? [] : [t0 + U / 2, t0 + 1.5 * U + T];
   /** 1周の中の位置 s から、最も近いUターンの中央までの距離(m)。 */
   function turnDistanceM(s) {
     let m = s % lapM;
@@ -262,7 +273,7 @@ export function createAtamiRoute(route) {
     return best;
   }
 
-  return { lapM, oneWayM: T, startTM: t0, uturnM: U, center, legAt, place, turnDistanceM };
+  return { lapM, oneWayM: T, startTM: t0, uturnM: U, loop, center, legAt, place, turnDistanceM };
 }
 
 /** 進行方向(地図座標の単位ベクトル)→ −Z が前のモデルの Y 回転(シーンは北が −Z、東が +X)。 */
