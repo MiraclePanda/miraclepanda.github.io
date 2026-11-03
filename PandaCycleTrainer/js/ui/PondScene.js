@@ -11,6 +11,7 @@ import {
   bakeSky, mergeGeometries, buildCanopyGeometry, buildSwanBoat, createAvatar, updateRiderAvatar,
   makePool, pushInstance, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
   setCameraFov, setAvatarVisible,
+  reportReadyAfterDraw,
 } from '../three/sceneKit.js';
 import { normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
@@ -66,12 +67,19 @@ const world = (x, y, hgt = 0) => new THREE.Vector3(x, hgt, -y);
  * スカイツリー)は1周1.2kmの小さな世界なので、初期化時に1度だけ組み立てて固定し、
  * 毎フレームはボート・カメラ・影の範囲・他のスワンボートだけを動かす。
  */
-export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle = 'swan', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
+export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle = 'swan', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
   const onQualityChangeRef = useRef(onQualityChange);
   onQualityChangeRef.current = onQualityChange;
+  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
+  useEffect(() => {
+    if (renderError) onReadyRef.current?.();
+  }, [renderError]);
 
   useImperativeHandle(ref, () => ({
     draw({ distanceKm, speedKmh, cadenceRpm }) {
@@ -80,6 +88,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
       try {
         adaptQuality(s);
         drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm);
+        reportReadyAfterDraw(s);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
         setRenderError(String(err));
@@ -99,6 +108,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
     try {
       scene3d = initScene(canvas, vehicle);
       sceneRef.current = scene3d;
+      scene3d.onReady = () => onReadyRef.current?.();
     } catch (err) {
       setRenderError(String(err));
       return;

@@ -9,6 +9,7 @@ import { buildTerrainMesh, buildRouteMeshes, buildStreetGeometry, buildBuildingG
 import {
   bakeSky, createAvatar, makePool, pushInstance, commitPool, mergeGeometries,
   applyQuality, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  reportReadyAfterDraw,
 } from '../three/sceneKit.js';
 import { createCineDirector, normalizeCameraView } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
@@ -51,7 +52,7 @@ const TREE_COLORS = {
  * 作る js/data/<id>-town.json)は非同期に読むので、読み終わるまでは空だけを描く(canvas の data-town-data)。
  * 名所(大鳥居・五重塔・大仏殿など)はコースの landmarks として、ハプニングと同じ actors で届く。
  */
-export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, town, vehicle = 'bike', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
+export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, town, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const attributionRef = useRef(null);
@@ -59,6 +60,13 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
   const [dataError, setDataError] = useState(false);
   const onQualityChangeRef = useRef(onQualityChange);
   onQualityChangeRef.current = onQualityChange;
+  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
+  useEffect(() => {
+    if (renderError) onReadyRef.current?.();
+  }, [renderError]);
   const label = REAL_TOWNS[town]?.label ?? '街';
 
   useImperativeHandle(ref, () => ({
@@ -68,6 +76,7 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
       try {
         adaptQuality(s);
         drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
+        reportReadyAfterDraw(s);
       } catch (err) {
         setRenderError(String(err));
       }
@@ -90,6 +99,7 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
     }
     st.attributionEl = attributionRef.current;
     st.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+    st.onReady = () => onReadyRef.current?.();
     st.appliedQualityMode = qualityMode;
     st.envSetting = environment;
     st.cam.view = normalizeCameraView(cameraView);
@@ -111,6 +121,8 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
         console.warn('実在の街のデータを読み込めませんでした:', err);
         canvas.dataset.townData = 'error';
         setDataError(true);
+        // 街のデータが無くても走行と記録は続けられるので、走行を始める
+        onReadyRef.current?.();
       }
     );
     const resize = () => resizeScene(st);

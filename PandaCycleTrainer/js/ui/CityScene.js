@@ -12,6 +12,7 @@ import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
   setCameraFov, setAvatarVisible,
+  reportReadyAfterDraw,
 } from '../three/sceneKit.js';
 import {
   createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
@@ -113,13 +114,20 @@ const ASPHALT_TILE_M = 8;
  * ref経由のdraw()呼び出しで直接Three.jsシーンを更新・描画する
  * (Dashboardと同じ設計方針)。
  */
-export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
+export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
   // 品質段階の変化(自動調整による段階変更を含む)を親へ通知する。最新のコールバックを参照するためrefで持つ。
   const onQualityChangeRef = useRef(onQualityChange);
   onQualityChangeRef.current = onQualityChange;
+  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
+  useEffect(() => {
+    if (renderError) onReadyRef.current?.();
+  }, [renderError]);
 
   useImperativeHandle(ref, () => ({
     draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
@@ -128,6 +136,7 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
       try {
         adaptQuality(s);
         drawFrame(s, courseEngine, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
+        reportReadyAfterDraw(s);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を
         // 巻き込んでクラッシュさせない。
@@ -148,6 +157,7 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
     try {
       scene3d = initScene(canvas, vehicle);
       sceneRef.current = scene3d;
+      scene3d.onReady = () => onReadyRef.current?.();
     } catch (err) {
       setRenderError(String(err));
       return;

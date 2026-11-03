@@ -11,6 +11,7 @@ import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
   setCameraFov, setAvatarVisible,
+  reportReadyAfterDraw,
 } from '../three/sceneKit.js';
 import {
   createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
@@ -162,7 +163,7 @@ const MAX_BOATS = 16;
  * - curve がないコースは従来どおり景色側の L.curves による横ずらしの蛇行
  *   (lateralX/roadCenterX/roadSlopeX)。見た目を変えないため、計算式もそのまま使う。
  */
-export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange, environment, cameraView = 'chase' }, ref) {
+export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   // 実在の地形(最高(実験))を出している間の出典表示。毎フレームの再描画を避けるため DOM を直接書き換える
@@ -171,6 +172,13 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
   // 品質段階の変化(自動調整による段階変更を含む)を親へ通知する。最新のコールバックを参照するためrefで持つ。
   const onQualityChangeRef = useRef(onQualityChange);
   onQualityChangeRef.current = onQualityChange;
+  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
+  useEffect(() => {
+    if (renderError) onReadyRef.current?.();
+  }, [renderError]);
 
   useImperativeHandle(ref, () => ({
     draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
@@ -179,6 +187,7 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
       try {
         adaptQuality(s);
         drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
+        reportReadyAfterDraw(s);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
         setRenderError(String(err));
@@ -198,6 +207,7 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
     try {
       scene3d = initScene(canvas, courseEngine, getLandscape(landscape), vehicle);
       sceneRef.current = scene3d;
+      scene3d.onReady = () => onReadyRef.current?.();
     } catch (err) {
       setRenderError(String(err));
       return;
