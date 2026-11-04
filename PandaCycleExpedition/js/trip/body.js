@@ -13,6 +13,8 @@ export const BODY = {
   // 満腹度がこれ未満だと体力の減りが HUNGRY_FACTOR 倍
   HUNGRY_BELOW: 20,
   HUNGRY_FACTOR: 2,
+  // 雨具なしで雨・スコールの中を走ると体力の減りがこの倍
+  SOAKED_FACTOR: 1.5,
   // 止まって休んでいる間の体力の戻り(1旅時間あたり)
   STAMINA_REST_PER_H: 8,
   // 満腹度 0 のままこの旅時間(分)走るとハンガーノック
@@ -25,10 +27,10 @@ export const SUNSET_MINUTES = 17 * 60;
 /**
  * 体の状態を旅の時間 tripMinutes 分だけ進める。
  * @param {{stamina:number, satiety:number, zeroSatietyMinutes?:number}} rider
- * @param {{tripMinutes:number, powerW:number, ftpW:number, resting?:boolean}} p
+ * @param {{tripMinutes:number, powerW:number, ftpW:number, resting?:boolean, soaked?:boolean}} p soaked = 雨具なしで雨の中
  * @returns 新しい rider(元は変えない)
  */
-export function stepBody(rider, { tripMinutes, powerW, ftpW, resting = false }) {
+export function stepBody(rider, { tripMinutes, powerW, ftpW, resting = false, soaked = false }) {
   const h = Math.max(0, tripMinutes) / 60;
   const ratio = resting ? 0 : Math.max(0, powerW) / Math.max(1, ftpW);
   const satiety = clamp100(rider.satiety - h * (BODY.SATIETY_BASE_PER_H + BODY.SATIETY_WORK_PER_H * ratio));
@@ -37,7 +39,7 @@ export function stepBody(rider, { tripMinutes, powerW, ftpW, resting = false }) 
     staminaDelta = h * BODY.STAMINA_REST_PER_H;
   } else {
     const hungry = rider.satiety < BODY.HUNGRY_BELOW ? BODY.HUNGRY_FACTOR : 1;
-    staminaDelta = -h * (BODY.STAMINA_BASE_PER_H + BODY.STAMINA_WORK_PER_H * ratio * ratio) * hungry;
+    staminaDelta = -h * (BODY.STAMINA_BASE_PER_H + BODY.STAMINA_WORK_PER_H * ratio * ratio) * hungry * (soaked ? BODY.SOAKED_FACTOR : 1);
   }
   const zero = satiety <= 0 && !resting ? (rider.zeroSatietyMinutes ?? 0) + Math.max(0, tripMinutes) : 0;
   return { ...rider, satiety, stamina: clamp100(rider.stamina + staminaDelta), zeroSatietyMinutes: zero };

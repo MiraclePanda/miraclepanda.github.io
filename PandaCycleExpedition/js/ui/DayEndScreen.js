@@ -1,9 +1,10 @@
 // 1日の終わり: 宿を選ぶ(着いた・ここまでにした)か、失敗の結果を見て、日誌の1日分を表示する。
 
 import { h, useState } from './h.js';
-import { lodgingOptions, stayAt, FAILURES, LODGING_EFFECTS } from '../trip/dayEvents.js';
+import { lodgingOptions, stayAt, FAILURES, LODGING_EFFECTS, forecastDay, forecastText } from '../trip/dayEvents.js';
 import { fmtClock } from '../storage/tripState.js';
 import { fmtTime } from '../utils/format.js';
+import { HeroArt } from './HeroArt.js';
 
 export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRide }) {
   const [saving, setSaving] = useState(false);
@@ -14,10 +15,13 @@ export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRid
   if (failed || !trip.ride) {
     const d = trip.log[trip.log.length - 1];
     return h('div', { className: 'page' },
-      h('h1', null, `${d.day}日目の終わり`),
+      h(HeroArt, { compact: true },
+        h('p', { className: 'hero-kicker' }, '旅日誌'),
+        h('h1', null, `${d.day}日目の終わり`)),
       failed && h('p', { className: 'err' }, FAILURES[reason].text + '。'),
       h(DaySummary, { d }),
       h('p', null, `翌朝: 体力 ${Math.round(trip.rider.stamina)}・満腹度 ${Math.round(trip.rider.satiety)}・所持金 ${trip.wallet.yen.toLocaleString()} 円`),
+      h('p', { className: 'muted' }, `${trip.day}日目の天気予報: ${forecastText(forecastDay(trip.tripId, trip.day))}`),
       h('button', { className: 'primary', onClick: () => onDone(trip) }, 'ホームへ'));
   }
 
@@ -35,9 +39,12 @@ export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRid
     }
   }
   return h('div', { className: 'page' },
-    h('h1', null, reason === 'arrived' ? `${segment.goalName ?? '終点'}に着いた!` : `${trip.day}日目、ここまで`),
+    h(HeroArt, { compact: true },
+      h('p', { className: 'hero-kicker' }, `${trip.day}日目・旅日誌`),
+      h('h1', null, reason === 'arrived' ? `${segment.goalName ?? '終点'}に着いた!` : `${trip.day}日目、ここまで`)),
     h('p', { className: 'sub' }, `旅の時刻 ${fmtClock(trip.clockMinutes)}・今日 ${(trip.ride.distanceM / 1000).toFixed(1)} km・所持金 ${trip.wallet.yen.toLocaleString()} 円`),
     error && h('p', { className: 'err' }, error),
+    h('p', { className: 'muted' }, `明日(${trip.day + 1}日目)の天気予報: ${forecastText(forecastDay(trip.tripId, trip.day + 1))}`),
     h('div', { className: 'card' },
       h('h2', null, '今夜の宿'),
       opts.map((o, i) => h('div', { key: i, className: 'row', style: { justifyContent: 'space-between', margin: '6px 0' } },
@@ -57,6 +64,7 @@ function effectText(kind) {
 
 function DaySummary({ d }) {
   return h('div', { className: 'card' },
+    h('h2', null, '今日の道のり'),
     h('div', null, `${(d.distanceM / 1000).toFixed(1)} km・走行 ${fmtTime(d.rideSeconds)}・獲得標高 ${Math.round(d.elevationGainM)} m`),
     d.meals.length > 0 && h('div', null, `食べたもの: ${d.meals.map((m) => m.name).join('、')}`),
     d.encounters.map((e, i) => h('div', { key: i, className: 'muted' }, e.text)),

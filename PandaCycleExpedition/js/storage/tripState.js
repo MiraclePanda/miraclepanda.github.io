@@ -8,7 +8,7 @@
 import { DEFAULT_PACK } from '../physics/surfaces.js';
 
 /** セーブデータの形式のバージョン。形を変えたら上げて、migrateTrip() に変換を足す。 */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** 旅の中の時間の早回し倍率(設計書2章)。実際の走行1時間 = 旅の (倍率) 時間。 */
 export const TIME_SCALES = [1, 2, 4, 6, 8];
@@ -18,11 +18,6 @@ export const DEFAULT_TIME_SCALE = 4;
 export const DAY_START_MINUTES = 7 * 60;
 
 export const WEATHER_KINDS = ['sunny', 'cloudy', 'rain', 'squall'];
-
-/** 区間の表示名。区間データ(ステップ4)ができたらそちらへ移す。 */
-const SEGMENT_LABELS = {
-  'atami-ito': '熱海サンビーチ → 伊東',
-};
 
 /**
  * 新しい旅を始める。
@@ -41,6 +36,8 @@ export function createTrip({
     updatedAt: now,
     settings: { timeScale: normalizeTimeScale(timeScale) },
     position: { segmentId, segmentM: 0, totalM: 0 },
+    // 走ってきた区間の順(分かれ道で選んだ道)。startTotalM はその区間に入ったときの旅の累積距離
+    legs: [{ segmentId, startTotalM: 0 }],
     day: 1,
     clockMinutes: DAY_START_MINUTES,
     rider: { weightKg: riderWeightKg, ftpW, stamina: 100, satiety: 80 },
@@ -158,15 +155,50 @@ export function endDay(trip, { lodging }, now = Date.now()) {
   };
 }
 
+/**
+ * 区間の終点(分かれ道)で次の区間を選ぶ。走行中でも、朝の出発前でもよい(走行中の記録はそのまま続く)。
+ * @param {string} segmentId 次の区間(逆向きの id も可)
+ */
+export function chooseNextSegment(trip, segmentId, now = Date.now()) {
+  const totalM = trip.position.totalM;
+  return {
+    ...trip,
+    updatedAt: now,
+    position: { segmentId, segmentM: 0, totalM },
+    legs: [...(trip.legs ?? []), { segmentId, startTotalM: totalM }],
+  };
+}
+
+/**
+ * 走らずに電車・船で町へ移る(朝、町にいて走り出す前だけ)。旅の時計と所持金が減り、位置は着いた町
+ * (その町に着く区間 arriveSegmentId の終点)になる。legs には transfer として残し、地図には線を引かない。
+ * @param {{id:string, kind:string, name:string, to:string, minutes:number, yen:number}} transfer
+ */
+export function takeTransfer(trip, transfer, arriveSegmentId, arriveLengthM, now = Date.now()) {
+  if (trip.ride || trip.wallet.yen < transfer.yen) return trip;
+  const totalM = trip.position.totalM;
+  return {
+    ...trip,
+    updatedAt: now,
+    clockMinutes: trip.clockMinutes + transfer.minutes,
+    wallet: { yen: trip.wallet.yen - transfer.yen },
+    position: { segmentId: arriveSegmentId, segmentM: arriveLengthM, totalM },
+    legs: [...(trip.legs ?? []), {
+      segmentId: arriveSegmentId, startTotalM: totalM,
+      transfer: { id: transfer.id, kind: transfer.kind, name: transfer.name, to: transfer.to, yen: transfer.yen, day: trip.day },
+    }],
+  };
+}
+
 /** 旅の時刻の表示(例: "13:05")。 */
 export function fmtClock(minutes) {
   const m = Math.max(0, Math.floor(minutes)) % (24 * 60);
   return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
 }
 
-/** 起動時に出す「◯日目・◯◯から再開」。 */
-export function resumeLabel(trip) {
-  const seg = SEGMENT_LABELS[trip.position.segmentId] ?? trip.position.segmentId;
+/** 起動時に出す「◯日目・◯◯から再開」。segmentName は区間の表示名。 */
+export function resumeLabel(trip, segmentName = trip.position.segmentId) {
+  const seg = segmentName;
   const km = (trip.position.segmentM / 1000).toFixed(1);
   const where = trip.ride ? `走行の途中(${seg} ${km}km 地点)` : `${seg} ${km}km 地点`;
   return `${trip.day}日目・${where}から再開(旅の時刻 ${fmtClock(trip.clockMinutes)})`;
@@ -183,8 +215,13 @@ export function migrateTrip(raw) {
   if (v > SCHEMA_VERSION) {
     return { ok: false, error: `新しいバージョン(${v})のアプリで保存された旅です。アプリを更新してください。` };
   }
-  // v1 が最初の形式。形を変えたらここに if (v === 1) { ... v = 2 } のように変換を足す。
-  const trip = raw;
+  // 形を変えたらここに if (v === N) { ... } の変換を足す。
+  let trip = raw;
+  if (v === 1) {
+    // v2: 走ってきた区間の順 legs を足した(v1 は熱海→伊東の1区間だけ)
+    const p = raw.position ?? {};
+    trip = { ...raw, schemaVersion: 2, legs: [{ segmentId: p.segmentId, startTotalM: (p.totalM ?? 0) - (p.segmentM ?? 0) }] };
+  }
   const error = checkTrip(trip);
   return error ? { ok: false, error } : { ok: true, trip };
 }
@@ -202,6 +239,7 @@ function checkTrip(t) {
   if (!t.bike || !Number.isFinite(t.bike.weightKg) || typeof t.bike.pack !== 'object') return '自転車・荷物が不正です。';
   if (!t.wallet || !Number.isFinite(t.wallet.yen)) return '所持金が不正です。';
   if (!Array.isArray(t.log)) return '日誌が不正です。';
+  if (!Array.isArray(t.legs) || t.legs.length === 0) return '走ってきた区間の記録が不正です。';
   if (t.ride !== null && (typeof t.ride !== 'object' || !Number.isFinite(t.ride.distanceM))) return '走行中の記録が不正です。';
   return null;
 }

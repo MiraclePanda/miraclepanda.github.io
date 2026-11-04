@@ -4,7 +4,7 @@
 import { h, useState, useEffect, useRef } from './h.js';
 import { FtmsClient } from '../ble/ftmsClient.js';
 import { TripStore, createIdbBackend, createMemoryBackend } from '../storage/tripStore.js';
-import { getSegment } from '../data/segments/index.js';
+import { getSegment } from '../trip/network.js';
 import { HomeScreen } from './HomeScreen.js';
 import { RideScreen } from './RideScreen.js';
 import { DayEndScreen } from './DayEndScreen.js';
@@ -45,7 +45,12 @@ export function App() {
     return h(RideScreen, {
       key: rideKey,
       trip, segment, store, client: clientRef.current, demo: screen.demo,
-      onEnd: (t, reason) => { setTrip(t); setScreen(reason === 'exit' ? { name: 'home' } : { name: 'dayEnd', reason, demo: screen.demo }); },
+      onEnd: (t, reason) => {
+        setTrip(t);
+        // 分かれ道で次の区間を選んだ: その日の走行を続けたまま、新しい区間で走行画面を作り直す
+        if (reason === 'continue') { setRideKey((k) => k + 1); return; }
+        setScreen(reason === 'exit' ? { name: 'home' } : { name: 'dayEnd', reason, demo: screen.demo });
+      },
     });
   }
   if (screen.name === 'dayEnd' && trip && segment) {

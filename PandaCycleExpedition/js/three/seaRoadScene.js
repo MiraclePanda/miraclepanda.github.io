@@ -8,7 +8,7 @@
 import THREE from './three.js';
 import {
   RIDER_X_M, bakeSky, createAvatar, updateRiderAvatar, makePool, pushInstance, pushInstanceYawPitch, commitPool,
-  setupQuality, adaptQuality, resizeScene, disposeScene,
+  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
 } from './sceneKit.js';
 import { gradeAtM, tunnelAtM } from '../physics/segmentRoute.js';
 
@@ -35,6 +35,19 @@ const SKY_BY_WEATHER = {
   squall: { zenith: '#2f353d', horizon: '#646c74', ground: '#3b4239', cloudCover: 1, sunGlow: 0.1, fog: 0.007 },
 };
 
+/**
+ * 区間の海の側に合わせた地面の列。seaSide: 'left'(既定。熱海→伊東のような南向きの東海岸)、
+ * 'right'(逆向き)、'none'(山の道。両側とも山)。
+ */
+function columnsFor(seaSide) {
+  if (seaSide === 'right') return COLUMNS.map(([x, ...r]) => [-x, ...r]).reverse();
+  if (seaSide === 'none') {
+    const right = COLUMNS.filter((c) => c[0] > 0);
+    return [...right.map(([x, ...r]) => [-x, ...r]).reverse(), ...right];
+  }
+  return COLUMNS;
+}
+
 /** 区間の見た目のうねり(m)。絶対位置だけで決まる。 */
 function curveX(m) {
   return 9 * Math.sin(m / 230) + 4 * Math.sin(m / 97 + 1);
@@ -52,8 +65,10 @@ function cellRand(i, salt) {
 /**
  * @param {HTMLCanvasElement} canvas
  * @param {object} segment 区間データ
+ * @param {{qualityMode?:string, onQualityChange?:(tier:string)=>void}} [opts]
+ *   qualityMode: 'auto' | 'ultra' | 'high' | 'medium' | 'low'。onQualityChange には実際に使っている段階が届く。
  */
-export function createSeaRoadScene(canvas, segment) {
+export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQualityChange } = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -81,14 +96,17 @@ export function createSeaRoadScene(canvas, segment) {
   };
 
   // ---- 地面の格子 ----
-  const cols = COLUMNS.length;
+  const seaSide = segment.seaSide ?? 'left';
+  const COLS = columnsFor(seaSide);
+  const land = seaSide === 'right' ? -1 : 1; // 山側(建物・電柱・木の側)の向き。x の符号
+  const cols = COLS.length;
   const ground = new THREE.BufferGeometry();
   const pos = new Float32Array(ROWS * cols * 3);
   const col = new Float32Array(ROWS * cols * 3);
   const c = new THREE.Color();
   for (let r = 0; r < ROWS; r++) {
     for (let k = 0; k < cols; k++) {
-      c.setHex(COLUMNS[k][3]);
+      c.setHex(COLS[k][3]);
       col.set([c.r, c.g, c.b], (r * cols + k) * 3);
     }
   }
@@ -112,7 +130,8 @@ export function createSeaRoadScene(canvas, segment) {
     new THREE.MeshStandardMaterial({ color: 0x1f5f86, roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.92 }),
   );
   sea.rotation.x = -Math.PI / 2;
-  sea.position.x = -2000 - 14; // 右端が道の中心から 14m 左(海岸)
+  sea.position.x = -land * (2000 + 14); // 海側の端が道の中心から 14m(海岸)
+  sea.visible = seaSide !== 'none';
   scene.add(sea);
 
   // ---- 置き物のプール ----
@@ -162,7 +181,15 @@ export function createSeaRoadScene(canvas, segment) {
 
   const s = {
     renderer, scene, camera, canvas, sunLight, textures: [], sky: null, clock: new THREE.Clock(),
-    skyKey: null, disposed: false,
+    skyKey: null, disposed: false, onQualityChange,
+    // 最高: 影の範囲を広げ(遠くの電柱・建物まで影が落ちる)、画面の解像度を端末いっぱいまで上げる。
+    // 影マップを 4096 にするのは sceneKit の applyQuality がする。
+    onUltraChange(on) {
+      const r = on ? 45 : 25;
+      Object.assign(sunLight.shadow.camera, { left: -r, right: r, top: r, bottom: -r, far: on ? 160 : 120 });
+      sunLight.shadow.camera.updateProjectionMatrix();
+      if (on) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 3));
+    },
   };
 
   function rebakeSky(kind, clockMinutes) {
@@ -193,7 +220,7 @@ export function createSeaRoadScene(canvas, segment) {
   }
 
   rebakeSky('sunny', 7 * 60);
-  setupQuality(s);
+  setupQuality(s, qualityMode);
 
   /**
    * 1フレーム描く。
@@ -213,7 +240,7 @@ export function createSeaRoadScene(canvas, segment) {
       const ey = absElev(m) - e0;
       const cx = curveX(m) - cx0;
       for (let k = 0; k < cols; k++) {
-        const [x, mode, dy] = COLUMNS[k];
+        const [x, mode, dy] = COLS[k];
         let y;
         if (mode === 'road') y = ey + dy;
         else if (mode === 'sea') y = Math.min(-e0 + dy, ey - 0.6);
@@ -252,10 +279,10 @@ export function createSeaRoadScene(canvas, segment) {
         continue;
       }
       if (d < 260 && !inTown(mm)) {
-        pushInstance(pools.rail, x - 5.3, y, -d, 0.12, 0.75, 0.12, 0, 0);
-        pushInstanceYawPitch(pools.rail, x - 5.25, y + 0.55, -(d + 2), 0.05, 0.3, 4.05, yaw, pitch);
+        pushInstance(pools.rail, x - land * 5.3, y, -d, 0.12, 0.75, 0.12, 0, 0);
+        pushInstanceYawPitch(pools.rail, x - land * 5.25, y + 0.55, -(d + 2), 0.05, 0.3, 4.05, yaw, pitch);
       }
-      if (mm % 36 === 0 && d < 300) pushInstance(pools.pole, x + 6, y, -d, 0.3, 9, 0.3, 0, 0);
+      if (mm % 36 === 0 && d < 300) pushInstance(pools.pole, x + land * 6, y, -d, 0.3, 9, 0.3, 0, 0);
     }
 
     // 町の建物(右の山側、海側にも少し)と、木
@@ -272,17 +299,17 @@ export function createSeaRoadScene(canvas, segment) {
           if (side < 0 && cellRand(cell, 7) < 0.5) continue;
           const w = 6 + cellRand(cell, side + 3) * 6;
           const h = big && side > 0 ? 22 : 4 + cellRand(cell, side + 5) * (side > 0 ? 9 : 5);
-          const off = side * (8.5 + w / 2 + cellRand(cell, side + 9) * 3);
+          const off = side * land * (8.5 + w / 2 + cellRand(cell, side + 9) * 3);
           const hue = [0xe8e2d6, 0xd9cdb8, 0xc7cdd1, 0xf1ece4, 0xb9a88f][Math.floor(cellRand(cell, side + 11) * 5)];
           pushInstance(pools.house, x + off, y - 0.5, -(d + 6), w, h + 0.5, 8, 0, 0, hue);
           pushInstance(pools.roof, x + off, y + h, -(d + 6), w + 0.4, 0.5, 8.4, 0, 0, side > 0 ? 0x4d5560 : 0x6b4a3a);
         }
       } else {
-        for (let j = 0; j < 3; j++) {
+        for (let j = 0; j < (seaSide === 'none' ? 6 : 3); j++) {
           if (cellRand(cell, 20 + j) < 0.35) continue;
-          const off = 12 + j * 14 + cellRand(cell, 30 + j) * 10;
+          const off = (j < 3 ? land : -land) * (12 + (j % 3) * 14 + cellRand(cell, 30 + j) * 10);
           const hgt = 4 + cellRand(cell, 40 + j) * 5;
-          const ty = y + (off - 7) * 0.45;
+          const ty = y + (Math.abs(off) - 7) * 0.45;
           pushInstance(trunkPool, x + off, ty, -(d + cellRand(cell, 50 + j) * 10), 1, hgt * 0.4, 1, 0, 0);
           pushInstance(crownPool, x + off, ty + hgt * 0.3, -(d + cellRand(cell, 50 + j) * 10), hgt * 0.35, hgt * 0.8, hgt * 0.35, 0, 0,
             cellRand(cell, 60 + j) < 0.5 ? 0x2f5a2a : 0x3e6b30);
@@ -318,6 +345,8 @@ export function createSeaRoadScene(canvas, segment) {
   return {
     draw,
     resize: () => resizeScene(s),
+    /** 走行中に描画品質を切り替える。 */
+    setQualityMode: (mode) => setQualityMode(s, mode),
     dispose() {
       s.disposed = true;
       disposeScene(s);

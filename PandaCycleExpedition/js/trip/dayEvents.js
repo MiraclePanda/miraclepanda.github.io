@@ -8,6 +8,9 @@
 //   sight:       { text }
 //   town:        (救護で運ばれる先)
 
+import { NODES } from '../data/segments/index.js';
+import { routesFrom, segmentSummary } from './network.js';
+import { SURFACES } from '../physics/surfaces.js';
 import { PhysicsConstants } from '../physics/physicsConstants.js';
 import { nearestPlace } from '../physics/segmentRoute.js';
 import { addRideEvent, endDay, passTripTime } from '../storage/tripState.js';
@@ -58,6 +61,14 @@ export function forecastDay(tripId, day) {
   return { base, squalls };
 }
 
+/** 天気予報の一言(例: "くもり、13:20ごろスコール")。 */
+export function forecastText(forecast) {
+  const base = WEATHER_LABELS[forecast.base];
+  if (forecast.squalls.length === 0) return base;
+  const s = forecast.squalls[0].fromMin;
+  return `${base}、${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}ごろスコール`;
+}
+
 /** 旅の時刻 minutes の天気と、物理に渡す条件。スコールの後1時間は路面が濡れたまま。 */
 export function weatherAt(forecast, minutes) {
   const sq = forecast.squalls.find((s) => minutes >= s.fromMin && minutes < s.toMin);
@@ -78,6 +89,29 @@ export const ROADSIDE_ENCOUNTERS = [
   { text: 'サイクリストとすれ違った。「グッドライド!」' },
   { text: '干物屋さん「試食していきなよ」', gift: { name: 'アジの干物の試食', satiety: 4 } },
 ];
+
+/** 道の情報を教えてもらう地点: 区間の終点のこの距離手前から、300 m おきに。 */
+export const ROAD_TIP_BEFORE_END_M = 2500;
+
+/**
+ * 区間の終点の町から先の道について、地元の人が教えてくれる話(分かれ道で選ぶ材料)。
+ * 来た道を引き返す向きは除く。長さ・上りのきつさ・宿と店・未舗装の路面から決める。
+ * @returns {{toName:string, segmentId:string, text:string}[]}
+ */
+export function roadTips(segment) {
+  return routesFrom(segment.to, segment.id).filter((r) => !r.back).map((r) => {
+    const s = segmentSummary(r.segment);
+    const perKm = s.climbM / Math.max(1, s.lengthKm);
+    const parts = [`${r.toName}へ行くなら ${Math.round(s.lengthKm)} km。`];
+    parts.push(perKm > 25 ? '上りがきつい峠道だよ。' : perKm > 10 ? 'アップダウンが続くよ。' : 'ほとんど平らだよ。');
+    parts.push(s.lodgings === 0 ? '途中に宿はないから、テントがあると安心だね。' : `途中に泊まれる所が ${s.lodgings} か所あるよ。`);
+    if (s.foods === 0) parts.push('店がないから、食料を積んでいきな。');
+    const unpaved = s.surfaces.filter((k) => SURFACES[k]?.unpaved).map((k) => SURFACES[k].label);
+    if (unpaved.length) parts.push(`${unpaved.join('や')}があって、雨のあとは泥になるよ。`);
+    if (s.tunnels >= 5) parts.push('トンネルが多いから、ライトをつけてな。');
+    return { toName: r.toName, segmentId: r.segmentId, text: `地元の人「${parts.join('')}」` };
+  });
+}
 
 /** 道ばたの出会いは 1km ごとにこの確率で起きる。 */
 export const ROADSIDE_CHANCE_PER_KM = 0.3;
@@ -102,6 +136,13 @@ export function planEncounters(segment, tripId, day) {
     if (out.some((e) => Math.abs(e.atM - atM) < 300)) continue;
     out.push({ ...ROADSIDE_ENCOUNTERS[pick], atM, id: `roadside-${km}` });
   }
+  // 終点が近づいたら、この先の分かれ道の話を聞く(区間の決まった出会いの近くと、ほかの出会いは避ける)
+  const tips = roadTips(segment);
+  tips.forEach((tip, i) => {
+    const atM = Math.max(0, segment.lengthM - ROAD_TIP_BEFORE_END_M + i * 300);
+    for (let k = out.length - 1; k >= 0; k--) if (Math.abs(out[k].atM - atM) < 250 && out[k].id.startsWith('roadside-')) out.splice(k, 1);
+    out.push({ atM, text: tip.text, id: `tip-${tip.segmentId}`, tip: true });
+  });
   return out.sort((a, b) => a.atM - b.atM);
 }
 
@@ -173,10 +214,14 @@ const hasTent = (trip) => (trip.bike.pack.tent ?? 0) > 0;
  */
 export function lodgingOptions(trip, segment, m) {
   const opts = [];
+  const add = (o) => { if (!opts.some((x) => x.name === o.name)) opts.push(o); };
   for (const p of segment.places ?? []) {
     if (p.kind !== 'lodging' || Math.abs(p.atM - m) > LODGING_RANGE_M) continue;
-    for (const o of p.options ?? []) opts.push({ ...o, placeId: p.id });
+    for (const o of p.options ?? []) add({ ...o, placeId: p.id });
   }
+  // 区間の端の町の宿(逆向きに走って着いたときも泊まれる)
+  if (segment.lengthM - m <= LODGING_RANGE_M) for (const o of NODES[segment.to]?.lodging ?? []) add({ ...o, placeId: segment.to });
+  if (m <= LODGING_RANGE_M) for (const o of NODES[segment.from]?.lodging ?? []) add({ ...o, placeId: segment.from });
   if (!opts.some((o) => o.kind === 'park')) opts.push({ kind: 'park', name: '近くの公園', yen: 0 });
   opts.push({ kind: 'bivouac', name: '近くの公園で野宿', yen: 0 });
   return opts.map((o) => {
@@ -206,7 +251,9 @@ export function stayAt(trip, option) {
       satiety = Math.min(trip.rider.satiety, CAMP_MEAL.hungrySatiety) - (option.kind === 'bivouac' ? 10 : 0);
     }
   }
-  const stamina = eff.staminaTo ?? trip.rider.stamina + eff.staminaAdd;
+  // 寝袋なしのテント泊は寒くてよく眠れない(回復が半分)
+  const noBag = eff.needsTent && !((trip.bike.pack.sleepingBag ?? 0) > 0);
+  const stamina = eff.staminaTo ?? trip.rider.stamina + eff.staminaAdd * (noBag ? 0.5 : 1);
   const t = endDay(trip, { lodging: { kind: option.kind, name: option.name, yen } });
   return {
     ...t,
