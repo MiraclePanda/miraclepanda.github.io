@@ -7,11 +7,23 @@ import { DEFAULT_PACK } from '../physics/surfaces.js';
 import { NODES } from '../data/segments/index.js';
 import { canAfford } from './dayEvents.js';
 
-/** 送ったり買ったりできる装備。kg は買ったときの重さ。 */
+/**
+ * 送ったり買ったりできる装備。kg は買ったときの重さ。
+ * effect = 持っているとできること、without = 持っていないとどうなるか(画面の説明と確認ダイアログに使う)。
+ */
 export const GEAR = {
-  tent: { label: 'テント', kg: DEFAULT_PACK.tent, buyYen: 15000, shipYen: 1500 },
-  sleepingBag: { label: '寝袋', kg: DEFAULT_PACK.sleepingBag, buyYen: 9000, shipYen: 1200 },
-  rainwear: { label: '雨具', kg: DEFAULT_PACK.rainwear, buyYen: 5000, shipYen: 800 },
+  tent: {
+    label: 'テント', kg: DEFAULT_PACK.tent, buyYen: 15000, shipYen: 1500,
+    effect: '公園・キャンプ場に泊まれる', without: '公園・キャンプ場に泊まれず、宿は有料の宿か野宿だけになります',
+  },
+  sleepingBag: {
+    label: '寝袋', kg: DEFAULT_PACK.sleepingBag, buyYen: 9000, shipYen: 1200,
+    effect: 'テント泊でよく眠れる', without: 'テント泊で寒くてよく眠れず、体力の回復が半分になります',
+  },
+  rainwear: {
+    label: '雨具', kg: DEFAULT_PACK.rainwear, buyYen: 5000, shipYen: 800,
+    effect: '雨の中でも疲れにくい', without: '雨やスコールの中で体が冷えて、体力が早く減ります',
+  },
 };
 
 /** 食料の値段(1 kg あたり)と、積める上限(kg)。 */
@@ -53,6 +65,20 @@ export function buyGear(trip, key) {
   const g = GEAR[key];
   if (!g || has(trip, key) || !canAfford(trip, g.buyYen)) return trip;
   return withPack(trip, { [key]: g.kg }, g.buyYen);
+}
+
+/** 送る・買う前の確認文。送った装備は旅の途中では戻らず、買い直すしかないことを伝える。 */
+export function gearConfirmText(trip, key) {
+  const g = GEAR[key];
+  if (!g) return '';
+  if (has(trip, key)) {
+    return `${g.label}を家へ送りますか?\n`
+      + `送料 ${g.shipYen.toLocaleString()} 円で、荷物が ${g.kg} kg 軽くなります。\n`
+      + `送ると${g.without}。\n`
+      + `旅の途中では戻ってこないので、また使うときは ${g.buyYen.toLocaleString()} 円で買い直します。`;
+  }
+  return `${g.label}を買いますか?\n`
+    + `${g.buyYen.toLocaleString()} 円で、荷物が ${g.kg} kg 重くなります(${g.effect}ようになります)。`;
 }
 
 /** 食料を stepKg だけ買い足す(上限まで)。 */
