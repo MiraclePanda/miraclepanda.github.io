@@ -10,27 +10,42 @@
 import THREE from './three.js';
 import {
   RIDER_X_M, bakeSky, createAvatar, updateRiderAvatar, makePool, pushInstance, pushInstanceYawPitch, commitPool,
-  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, setCameraFov, setAvatarVisible,
 } from './sceneKit.js';
-import { tunnelAtM } from '../physics/segmentRoute.js';
 import { createRouteSampler, heightAt, nearTileAt, ringBounds, hash2 } from './sceneryData.js';
+import { createPanorama } from './panoramaParts.js';
+import { buildLandmarks } from './landmarkParts.js';
+import { createAerialPhotos } from './aerialPhoto.js';
+import { VIEW_RIGS, normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg } from './cameraViews.js';
 
 const SKY_BY_WEATHER = {
-  sunny: { zenith: '#3b78c9', horizon: '#d3e6f3', ground: '#5d7a55', cloudCover: 0.15, fog: 0.00035 },
-  cloudy: { zenith: '#7d8a99', horizon: '#c9d0d6', ground: '#5d6a58', cloudCover: 0.75, sunGlow: 0.5, fog: 0.0008 },
-  rain: { zenith: '#4f5864', horizon: '#8e979f', ground: '#4a5448', cloudCover: 0.95, sunGlow: 0.25, fog: 0.0022 },
-  squall: { zenith: '#2f353d', horizon: '#646c74', ground: '#3b4239', cloudCover: 1, sunGlow: 0.1, fog: 0.004 },
+  // fog: 霞の濃さ(1/m)。晴れなら 60 km 先の富士山がうっすら見えるくらい(遠景と同じ値を使う)
+  sunny: { zenith: '#3b78c9', horizon: '#d3e6f3', ground: '#5d7a55', cloudCover: 0.15, fog: 0.000022 },
+  cloudy: { zenith: '#7d8a99', horizon: '#c9d0d6', ground: '#5d6a58', cloudCover: 0.75, sunGlow: 0.5, fog: 0.00007 },
+  rain: { zenith: '#4f5864', horizon: '#8e979f', ground: '#4a5448', cloudCover: 0.95, sunGlow: 0.25, fog: 0.0012 },
+  squall: { zenith: '#2f353d', horizon: '#646c74', ground: '#3b4239', cloudCover: 1, sunGlow: 0.1, fog: 0.0025 },
 };
 
 // 描画品質ごとの景色の重さ。treeR/treeCell = 木を置く半径と格子(m)、bldM = 建物を描く距離、
-// far = 描画距離、fog = 霧の濃さの倍率、waves = 海のさざ波(法線マップ)
+// far = 描画距離、waves = 海のさざ波(法線マップ)、pano = 遠景(富士山・大島などの山並み)。
+// 遠景を出さない段階は、描画距離の端が見えないように霞を濃くする(3.5 / far 以上)
 const TIER_SCENERY = {
-  ultra: { treeR: 900, treeCell: 9, bldM: Infinity, far: 20000, fog: 0.8, waves: true },
-  high: { treeR: 650, treeCell: 11, bldM: 4000, far: 12000, fog: 1, waves: true },
-  medium: { treeR: 420, treeCell: 14, bldM: 1800, far: 6000, fog: 1.4, waves: true },
-  low: { treeR: 220, treeCell: 20, bldM: 700, far: 3000, fog: 2.2, waves: false },
+  ultra: { treeR: 900, treeCell: 9, bldM: Infinity, far: 20000, waves: true, pano: true },
+  high: { treeR: 650, treeCell: 11, bldM: 4000, far: 12000, waves: true, pano: true },
+  medium: { treeR: 420, treeCell: 14, bldM: 1800, far: 6000, waves: true, pano: true },
+  low: { treeR: 220, treeCell: 20, bldM: 700, far: 3000, waves: false, pano: false },
 };
 const TREE_MAX = 22000;
+// トンネルの坑口: 地形の格子(25 m)では山肌を坑口でぴったり切れないので、トンネルの筒の中の地面は
+// シェーダーで描かない(TUN_HALF_W より内側・路面 -1 m 〜 TUN_TOP_M)。坑口の外で道より高い地面が残る所は、
+// 筒と坑口の壁をその先(最大 TUN_EXT_MAX_M)まで延ばす(覆道のように見える)。
+const TUN_MAX = 64;
+const TUN_PIECE_M = 20;
+const TUN_HALF_W = 5.85;
+const TUN_TOP_M = 5.9;
+const TUN_EXT_MAX_M = 60;
+const TUN_CUT_R = 900;
+const FP_LOOK_M = 20;
 const TREE_REBUILD_M = 40;
 const ROAD_CHUNK = 50; // 道のメッシュ1つあたりの点の数(10 m ごと)
 // 道の断面: [中心からの距離(m), 路面からの高さ, 色]。同じ色の列を2本並べて白線の縁をくっきりさせる
@@ -132,11 +147,14 @@ function groundColor(h, ny, roadD, built, r) {
  * @param {HTMLCanvasElement} canvas
  * @param {object} segment 区間データ
  * @param {object} sc 景色データ(decodeScenery の戻り値)
- * @param {{qualityMode?:string, onQualityChange?:(tier:string)=>void}} [opts]
+ * @param {{qualityMode?:string, onQualityChange?:(tier:string)=>void, panorama?:object|null}} [opts]
+ *   panorama: 遠景の標高(loadPanorama の戻り値)。無ければ遠景なし
  */
-export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto', onQualityChange } = {}) {
+export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto', onQualityChange, panorama = null, cameraView = 'chase' } = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.autoClear = false; // 遠景 → 近くの景色の順に重ねて描く
+  const pano = panorama ? createPanorama(panorama, sc) : null;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0xd3e6f3, 0.00035);
@@ -151,9 +169,87 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
   const tex = (t) => (textures.push(t), t);
   const routeAt = createRouteSampler(sc, segment);
 
+  // ---- トンネル(坑口の外で道より高い地面が残る所まで筒を延ばす) ----
+  const tubes = [];
+  const tunPieces = []; // [x1, y1, x2, y2, z1, z2](区間の平面座標と路面の高さ)
+  {
+    const p = {};
+    const blocked = (m) => {
+      routeAt(m, p);
+      let h = -Infinity;
+      for (const off of [-4, 0, 4]) h = Math.max(h, heightAt(sc, p.x - p.hy * off, p.y + p.hx * off));
+      return h > p.z + 0.3;
+    };
+    for (const tn of segment.tunnels ?? []) {
+      let from = tn.fromM;
+      let to = tn.toM;
+      while (tn.fromM - from < TUN_EXT_MAX_M && from > 0 && blocked(from - 2)) from -= 2;
+      while (to - tn.toM < TUN_EXT_MAX_M && to < segment.lengthM && blocked(to + 2)) to += 2;
+      tubes.push({ fromM: from - 2, toM: to + 2 });
+    }
+    const a = {};
+    const b = {};
+    for (const tb of tubes) {
+      for (let m = tb.fromM; m < tb.toM; m += TUN_PIECE_M) {
+        routeAt(m, a);
+        routeAt(Math.min(m + TUN_PIECE_M, tb.toM), b);
+        tunPieces.push([a.x, a.y, b.x, b.y, a.z, b.z]);
+      }
+    }
+  }
+  const tubeAt = (m) => tubes.find((t) => m >= t.fromM && m < t.toM) ?? null;
+  // 地面のシェーダーに、ライダーの近くのトンネルの筒(線分と路面の高さ)を渡して、その中の地面を描かない
+  const tunUniforms = {
+    uTun: { value: Array.from({ length: TUN_MAX }, () => new THREE.Vector4()) },
+    uTunY: { value: Array.from({ length: TUN_MAX }, () => new THREE.Vector2()) },
+    uTunN: { value: 0 },
+  };
+  function cutTunnels(mat) {
+    if (!tunPieces.length) return mat;
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, tunUniforms);
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vTunW;')
+        .replace('#include <project_vertex>', '#include <project_vertex>\nvTunW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+varying vec3 vTunW;
+uniform vec4 uTun[${TUN_MAX}];
+uniform vec2 uTunY[${TUN_MAX}];
+uniform int uTunN;`)
+        .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+for (int i = 0; i < ${TUN_MAX}; i++) {
+  if (i >= uTunN) break;
+  vec2 a = uTun[i].xy;
+  vec2 ab = uTun[i].zw - a;
+  float f = clamp(dot(vTunW.xz - a, ab) / max(dot(ab, ab), 1e-3), 0.0, 1.0);
+  float ry = mix(uTunY[i].x, uTunY[i].y, f);
+  if (length(vTunW.xz - a - ab * f) < ${TUN_HALF_W.toFixed(2)} && vTunW.y > ry - 1.0 && vTunW.y < ry + ${TUN_TOP_M.toFixed(2)}) discard;
+}`);
+    };
+    mat.customProgramCacheKey = () => 'tunnel-cut';
+    return mat;
+  }
+  let tunAt = null;
+  function updateTunnelCut(ox, oy) {
+    if (!tunPieces.length || (tunAt && Math.hypot(ox - tunAt[0], oy - tunAt[1]) < 20)) return;
+    tunAt = [ox, oy];
+    const near = tunPieces
+      .map((pc) => [Math.hypot((pc[0] + pc[2]) / 2 - ox, (pc[1] + pc[3]) / 2 - oy), pc])
+      .filter(([d]) => d < TUN_CUT_R)
+      .sort((p1, p2) => p1[0] - p2[0])
+      .slice(0, TUN_MAX);
+    // シェーダーは世界の座標(東 = +X、北 = -Z)
+    near.forEach(([, pc], i) => {
+      tunUniforms.uTun.value[i].set(pc[0], -pc[1], pc[2], -pc[3]);
+      tunUniforms.uTunY.value[i].set(pc[4], pc[5]);
+    });
+    tunUniforms.uTunN.value = near.length;
+  }
+
   // ---- 地形(近景のタイル + 遠景の1枚) ----
   const N = sc.n;
-  const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, map: tex(groundTexture()) });
+  const groundMat = cutTunnels(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, map: tex(groundTexture()) }));
   const farMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
   // 近景の頂点ごとの「道までの距離」と「家並み」の印(色と木の配置に使う)
   for (const t of sc.near.values()) {
@@ -248,6 +344,7 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
     mesh.position.set(t.tx * sc.tile, 0, -t.ty * sc.tile);
     mesh.receiveShadow = true;
     terrain.add(mesh);
+    t.mesh = mesh;
   }
   {
     const f = sc.far;
@@ -270,16 +367,23 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
     terrain.add(mesh);
   }
 
-  // ---- 海(カメラについて動く1枚。波の模様は世界に固定) ----
+  // ---- 海(遠景の格子の範囲の1枚。その外の海は遠景が描く) ----
   const waveTex = tex(waveNormalTexture());
-  const SEA_SIZE = 40000;
   const WAVE_M = 36;
-  waveTex.repeat.set(SEA_SIZE / WAVE_M, SEA_SIZE / WAVE_M);
+  const seaW = (sc.far.nx - 1) * sc.far.cell;
+  const seaH = (sc.far.ny - 1) * sc.far.cell;
+  waveTex.repeat.set(seaW / WAVE_M, seaH / WAVE_M);
   const seaMat = new THREE.MeshStandardMaterial({ color: 0x1d5a7a, roughness: 0.22, metalness: 0.05, normalScale: new THREE.Vector2(0.35, 0.35) });
-  const sea = new THREE.Mesh(new THREE.PlaneGeometry(SEA_SIZE, SEA_SIZE), seaMat);
+  const sea = new THREE.Mesh(new THREE.PlaneGeometry(seaW, seaH), seaMat);
   sea.rotation.x = -Math.PI / 2;
+  sea.position.set(sc.far.x0 + seaW / 2, 0, -(sc.far.y0 + seaH / 2));
   sea.receiveShadow = true;
   scene.add(sea);
+
+  // ---- 名所(熱海城・灯台・ヤシ並木。松原は木の配置で) ----
+  const landmarks = buildLandmarks(sc);
+  scene.add(landmarks.group);
+  const landmarkSpots = sc.landmarks.filter((l) => l.x !== undefined && l.kind !== 'pines');
 
   // ---- 道(10 m ごとの断面をつないだリボン) ----
   const roadMat = new THREE.MeshStandardMaterial({
@@ -334,6 +438,8 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
   const bldChunks = new Map();
   sc.buildings.forEach((b, bi) => {
     const bb = buildingBounds[bi];
+    // 名所の足もとの建物(天守の外形など)は名所の形に置きかえる
+    if (landmarkSpots.some((l) => Math.hypot(l.x - bb.cx, l.y - bb.cy) < 28)) return;
     const key = `${Math.floor(bb.cx / sc.tile)},${Math.floor(bb.cy / sc.tile)}`;
     if (!bldChunks.has(key)) {
       bldChunks.set(key, { ox: Math.floor(bb.cx / sc.tile) * sc.tile, oy: Math.floor(bb.cy / sc.tile) * sc.tile, pos: [], uv: [], col: [] });
@@ -430,6 +536,7 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
     trunk: makePool(new THREE.CylinderGeometry(0.12, 0.2, 1, 5).translate(0, 0.5, 0), std(0x5b4632), TREE_MAX, { cast: false }),
     cone: makePool(new THREE.ConeGeometry(1, 1, 7).translate(0, 0.5, 0), std(0xffffff, { roughness: 0.95 }), TREE_MAX),
     ball: makePool(new THREE.IcosahedronGeometry(1, 0).translate(0, 1, 0), std(0xffffff, { roughness: 0.95, flatShading: true }), TREE_MAX),
+    disc: makePool(new THREE.CylinderGeometry(1, 0.75, 1, 9).translate(0, 0.5, 0), std(0xffffff, { roughness: 0.95, flatShading: true }), TREE_MAX),
   };
   for (const p of [...Object.values(pools), ...Object.values(trees)]) scene.add(p.mesh);
 
@@ -451,13 +558,18 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
   for (let i = 0; i < RAIN_N; i++) rainPos.set([(Math.random() - 0.5) * 60, Math.random() * 25 - 5, (Math.random() - 0.5) * 60], i * 3);
   const rainGeo = new THREE.BufferGeometry();
   rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
-  const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0xaab4c0, size: 0.08, transparent: true, opacity: 0.7 }));
+  // トンネルの筒の中には降らせない(地面と同じ切り抜き)
+  const rain = new THREE.Points(rainGeo, cutTunnels(new THREE.PointsMaterial({ color: 0xaab4c0, size: 0.08, transparent: true, opacity: 0.7 })));
   rain.visible = false;
   rain.frustumCulled = false;
   scene.add(rain);
 
   let tier = TIER_SCENERY.high;
   let treeAt = null;
+  // 地面の航空写真(最高・高のとき、まわりのタイルだけ)
+  const photos = createAerialPhotos(sc, {
+    anisotropy: Math.min(16, renderer.capabilities.getMaxAnisotropy()), patchMaterial: cutTunnels,
+  });
   const s = {
     renderer, scene, camera, canvas, sunLight, textures, sky: null, clock: new THREE.Clock(),
     skyKey: null, disposed: false,
@@ -465,6 +577,8 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
       tier = TIER_SCENERY[name] ?? TIER_SCENERY.high;
       camera.far = tier.far;
       camera.updateProjectionMatrix();
+      pano?.setVisible(tier.pano);
+      photos?.setTier(name);
       seaMat.normalMap = tier.waves ? waveTex : null;
       seaMat.needsUpdate = true;
       treeAt = null; // 木を置き直す
@@ -497,14 +611,18 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
       zenith: w.zenith, horizon: `#${horizon.getHexString()}`, ground: w.ground, sunColor: '#fff2d2', sunDir,
       cloudCover: w.cloudCover, sunGlow: w.sunGlow ?? 1, night: Math.max(0, Math.min(1, (clockMinutes - 17 * 60) / 60)),
     });
-    scene.background = s.sky.background;
+    (pano ? pano.scene : scene).background = s.sky.background;
     if (scene.environment) scene.environment = s.sky.getEnvironment();
     old?.dispose();
     scene.fog.color.copy(horizon);
-    scene.fog.density = w.fog * tier.fog;
+    scene.fog.density = tier.pano && pano ? w.fog : Math.max(w.fog, 3.5 / tier.far);
     sunLight.intensity = 1.8 * (w.sunGlow ?? 1) * Math.max(0.15, Math.sin(t * Math.PI));
     hemi.intensity = 0.55 + 0.45 * (w.sunGlow ?? 1);
-    seaMat.color.setHex(kind === 'sunny' ? 0x1d5a7a : 0x2c4e5e);
+    const seaColor = kind === 'sunny' ? 0x1d5a7a : 0x2c4e5e;
+    seaMat.color.setHex(seaColor);
+    pano?.setAtmosphere({
+      fogColor: horizon, fogDensity: scene.fog.density, sunDir, sunIntensity: sunLight.intensity, hemiIntensity: hemi.intensity, seaColor,
+    });
     rain.visible = kind === 'rain' || kind === 'squall';
   }
 
@@ -526,8 +644,26 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
         const roadD = t.roadD[k];
         const r = hash2(i, j, 13);
         if (roadD < 40 && roadDistance(x, y) < 13) continue;
-        if (t.built[k] && r > 0.06) continue;
+        if (landmarkSpots.some((l) => Math.abs(l.x - x) < 30 && Math.abs(l.y - y) < 30)) continue;
         const h = heightAt(sc, x, y);
+        const grove = landmarks.pines.some((g) => (g.x - x) ** 2 + (g.y - y) ** 2 < g.r * g.r);
+        // 松原の松は 12 m に1本くらい(格子の細かい段階でも増やしすぎない)
+        if (grove && h > 0.8 && h < 25 && !t.built[k]) {
+          if (hash2(i, j, 18) >= (treeCell / 12) ** 2) continue;
+          // 松原: 砂地に黒松の林(幹が海風で傾き、平たい枝葉が段になる)
+          const hgt = 9 + hash2(i, j, 14) * 8;
+          const px = x - ox;
+          const pz = -(y - oy);
+          const lean = (hash2(i, j, 17) - 0.5) * 0.5;
+          pushInstance(trees.trunk, px, h - 0.3, pz, 1.3, hgt * 0.8, 1.3, lean, r * 6);
+          for (let d = 0; d < 2; d++) {
+            const w = hgt * (0.38 - d * 0.11);
+            pushInstance(trees.disc, px, h + hgt * (0.62 + d * 0.15), pz + Math.sin(lean) * hgt * (0.62 + d * 0.15),
+              w, 1.2, w * 0.8, 0, r * 6 + d, d === 0 ? 0x24401f : 0x2c4d26);
+          }
+          continue;
+        }
+        if (t.built[k] && r > 0.06) continue;
         if (h < 2) continue;
         if (h < 30 && roadD < 160 && r < 0.45) continue; // 町はずれの畑・草地
         const hgt = 5 + hash2(i, j, 14) * 9;
@@ -557,12 +693,14 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
   const PC = {};
   const camPos = new THREE.Vector3();
   let camInit = false;
+  let view = normalizeCameraView(cameraView);
+  const fpCam = {};
 
   /**
    * 1フレーム描く。
-   * @param {{segmentM:number, speedKmh:number, gradePercent:number, weatherKind:string, clockMinutes:number}} f
+   * @param {{segmentM:number, speedKmh:number, gradePercent:number, weatherKind:string, clockMinutes:number, cadenceRpm?:number}} f
    */
-  function draw({ segmentM, speedKmh, gradePercent, weatherKind, clockMinutes }) {
+  function draw({ segmentM, speedKmh, gradePercent, weatherKind, clockMinutes, cadenceRpm }) {
     if (s.disposed) return;
     rebakeSky(weatherKind, clockMinutes);
     const m0 = segmentM;
@@ -590,9 +728,9 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
       routeAt(mm + 4, PB);
       const yaw = yawOf(PA);
       const pitch = Math.atan2(PB.z - PA.z, 4);
-      const inTunnel = tunnelAtM(segment, mm);
-      // トンネルの坑口(山肌から出たコンクリートの壁)
-      for (const tn of segment.tunnels ?? []) {
+      const inTunnel = tubeAt(mm);
+      // トンネルの坑口(山肌から出たコンクリートの壁。筒を延ばした所はその先端)
+      for (const tn of tubes) {
         for (const end of [tn.fromM, tn.toM]) {
           if (end < mm || end >= mm + 4) continue;
           routeAt(end, PC);
@@ -657,22 +795,41 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
     rider.group.position.set(rx + ox, ry, rz - oy);
     rider.group.rotation.y = Math.atan2(-P0.hx, P0.hy);
     updateRiderAvatar(rider, s.clock, speedKmh, -Math.atan(gradePercent / 100));
-    routeAt(m0 - 6, PA);
-    const [cx, cy, cz] = local(PA, lane - 0.3, 2.4);
-    const target = new THREE.Vector3(cx + ox, cy, cz - oy);
-    const k = camInit ? 1 - Math.exp(-(rider.dt ?? 0.016) * 5) : 1;
-    camInit = true;
-    camPos.lerp(target, k);
-    camera.position.copy(camPos);
-    routeAt(m0 + 24, PB);
-    const [lx, ly, lz] = local(PB, lane, 1.0);
-    camera.lookAt(lx + ox, ly, lz - oy);
+    setAvatarVisible(rider, view !== 'fp');
+    if (view === 'fp') {
+      // 目線: ハンドルの少し後ろ・目の高さ。ペダルを踏むたびに少し上下し、速いほど画角が広がる
+      const bob = fpBobM(fpCam, cadenceRpm ?? estimateCadenceRpm(speedKmh), rider.dt ?? 0.016);
+      routeAt(m0 + 0.3, PA);
+      const [ex, ey, ez] = local(PA, lane, rider.camera.eyeM + bob);
+      camPos.set(ex + ox, ey, ez - oy);
+      camera.position.copy(camPos);
+      routeAt(m0 + FP_LOOK_M, PB);
+      const [lx, ly, lz] = local(PB, lane, 1.2);
+      camera.lookAt(lx + ox, ly, lz - oy);
+      setCameraFov(camera, fpFovDeg(speedKmh / 3.6));
+      camInit = false; // ほかの視点に戻したら、その位置へすぐ移る
+    } else {
+      // 上空の視点はトンネル(とその手前)では後ろの視点に下りる(山の上からでは自分が見えないので)
+      const rig = VIEW_RIGS[view === 'high' && (tubeAt(m0) || tubeAt(m0 + 15)) ? 'chase' : view];
+      routeAt(m0 - rig.backM, PA);
+      const [cx, cy, cz] = local(PA, lane - 0.3, rig.upM);
+      const target = new THREE.Vector3(cx + ox, cy, cz - oy);
+      const k = camInit ? 1 - Math.exp(-(rider.dt ?? 0.016) * 5) : 1;
+      camInit = true;
+      camPos.lerp(target, k);
+      camera.position.copy(camPos);
+      routeAt(m0 + rig.aheadM, PB);
+      const [lx, ly, lz] = local(PB, lane, rig.lookUpM);
+      camera.lookAt(lx + ox, ly, lz - oy);
+      setCameraFov(camera, rig.fov);
+    }
     sunLight.target.position.set(rider.group.position.x, ry, rider.group.position.z);
     sunLight.position.copy(sunLight.target.position).addScaledVector(sunDir, 120);
 
-    sea.position.set(camera.position.x, 0, camera.position.z);
     const tsec = s.clock.elapsedTime;
-    waveTex.offset.set(((camera.position.x / WAVE_M) + tsec * 0.004) % 1, ((-camera.position.z / WAVE_M) + tsec * 0.006) % 1);
+    waveTex.offset.set((tsec * 0.004) % 1, (tsec * 0.006) % 1);
+    photos?.update(ox, oy);
+    updateTunnelCut(ox, oy);
 
     if (rain.visible) {
       rain.position.copy(camera.position);
@@ -686,6 +843,12 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
     }
 
     adaptQuality(s);
+    renderer.clear();
+    if (pano) {
+      pano.follow(camera);
+      renderer.render(pano.scene, pano.camera);
+      renderer.clearDepth();
+    }
     renderer.render(scene, camera);
   }
 
@@ -693,8 +856,16 @@ export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto',
     draw,
     resize: () => resizeScene(s),
     setQualityMode: (mode) => setQualityMode(s, mode),
+    /** 視点('chase' | 'fp' | 'high')。 */
+    setCameraView(v) {
+      const next = normalizeCameraView(v);
+      if (next !== view) camInit = false;
+      view = next;
+    },
     dispose() {
       s.disposed = true;
+      photos?.dispose();
+      pano?.dispose();
       disposeScene(s);
     },
   };

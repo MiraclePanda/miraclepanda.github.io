@@ -55,7 +55,46 @@ export function decodeScenery(json) {
   return {
     id: json.id, origin: json.origin, k: json.k, step: json.step, route,
     tile: json.tile, cell: json.near.cell, n, near, far, buildings, attribution: json.attribution,
+    landmarks: json.landmarks ?? [],
   };
+}
+
+/** 景色データの平面座標 (x, y) ↔ 経緯度(区間ごとの平面投影。tools/segments/build.py の en/ll と同じ式)。 */
+export function toLonLat(sc, x, y) {
+  return [sc.origin[0] + x / sc.k[0], sc.origin[1] + y / sc.k[1]];
+}
+export function fromLonLat(sc, lon, lat) {
+  return [(lon - sc.origin[0]) * sc.k[0], (lat - sc.origin[1]) * sc.k[1]];
+}
+
+let panoramaPromise = null;
+/** 遠景(富士山・大島などの山並み。js/data/scenery/panorama.json)を読む。全区間で共有。読めなければ null。 */
+export function loadPanorama(fetchFn = globalThis.fetch) {
+  panoramaPromise ??= (async () => {
+    try {
+      const res = await fetchFn(new URL('../data/scenery/panorama.json', import.meta.url).href);
+      return res.ok ? decodePanorama(await res.json()) : null;
+    } catch {
+      return null;
+    }
+  })();
+  return panoramaPromise;
+}
+
+/** 遠景の標高(1 m 単位の差分)を戻す。h[j * nx + i] は 経度 lon0 + i*step・緯度 lat0 + j*step の高さ(海は負)。 */
+export function decodePanorama(json) {
+  const h = new Float32Array(json.h.length);
+  let v = 0;
+  for (let i = 0; i < h.length; i++) {
+    v += json.h[i];
+    h[i] = v;
+  }
+  return { lon0: json.lon0, lat0: json.lat0, step: json.step, nx: json.nx, ny: json.ny, h, attribution: json.attribution };
+}
+
+/** 地球の丸み(大気の屈折込み)で、水平距離 d(m)先が見かけで下がる高さ(m)。60 km 先で約 250 m。 */
+export function curvatureDropM(d) {
+  return (d * d) / (2 * 6371000 * 1.14);
 }
 
 function bilinear(h, stride, rows, fx, fy) {

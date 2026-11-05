@@ -20,11 +20,13 @@ import {
 import { planCompanion, CompanionTalk, talkCeilingW, recordCompanion, recordCompanionMet } from '../trip/companion.js';
 import { createSeaRoadScene } from '../three/seaRoadScene.js';
 import { createRealRoadScene } from '../three/realRoadScene.js';
-import { loadScenery } from '../three/sceneryData.js';
+import { loadScenery, loadPanorama } from '../three/sceneryData.js';
 import { RideMap } from './RideMap.js';
+import { nextCameraView } from '../three/cameraViews.js';
 import { WakeLockManager } from '../utils/wakeLock.js';
 import {
   loadRenderQuality, saveRenderQuality, RENDER_QUALITY_VALUES, loadShowRideMap, saveShowRideMap,
+  loadCameraView, saveCameraView,
 } from '../storage/prefs.js';
 
 const TOAST_MS = 6000;
@@ -55,6 +57,7 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
   const ctxRef = useRef(null);
   const sceneRef = useRef(null);
   const [qualityMode, setQualityMode] = useState(loadRenderQuality);
+  const [cameraView, setCameraView] = useState(loadCameraView);
   const [activeTier, setActiveTier] = useState(null);
   // 景色データ: undefined = 読み込み中、null = 無い(簡易の景色)、object = 実在の地形・建物
   const [scenery, setScenery] = useState(undefined);
@@ -111,12 +114,12 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     // 読み込みの間も走行・記録は進む(3D が出ていないだけ)。
     let scene = null;
     let alive = true;
-    loadScenery(segment).then((sc) => {
+    Promise.all([loadScenery(segment), loadPanorama()]).then(([sc, panorama]) => {
       if (!alive) return;
       setScenery(sc);
-      const opts = { qualityMode: loadRenderQuality(), onQualityChange: setActiveTier };
+      const opts = { qualityMode: loadRenderQuality(), onQualityChange: setActiveTier, cameraView: loadCameraView() };
       try {
-        scene = sc ? createRealRoadScene(canvasRef.current, segment, sc, opts) : createSeaRoadScene(canvasRef.current, segment, opts);
+        scene = sc ? createRealRoadScene(canvasRef.current, segment, sc, { ...opts, panorama }) : createSeaRoadScene(canvasRef.current, segment, opts);
         sceneRef.current = scene;
       } catch (e) {
         setWarning(`3D を表示できません(${e.message})。走行と記録は続けられます。`);
@@ -307,7 +310,7 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
 
       scene?.draw({
         segmentM: segM, speedKmh: physics.speedMps * 3.6, gradePercent: physics.currentGradePercent,
-        weatherKind: w.kind, clockMinutes: t.clockMinutes,
+        weatherKind: w.kind, clockMinutes: t.clockMinutes, cadenceRpm: cadenceRef.current,
       });
 
       if (now - lastMap > 500) {
@@ -365,6 +368,25 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     });
   }
 
+  function changeView() {
+    setCameraView((v) => {
+      const next = nextCameraView(v);
+      saveCameraView(next);
+      sceneRef.current?.setCameraView?.(next);
+      return next;
+    });
+  }
+  // V キーでも視点を切り替える(入力欄・選択欄の操作中は除く)
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.key !== 'v' && e.key !== 'V') || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target?.tagName ?? '')) return;
+      changeView();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   function changeQuality(mode) {
     setQualityMode(mode);
     saveRenderQuality(mode);
@@ -399,18 +421,24 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       onStay: () => { showPrompt(null); ctx.finish('stop'); },
       onClose: () => showPrompt(null),
     })),
-    h('div', { className: 'attribution' }, scenery?.attribution ?? segment.attribution ?? '')),
+    h('div', { className: 'attribution' }, scenery ? `${scenery.attribution}・地理院タイル(シームレス空中写真)` : (segment.attribution ?? ''))),
     h('div', { className: 'ride-bar' },
       h('button', { className: 'primary', onClick: () => ctx?.togglePause(), disabled: !!junction }, paused ? '走り出す' : '休憩する'),
       h('button', { onClick: () => ctx?.snack(), disabled: !t || (t.bike.pack.food ?? 0) < SNACK.kg }, '補給食を食べる'),
       h('button', { onClick: () => ctx?.finish('stop') }, '今日はここまで(宿を探す)'),
       h('button', { onClick: () => ctx?.finish('exit') }, 'ホームに戻る'),
+      // 地図・視点・描画品質は1つのまとまりにして、帯の右端に寄せる
+      h('div', { className: 'ride-bar-tools' },
       h('button', { onClick: toggleMap, 'aria-pressed': showMap }, showMap ? '地図を隠す' : '地図を表示'),
-      h('label', { className: 'quality-select' }, '描画品質',
-        h('select', { value: qualityMode, onChange: (e) => changeQuality(e.target.value), 'aria-label': '描画品質' },
-          RENDER_QUALITY_VALUES.map((mode) => h('option', { key: mode, value: mode },
-            mode === 'auto' && activeTier ? `自動(いま: ${QUALITY_LABELS[activeTier]})` : QUALITY_LABELS[mode]))))));
+      scenery && h('button', { onClick: changeView, title: '視点を切り替える(V キー)' }, `視点: ${VIEW_LABELS[cameraView]}`),
+      // 描画品質は押すたびに 自動 → 最高 → 高 → 中 → 低 → 自動 と切り替える
+      h('button', {
+        onClick: () => changeQuality(RENDER_QUALITY_VALUES[(RENDER_QUALITY_VALUES.indexOf(qualityMode) + 1) % RENDER_QUALITY_VALUES.length]),
+        title: '描画品質を切り替える',
+      }, `品質: ${qualityMode === 'auto' && activeTier ? `自動(${QUALITY_LABELS[activeTier]})` : QUALITY_LABELS[qualityMode]}`))));
 }
+
+const VIEW_LABELS = { chase: '後ろ', fp: '目線', high: '上空' };
 
 function Hud({ hud, ftpW, demo, day, title }) {
   const head = h('div', { className: 'hud-title' }, h('small', null, `旅の ${day} 日目`), h('b', null, title));
