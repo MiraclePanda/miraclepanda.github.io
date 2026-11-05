@@ -278,3 +278,23 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .hud-title { flex-basis: 100%; max-width: none; flex-direction: row; gap: 8px; align-items: baseline; border-right: 0; padding: 0 2px; }
   .companion { font-size: 0.9rem; }
 }
+
+/* 旅の支度: コースの一覧(日本一周の順。増えてもカードが伸びすぎないよう、一覧の中でスクロール) */
+.course-list { list-style: none; margin: 4px 0 12px; padding: 0; max-height: 320px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 10px; }
+.course-list .course-region { padding: 4px 10px; font-size: 0.8rem; color: var(--muted);
+  background: color-mix(in srgb, var(--line) 30%, var(--panel)); letter-spacing: 0.1em; }
+.course-list button.course { display: grid; grid-template-columns: 2em 1fr auto; align-items: center; gap: 8px; width: 100%;
+  min-height: 44px; padding: 6px 10px; border: 0; border-radius: 0; border-top: 1px dashed var(--line);
+  background: transparent; color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
+.course-list button.course:hover { background: color-mix(in srgb, var(--sea) 8%, transparent); }
+.course-list button.course.selected { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 4px 0 0 var(--accent); }
+.course-no { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.course-name { font-weight: 600; }
+.course-side { margin-left: 6px; padding: 0 6px; border: 1px solid var(--sea); border-radius: 999px; color: var(--sea);
+  font-size: 0.75rem; font-weight: 400; }
+.course-stat { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+@media (max-width: 480px) {
+  .course-list button.course { grid-template-columns: 2em 1fr; }
+  .course-stat { grid-column: 2; }
+}

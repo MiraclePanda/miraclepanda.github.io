@@ -2,23 +2,62 @@
 //
 // 区間データは from → to の片向きだけを持つ。逆向きは id の末尾に REVERSE_SUFFIX をつけて表し、
 // 勾配・地点・トンネル・路面・地図を反転した区間をその場で作る(同じ id なら同じオブジェクトを返す)。
+//
+// 区間は2段で持つ。起動時は js/data/catalog.js の要約(勾配なし・地図は約 1 km ごと)だけで、
+// 分かれ道の案内・旅の地図・スタンプはこれで足りる。走る区間は loadSegment() で
+// js/data/segments/<id>.json(勾配・細かい地図つき)を読んでから getSegment() で使う。
+// 区間がいくら増えても、起動時に読む量とテストが読む量が区間の数ほどは増えないようにするため。
 
-import { SEGMENTS, NODES, TRANSFERS } from '../data/segments/index.js';
+import { SEGMENTS, NODES, TRANSFERS, REGIONS } from '../data/catalog.js';
 import { elevationAtM } from '../physics/segmentRoute.js';
 
 export const REVERSE_SUFFIX = '~rev';
 
+/** 読み込んだ区間の全データ(id → 区間)。 */
+const fullSegments = new Map();
 const reversedCache = new Map();
 
-/** 区間 id(逆向きの id も可)から区間データ。無ければ null。 */
+const baseId = (id) => (id.endsWith(REVERSE_SUFFIX) ? id.slice(0, -REVERSE_SUFFIX.length) : id);
+
+/**
+ * 区間 id(逆向きの id も可)から区間データ。無ければ null。
+ * loadSegment() で読んだ後なら勾配つきの全データ、まだなら catalog の要約(grades が無い)を返す。
+ */
 export function getSegment(id) {
   if (typeof id !== 'string') return null;
-  if (!id.endsWith(REVERSE_SUFFIX)) return SEGMENTS[id] ?? null;
-  if (reversedCache.has(id)) return reversedCache.get(id);
-  const base = SEGMENTS[id.slice(0, -REVERSE_SUFFIX.length)];
-  const rev = base ? reverseSegment(base) : null;
-  reversedCache.set(id, rev);
+  const base = fullSegments.get(baseId(id)) ?? SEGMENTS[baseId(id)];
+  if (!base) return null;
+  if (!id.endsWith(REVERSE_SUFFIX)) return base;
+  const hit = reversedCache.get(id);
+  if (hit && hit.base === base) return hit.rev;
+  const rev = reverseSegment(base);
+  reversedCache.set(id, { base, rev });
   return rev;
+}
+
+/** 区間の全データ(勾配つき)を読み込み済みか。 */
+export function isSegmentLoaded(id) {
+  return typeof id === 'string' && fullSegments.has(baseId(id));
+}
+
+/** 区間の全データの URL(js/data/segments/<id>.json)。逆向きの id なら元の区間。 */
+export function segmentUrl(id) {
+  return new URL(`../data/segments/${baseId(id)}.json`, import.meta.url).href;
+}
+
+/** 読み込んだ区間の全データを登録する(loadSegment が使う。テストはファイルから直接入れる)。 */
+export function registerSegment(data) {
+  fullSegments.set(data.id, { ...SEGMENTS[data.id], ...data });
+}
+
+/** 区間の全データを読み込む(読み込み済みなら何もしない)。読んだ後の getSegment(id) を返す。 */
+export async function loadSegment(id, fetchFn = globalThis.fetch) {
+  if (!isSegmentLoaded(id)) {
+    const res = await fetchFn(segmentUrl(id));
+    if (!res.ok) throw new Error(`区間データを読めませんでした(${baseId(id)}: ${res.status})`);
+    registerSegment(await res.json());
+  }
+  return getSegment(id);
 }
 
 /** 町の名前。 */
@@ -37,6 +76,7 @@ export function climbOf(segment) {
  */
 export function reverseSegment(s) {
   const L = s.lengthM;
+  const full = Array.isArray(s.grades);
   const flip = (m) => Math.min(L - 1, Math.max(0, L - m));
   const surfaces = (s.surfaces ?? [{ fromM: 0, surface: 'paved' }]).map((r, i, a) => ({
     fromM: L - (a[i + 1]?.fromM ?? L), surface: r.surface,
@@ -50,8 +90,10 @@ export function reverseSegment(s) {
     to: s.from,
     goalName: nodeName(s.from),
     seaSide: { left: 'right', right: 'left' }[s.seaSide] ?? s.seaSide,
-    startElevM: (s.startElevM ?? 0) + elevationAtM(s, L),
-    grades: s.grades.map((g) => -g).reverse(),
+    startElevM: full ? (s.startElevM ?? 0) + elevationAtM(s, L) : s.endElevM,
+    endElevM: s.startElevM,
+    descentM: s.climbM,
+    grades: full ? s.grades.map((g) => -g).reverse() : undefined,
     map: s.map ? [...s.map].reverse() : undefined,
     surfaces,
     tunnels: (s.tunnels ?? []).map((t) => ({ ...t, fromM: L - t.toM, toM: L - t.fromM })).reverse(),
@@ -64,7 +106,7 @@ export function reverseSegment(s) {
       })
       .sort((a, b) => a.atM - b.atM),
   };
-  rev.climbM = climbOf(rev);
+  rev.climbM = full ? climbOf(rev) : s.descentM;
   return rev;
 }
 
@@ -128,4 +170,23 @@ export function segmentArrivingAt(nodeId) {
     if (s.from === nodeId) return s.id + REVERSE_SUFFIX;
   }
   return null;
+}
+
+/**
+ * 旅を始められるコースの一覧(旅の支度で選ぶ)。コース = 区間を順方向に走ること。
+ * 並びは日本一周の順(地方の設定の order、地方の中は設定に書いた順)で、つなげていくと一周になる。
+ * side は本線から外れる寄り道(行き止まりの岬など)。
+ * @returns {{segmentId:string, no:number, name:string, regionName:string, lengthM:number, climbM:number, side:boolean}[]}
+ */
+export function courseChoices() {
+  const regionName = Object.fromEntries(REGIONS.map((r) => [r.id, r.name]));
+  return Object.values(SEGMENTS).map((s, i) => ({
+    segmentId: s.id,
+    no: i + 1,
+    name: s.name,
+    regionName: regionName[s.region] ?? '',
+    lengthM: s.lengthM,
+    climbM: s.climbM,
+    side: Boolean(s.side),
+  }));
 }

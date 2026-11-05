@@ -4,7 +4,7 @@
 // 「map の何番目の点か」= m / 区間の長さ × (点の数 − 1) で読む(点の間隔のずれは地図の縮尺では見えない)。
 
 import { getSegment } from './network.js';
-import { SEGMENTS, NODES, TRANSFERS } from '../data/segments/index.js';
+import { SEGMENTS, NODES, TRANSFERS } from '../data/catalog.js';
 
 /** 区間の地点 m の [経度, 緯度]。 */
 export function lonLatAt(segment, m) {

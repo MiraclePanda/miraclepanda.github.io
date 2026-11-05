@@ -3,7 +3,7 @@
 // 旅の状態の stamps: [{ id, kind: 'sight'|'food', name, place?, day, atTotalM }](無い古いデータは空とみなす)。
 // 見どころの id は区間の地点の id(逆向きの区間でも同じ)、名物は 'food:' + 料理名。
 
-import { SEGMENTS } from '../data/segments/index.js';
+import { SEGMENTS } from '../data/catalog.js';
 import { passTripTime } from '../storage/tripState.js';
 
 /** 見どころに立ち寄るのにかかる旅の時間(分)。 */

@@ -3,7 +3,7 @@
 import { h, useState, useEffect, useRef } from './h.js';
 import { createTrip, resumeLabel, fmtClock, TIME_SCALES, chooseNextSegment, takeTransfer } from '../storage/tripState.js';
 import {
-  routesFrom, nodeName, currentNode, cameFromSegmentId, transfersFrom, segmentArrivingAt, getSegment,
+  routesFrom, nodeName, currentNode, cameFromSegmentId, transfersFrom, segmentArrivingAt, getSegment, courseChoices,
 } from '../trip/network.js';
 import { routeLabel } from './RideScreen.js';
 import { TripMap } from './TripMap.js';
@@ -63,7 +63,7 @@ export function HomeScreen({ trip, segment, store, persistent, notice, client, o
     h(HeroArt, { key: 'h' },
       h('p', { className: 'hero-kicker' }, '自分の脚だけで、日本を旅する'),
       h('h1', null, 'PandaCycleExpedition'),
-      h('p', { className: 'sub' }, trip ? `${trip.day}日目・旅の距離 ${km(trip.position.totalM)} km。今日はどこまで行こう。` : '荷物を積んだグラベルバイクで、熱海から旅に出る。')),
+      h('p', { className: 'sub' }, trip ? `${trip.day}日目・旅の距離 ${km(trip.position.totalM)} km。今日はどこまで行こう。` : '荷物を積んだグラベルバイクで、日本の町から町へ旅に出る。')),
     !persistent && h('p', { key: 'p', className: 'err' }, 'このブラウザでは旅を保存できません。こまめに書き出してください。'),
     notice && h('p', { key: 'n', className: 'err' }, notice),
     error && h('p', { key: 'e', className: 'err' }, error),
@@ -240,21 +240,41 @@ function NumberSetting({ label, value, step, validate, onSave }) {
 }
 
 function NewTripForm({ store, onTripChange }) {
-  const [f, setF] = useState({ weight: '70', bike: '11', ftp: '200', timeScale: 4 });
+  const courses = courseChoices();
+  const [f, setF] = useState({ weight: '70', bike: '11', ftp: '200', timeScale: 4, segmentId: courses[0]?.segmentId });
   const checks = [validateWeight(f.weight), validateBikeWeight(f.bike), validateFtp(f.ftp)];
+  const course = courses.find((c) => c.segmentId === f.segmentId) ?? courses[0];
+  const seg = getSegment(course.segmentId);
   const ok = checks.every((c) => c.valid);
   const field = (key, label) => h('label', { className: 'field' }, label,
     h('input', { type: 'number', value: f[key], onChange: (e) => setF({ ...f, [key]: e.target.value }) }));
   async function start() {
     const t = createTrip({
       riderWeightKg: Number(f.weight), bikeWeightKg: Number(f.bike), ftpW: Number(f.ftp), timeScale: Number(f.timeScale),
+      segmentId: course.segmentId,
     });
     await store.save(t, 'event');
     onTripChange(t);
   }
+  // コースは日本一周の順に並び、地方ごとに見出しをつける。どのコースからでも始められる
+  const list = [];
+  courses.forEach((c, i) => {
+    if (i === 0 || courses[i - 1].regionName !== c.regionName) list.push(h('li', { key: `r-${c.regionName}`, className: 'course-region' }, c.regionName));
+    const sel = c.segmentId === course.segmentId;
+    list.push(h('li', { key: c.segmentId },
+      h('button', {
+        type: 'button', className: `course${sel ? ' selected' : ''}`, 'aria-pressed': sel,
+        onClick: () => setF({ ...f, segmentId: c.segmentId }),
+      },
+      h('span', { className: 'course-no' }, c.no),
+      h('span', { className: 'course-name' }, c.name, c.side && h('span', { className: 'course-side' }, '寄り道')),
+      h('span', { className: 'course-stat' }, `${km(c.lengthM)} km・上り ${c.climbM} m`))));
+  });
   return h('div', { className: 'card depart' },
     h('h2', null, '旅の支度'),
-    h('p', { className: 'muted' }, '1日目は熱海サンビーチを朝7時に出発し、国道135号で伊東を目指します。荷物(テント・寝袋・食料・水など)は約14kg、所持金は3万円です。自転車の重さは荷物を積まない状態で入れてください。'),
+    h('p', { className: 'muted' }, `1日目は${nodeName(seg.from)}を朝7時に出発し、${seg.goalName}を目指します。荷物(テント・寝袋・食料・水など)は約14kg、所持金は3万円です。自転車の重さは荷物を積まない状態で入れてください。`),
+    h('div', { className: 'field' }, '出発するコース(つなげていくと日本一周)'),
+    h('ul', { className: 'course-list' }, list),
     h('div', { className: 'grid' },
       field('weight', '体重(kg)'), field('bike', '自転車の重さ(kg)'), field('ftp', 'FTP(W)'),
       h('label', { className: 'field' }, '旅の時間の早回し',

@@ -4,7 +4,7 @@
 import { h, useState, useEffect, useRef } from './h.js';
 import { FtmsClient } from '../ble/ftmsClient.js';
 import { TripStore, createIdbBackend, createMemoryBackend } from '../storage/tripStore.js';
-import { getSegment } from '../trip/network.js';
+import { getSegment, isSegmentLoaded, loadSegment } from '../trip/network.js';
 import { HomeScreen } from './HomeScreen.js';
 import { RideScreen } from './RideScreen.js';
 import { DayEndScreen } from './DayEndScreen.js';
@@ -37,9 +37,22 @@ export function App() {
     }).catch((e) => setNotice(`保存データを読めませんでした: ${e.message}`)).finally(() => setLoading(false));
   }, []);
 
-  const segment = trip ? getSegment(trip.position.segmentId) : null;
+  // 今いる区間の全データ(勾配・細かい地図)は、その区間に来たときに読む
+  const segmentId = trip?.position.segmentId ?? null;
+  const [segLoad, setSegLoad] = useState({ id: null, error: null, n: 0 });
+  useEffect(() => {
+    if (!segmentId || isSegmentLoaded(segmentId)) return;
+    loadSegment(segmentId).then(() => setSegLoad((s) => ({ ...s, id: segmentId, error: null })))
+      .catch((e) => setSegLoad((s) => ({ ...s, error: e.message })));
+  }, [segmentId, segLoad.n]);
+  const segment = segmentId && isSegmentLoaded(segmentId) ? getSegment(segmentId) : null;
 
   if (loading) return h('div', { className: 'page' }, h('p', null, '旅の記録を読み込み中...'));
+  if (segmentId && !segment) {
+    return h('div', { className: 'page' },
+      h('p', null, segLoad.error ? `${segLoad.error}。通信できる所でもう一度読み込んでください。` : '道のデータを読み込み中...'),
+      segLoad.error && h('button', { onClick: () => setSegLoad((s) => ({ ...s, error: null, n: s.n + 1 })) }, 'もう一度読み込む'));
+  }
 
   if (screen.name === 'ride' && trip && segment) {
     return h(RideScreen, {

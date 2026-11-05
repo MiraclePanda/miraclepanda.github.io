@@ -8,7 +8,7 @@
 //   sight:       { text }
 //   town:        (救護で運ばれる先)
 
-import { NODES } from '../data/segments/index.js';
+import { NODES } from '../data/catalog.js';
 import { routesFrom, segmentSummary } from './network.js';
 import { SURFACES } from '../physics/surfaces.js';
 import { PhysicsConstants } from '../physics/physicsConstants.js';
