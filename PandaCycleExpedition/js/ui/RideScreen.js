@@ -9,7 +9,7 @@ import { PhysicsEngine } from '../physics/physicsEngine.js';
 import { packWeightKg, surfaceOf } from '../physics/surfaces.js';
 import { createSegmentRoute, nextPlace, tunnelAtM } from '../physics/segmentRoute.js';
 import { startRide, updateRide, passTripTime, fmtClock, chooseNextSegment, addRideEvent } from '../storage/tripState.js';
-import { routesFrom, segmentSummary, nodeName, cameFromSegmentId } from '../trip/network.js';
+import { routesFrom, segmentSummary, nodeName, cameFromSegmentId, loadSegment } from '../trip/network.js';
 import { soaked } from '../trip/gear.js';
 import { visitSight, stampFood, SIGHT_VISIT_MINUTES } from '../trip/stamps.js';
 import { AutoSaver } from '../storage/autosave.js';
@@ -296,6 +296,8 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
           const routes = routesFrom(segment.to, cameFromSegmentId(t));
           if (routes.length === 0) finish('arrived');
           else {
+            // 選んだらすぐ走り出せるように、次の区間のデータを先に読んでおく
+            for (const r of routes) loadSegment(r.segmentId).catch(() => {});
             junctionRef.current = routes;
             setJunction(routes);
             showPrompt(null);

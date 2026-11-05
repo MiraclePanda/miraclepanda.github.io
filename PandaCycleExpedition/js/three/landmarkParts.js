@@ -1,4 +1,4 @@
-// 名所の形(景色データの landmarks。設定は tools/segments/<区間ID>.json)。
+// 名所の形(景色データの landmarks。設定は tools/segments/regions/<地方>.json の区間)。
 //   castle     熱海城: 石垣の上に白壁と黒い屋根の天守(5層に見える)
 //   lighthouse 門脇灯台(城ヶ崎): 白い塔と展望台
 //   palms      熱海サンビーチのヤシ並木: 道の海側に並べる(fromM〜toM は元の向きの区間の距離)

@@ -1,4 +1,4 @@
-// 区間データ(js/data/segments/*.js)を PhysicsEngine の route にする。純粋関数のみ。
+// 区間データ(js/data/segments/<id>.json。network.js の loadSegment で読む)を PhysicsEngine の route にする。純粋関数のみ。
 //
 // 区間データの形:
 //   { id, name, lengthM, stepM, grades: [%...](stepM ごとの勾配。i 番目は i·stepM〜(i+1)·stepM),

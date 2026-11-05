@@ -4,7 +4,7 @@
 // テントが無いと公園・キャンプ場に泊まれず(dayEvents.lodgingOptions)、雨具が無いと雨で体力が早く減る(body.stepBody)。
 
 import { DEFAULT_PACK } from '../physics/surfaces.js';
-import { NODES } from '../data/segments/index.js';
+import { NODES } from '../data/catalog.js';
 import { canAfford } from './dayEvents.js';
 
 /**
