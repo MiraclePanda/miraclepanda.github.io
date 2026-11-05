@@ -40,3 +40,25 @@ export function saveShowRideMap(show, storage = globalThis.localStorage) {
     // 保存できない環境では、その回だけの選択になる
   }
 }
+
+const CAMERA_VIEW_KEY = 'pce_camera_view_v1';
+/** 走行画面の視点(js/three/cameraViews.js の CAMERA_VIEWS と同じ並び)。 */
+export const CAMERA_VIEW_VALUES = ['chase', 'fp', 'high'];
+
+export function loadCameraView(storage = globalThis.localStorage) {
+  try {
+    const value = storage?.getItem(CAMERA_VIEW_KEY);
+    return CAMERA_VIEW_VALUES.includes(value) ? value : 'chase';
+  } catch {
+    return 'chase';
+  }
+}
+
+export function saveCameraView(value, storage = globalThis.localStorage) {
+  if (!CAMERA_VIEW_VALUES.includes(value)) return;
+  try {
+    storage?.setItem(CAMERA_VIEW_KEY, value);
+  } catch {
+    // 保存できない環境では、その回だけの選択になる
+  }
+}

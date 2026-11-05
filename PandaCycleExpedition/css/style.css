@@ -221,13 +221,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .ride-bar button { background: #fbf6ea; color: #2b2620; border: 1px solid #c9b48a; box-shadow: 0 2px 0 rgba(0,0,0,0.3); }
 .ride-bar button.primary { background: var(--accent); color: #fffaf0; border-color: #e0894f; }
 .ride-bar button:disabled { opacity: 0.55; }
-.quality-select {
-  display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
-  color: #ffd9a8; font-size: 0.85rem;
-}
-.quality-select select {
-  font: inherit; border: 1px solid #c9b48a; border-radius: 999px; padding: 4px 8px; background: #fbf6ea; color: #2b2620;
-}
+.ride-bar-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; }
+/* 表示の切り替え(地図・視点・品質)は旅の操作と見分けやすいよう海の青にする */
+.ride-bar .ride-bar-tools button { background: var(--sea); color: #f3fbff; border-color: #6fa5b8; }
 .toasts { position: absolute; left: 50%; transform: translateX(-50%); top: 12px; width: min(92vw, 520px); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
 /* 道中の知らせ: 手帳の書き込み */
 .toast {
@@ -277,7 +273,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .hud .cell b { font-size: 1rem; }
   .hero { min-height: 170px; }
   .hero-text h1 { font-size: 1.45rem; }
-  .quality-select { margin-left: 0; }
+  .ride-bar-tools { margin-left: 0; justify-content: flex-start; }
   .ride canvas.ride-map { width: 130px; height: 130px; inset: 10px 10px auto auto; }
   .hud-title { flex-basis: 100%; max-width: none; flex-direction: row; gap: 8px; align-items: baseline; border-right: 0; padding: 0 2px; }
   .companion { font-size: 0.9rem; }
