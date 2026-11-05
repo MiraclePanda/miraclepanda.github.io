@@ -8,7 +8,7 @@ import {
 import { routeLabel } from './RideScreen.js';
 import { TripMap } from './TripMap.js';
 import { stampProgress } from '../trip/stamps.js';
-import { gearOptions, shipHome, buyGear, buyFood, atTown, FOOD } from '../trip/gear.js';
+import { gearOptions, gearConfirmText, shipHome, buyGear, buyFood, atTown, FOOD } from '../trip/gear.js';
 import { downloadTrip, importTripFile } from '../storage/tripFile.js';
 import { validateWeight, validateBikeWeight, validateFtp, validatePowerScale } from '../utils/validation.js';
 import { packWeightKg } from '../physics/surfaces.js';
@@ -148,6 +148,7 @@ function TransferCard({ trip, segment, store, onTripChange }) {
   const list = node ? transfersFrom(node) : [];
   if (list.length === 0) return null;
   async function take(tr) {
+    if (!confirm(`${tr.name}で${tr.toName}へ移りますか?\n運賃 ${tr.yen.toLocaleString()} 円で、旅の時間が ${tr.minutes} 分進みます。\n乗った区間は走った距離に入りません。`)) return;
     const arrive = segmentArrivingAt(tr.to);
     const seg = getSegment(arrive);
     if (!seg) return;
@@ -176,15 +177,17 @@ function GearCard({ trip, segment, store, onTripChange }) {
   return h('div', { className: 'card' },
     h('h2', null, '荷物を見直す'),
     !inTown && h('p', { className: 'muted' }, '店のある町にいないので、ここでは送ったり買ったりできません。'),
-    h('p', { className: 'muted' }, 'テントがないと公園やキャンプ場に泊まれず、寝袋がないとテント泊でよく眠れません。雨具がないと雨の中で疲れやすくなります。荷物が軽いほど坂は楽です。'),
+    h('p', { className: 'muted' }, '荷物が軽いほど坂は楽です。使わない装備は家へ送って軽くできますが、旅の途中では戻ってこないので、また使うときは買い直します。'),
     gearOptions(trip).map((g) => h('div', { key: g.key, className: 'row', style: { justifyContent: 'space-between', margin: '4px 0' } },
-      h('span', null, `${g.label}(${g.kg} kg)・${g.owned ? '持っている' : '持っていない'}`),
+      h('span', null, `${g.label}(${g.kg} kg)・${g.owned ? '積んでいる' : '積んでいない'}`,
+        h('br'), h('small', { className: 'muted' }, g.owned ? `${g.effect}。` : `ないので${g.without}。`)),
       h('button', {
         disabled: !inTown || !g.affordable,
-        onClick: () => apply(g.owned ? shipHome(trip, g.key) : buyGear(trip, g.key)),
+        onClick: () => { if (confirm(gearConfirmText(trip, g.key))) apply(g.owned ? shipHome(trip, g.key) : buyGear(trip, g.key)); },
       }, g.owned ? `家へ送る(${g.shipYen.toLocaleString()} 円)` : `買う(${g.buyYen.toLocaleString()} 円)`))),
     h('div', { className: 'row', style: { justifyContent: 'space-between', margin: '4px 0' } },
-      h('span', null, `食料 ${food.toFixed(2)} kg(最大 ${FOOD.maxKg} kg)`),
+      h('span', null, `食料 ${food.toFixed(2)} kg(最大 ${FOOD.maxKg} kg)`,
+        h('br'), h('small', { className: 'muted' }, '補給食やテント泊の夕食・朝食で減ります。')),
       h('button', { disabled: !inTown || food >= FOOD.maxKg - 1e-9, onClick: () => apply(buyFood(trip)) },
         `${FOOD.stepKg} kg 買い足す(${Math.round(FOOD.stepKg * FOOD.yenPerKg).toLocaleString()} 円)`)));
 }
