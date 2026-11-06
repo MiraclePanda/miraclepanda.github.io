@@ -3,7 +3,7 @@
 //
 // 地形・道・建物は読み込み時に1回だけ組み立て(タイル・塊ごとのメッシュ。頂点は塊の原点からの相対座標にして
 // 何十 km 先でも精度が落ちないようにする)、毎フレーム動かすのはライダー・カメラ・影の範囲・海面と、
-// ライダーの近くだけに置くもの(中央線・ガードレール・電柱・トンネル・森の木)。
+// ライダーの近くだけに置くもの(中央線・ガードレール・電柱と電線・標識・カーブミラー・トンネル・森の木)。
 // 描画品質(最高/高/中/低)で、木を置く範囲と密度・建物を描く距離・見通し(霧と描画距離)・波を変える。
 // 道の見た目は物理・トレーナーには関係しない(勾配は区間データのまま)。
 
@@ -16,6 +16,8 @@ import { createRouteSampler, heightAt, nearTileAt, ringBounds, hash2 } from './s
 import { createPanorama } from './panoramaParts.js';
 import { buildLandmarks } from './landmarkParts.js';
 import { createAerialPhotos } from './aerialPhoto.js';
+import { planRoadside, isYellowAt } from './roadsideLayout.js';
+import { createRoadside } from './roadsideParts.js';
 import { VIEW_RIGS, normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg } from './cameraViews.js';
 
 const SKY_BY_WEATHER = {
@@ -526,9 +528,11 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   const box = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
   const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...extra });
   const pools = {
-    dash: makePool(box, std(0xf2f2f2), 60, { cast: false }),
+    // 路面(polygonOffset -2)より手前に描く(遠くで中央線が路面に埋もれないように)
+    dash: makePool(box, std(0xf2f2f2, { polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }), 120, { cast: false }),
     rail: makePool(box, std(0xd8d8d0, { metalness: 0.4 }), 600),
-    pole: makePool(box, std(0x8b8378), 40),
+    // ガードレールの視線誘導標(橙の反射板)
+    reflector: makePool(box, std(0xff8a1e, { emissive: 0xff6a00, emissiveIntensity: 0.35 }), 120, { cast: false }),
     tunnel: makePool(box, std(0x77746c), 400, { cast: false }),
     lamp: makePool(box, std(0xffd27a, { emissive: 0xffb43a, emissiveIntensity: 1.5 }), 80, { cast: false }),
   };
@@ -539,6 +543,12 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     disc: makePool(new THREE.CylinderGeometry(1, 0.75, 1, 9).translate(0, 0.5, 0), std(0xffffff, { roughness: 0.95, flatShading: true }), TREE_MAX),
   };
   for (const p of [...Object.values(pools), ...Object.values(trees)]) scene.add(p.mesh);
+  // 電柱と電線・カーブミラー・標識(配置は roadsideLayout.js)
+  const roadPlan = planRoadside({
+    lengthM: segment.lengthM, at: routeAt, groundAt: (x, y) => heightAt(sc, x, y), inTunnel: (m) => !!tubeAt(m),
+    places: segment.places, goalName: segment.goalName,
+  });
+  const roadside = createRoadside(scene, roadPlan, routeAt, { textures });
 
   // ---- ライダー(荷物を積んだグラベルバイク) ----
   const rider = createAvatar();
@@ -716,13 +726,23 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       placeTrees(ox, oy);
     }
 
-    // 中央線(10m ごとに 5m の破線。絶対位置にそろえるので走ると流れる)
+    // 中央線(10m ごとに 5m の白い破線。カーブの続く所とトンネルは黄色の実線 = はみ出し禁止。
+    // 絶対位置にそろえるので走ると流れる)
     for (let mm = Math.ceil((m0 - 30) / 10) * 10; mm < m0 + 220; mm += 10) {
+      if (isYellowAt(roadPlan, mm + 5)) {
+        // カーブでも折れ目が目立たないよう 2.5 m ずつ
+        for (let q = 1.25; q < 10; q += 2.5) {
+          routeAt(mm + q, PA);
+          const [x, y, z] = local(PA, 0, 0.05);
+          pushInstance(pools.dash, x, y, z, 0.15, 0.02, 2.6, 0, yawOf(PA), 0xe9a91c);
+        }
+        continue;
+      }
       routeAt(mm + 2.5, PA);
       const [x, y, z] = local(PA, 0, 0.05);
       pushInstance(pools.dash, x, y, z, 0.14, 0.02, 5, 0, yawOf(PA));
     }
-    // トンネル・ガードレール(道の脇が 2.5 m 以上落ち込む側 = 崖・海・橋)・電柱(高い側)
+    // トンネル・ガードレール(道の脇が 2.5 m 以上落ち込む側 = 崖・海・橋)
     for (let mm = Math.ceil((m0 - 30) / 4) * 4; mm < m0 + 420; mm += 4) {
       routeAt(mm, PA);
       routeAt(mm + 4, PB);
@@ -757,13 +777,8 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
         continue;
       }
       if (mm - m0 > 280) continue;
-      let high = 1;
-      let highH = -Infinity;
       for (const side of [-1, 1]) {
-        const gx = PA.x - PA.hy * side * 9;
-        const gy = PA.y + PA.hx * side * 9;
-        const gh = heightAt(sc, gx, gy);
-        if (gh > highH) { highH = gh; high = side; }
+        const gh = heightAt(sc, PA.x - PA.hy * side * 9, PA.y + PA.hx * side * 9);
         if (PA.z - gh > 2.5) {
           const [x, y, z] = local(PA, side * 5.3);
           pushInstance(pools.rail, x, y, z, 0.12, 0.75, 0.12, 0, 0);
@@ -771,17 +786,19 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
           // ビームは次の柱まで(4 m)。中点に置く
           pushInstanceYawPitch(pools.rail, bx + (PB.x - PA.x) / 2, by + (PB.z - PA.z) / 2, bz - (PB.y - PA.y) / 2,
             0.05, 0.3, 4.05, yaw, -pitch);
+          // 3本おきの柱の頭に橙の反射板(走ってくる向きに向ける)
+          if (mm % 12 === 0) {
+            const [rx, ry, rz] = local(PA, side * 5.18, 0.78);
+            pushInstance(pools.reflector, rx, ry, rz, 0.1, 0.1, 0.02, 0, yaw);
+          }
         }
-      }
-      if (mm % 40 === 0) {
-        const [x, y, z] = local(PA, high * 6.2);
-        pushInstance(pools.pole, x, y, z, 0.3, 9, 0.3, 0, 0);
       }
     }
     for (const p of Object.values(pools)) {
       commitPool(p);
       p.mesh.position.set(ox, 0, -oy);
     }
+    roadside.update(m0, ox, oy);
 
     // 建物は描画品質の距離まで
     for (const mesh of bldMeshes) {

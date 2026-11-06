@@ -62,6 +62,9 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
   // 景色データ: undefined = 読み込み中、null = 無い(簡易の景色)、object = 実在の地形・建物
   const [scenery, setScenery] = useState(undefined);
   const [showMap, setShowMap] = useState(loadShowRideMap);
+  // スマホ(狭い画面・横向き)では帯を細くたたむ。計器と道具はそれぞれ押すと広がる(広い画面では常に全部出す)
+  const [hudOpen, setHudOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const mapApiRef = useRef(null);
 
   function toast(text) {
@@ -398,8 +401,11 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
   const ctx = ctxRef.current;
   const t = tripRef.current;
   // 上の帯(旅の計器)・景色・下の帯(旅の道具)の3段。帯には景色を重ねない
-  return h('div', { className: 'ride' },
-    h(Hud, { hud, ftpW: t?.rider.ftpW ?? 200, demo, day: t?.day ?? initialTrip.day, title: segment.name }),
+  return h('div', { className: `ride${hudOpen ? ' hud-open' : ''}${toolsOpen ? ' tools-open' : ''}` },
+    h(Hud, {
+      hud, ftpW: t?.rider.ftpW ?? 200, demo, day: t?.day ?? initialTrip.day, title: segment.name,
+      onToggle: () => setHudOpen((v) => !v),
+    }),
     h('div', { className: 'ride-stage' },
     h('canvas', { ref: canvasRef }),
     h('div', { className: 'toasts' },
@@ -426,15 +432,19 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     h('div', { className: 'attribution' }, scenery ? `${scenery.attribution}・地理院タイル(シームレス空中写真)` : (segment.attribution ?? ''))),
     h('div', { className: 'ride-bar' },
       h('button', { className: 'primary', onClick: () => ctx?.togglePause(), disabled: !!junction }, paused ? '走り出す' : '休憩する'),
-      h('button', { onClick: () => ctx?.snack(), disabled: !t || (t.bike.pack.food ?? 0) < SNACK.kg }, '補給食を食べる'),
-      h('button', { onClick: () => ctx?.finish('stop') }, '今日はここまで(宿を探す)'),
-      h('button', { onClick: () => ctx?.finish('exit') }, 'ホームに戻る'),
+      // スマホでたたんだ帯を広げる(広い画面では出さない)
+      h('button', { className: 'ride-more', onClick: () => setToolsOpen((v) => !v), 'aria-expanded': toolsOpen },
+        toolsOpen ? 'たたむ ▾' : 'ほかの操作 ▴'),
+      h('button', { className: 'ride-extra', onClick: () => ctx?.snack(), disabled: !t || (t.bike.pack.food ?? 0) < SNACK.kg }, '補給食を食べる'),
+      h('button', { className: 'ride-extra', onClick: () => ctx?.finish('stop') }, '今日はここまで(宿を探す)'),
+      h('button', { className: 'ride-extra', onClick: () => ctx?.finish('exit') }, 'ホームに戻る'),
       // 地図・視点・描画品質は1つのまとまりにして、帯の右端に寄せる
       h('div', { className: 'ride-bar-tools' },
       h('button', { onClick: toggleMap, 'aria-pressed': showMap }, showMap ? '地図を隠す' : '地図を表示'),
       scenery && h('button', { onClick: changeView, title: '視点を切り替える(V キー)' }, `視点: ${VIEW_LABELS[cameraView]}`),
       // 描画品質は押すたびに 自動 → 最高 → 高 → 中 → 低 → 自動 と切り替える
       h('button', {
+        className: 'ride-extra',
         onClick: () => changeQuality(RENDER_QUALITY_VALUES[(RENDER_QUALITY_VALUES.indexOf(qualityMode) + 1) % RENDER_QUALITY_VALUES.length]),
         title: '描画品質を切り替える',
       }, `品質: ${qualityMode === 'auto' && activeTier ? `自動(${QUALITY_LABELS[activeTier]})` : QUALITY_LABELS[qualityMode]}`))));
@@ -442,23 +452,27 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
 
 const VIEW_LABELS = { chase: '後ろ', fp: '目線', high: '上空' };
 
-function Hud({ hud, ftpW, demo, day, title }) {
+function Hud({ hud, ftpW, demo, day, title, onToggle }) {
   const head = h('div', { className: 'hud-title' }, h('small', null, `旅の ${day} 日目`), h('b', null, title));
-  if (!hud) return h('div', { className: 'hud' }, head);
+  // スマホでは帯を押すと全部の計器を広げる/たたむ(広い画面では押しても何も変わらない)
+  const box = (...children) => h('div', { className: 'hud', onClick: onToggle }, ...children);
+  if (!hud) return box(head);
   const meter = (v) => h('div', { className: `meter${v < 25 ? ' low' : ''}` }, h('i', { style: { width: `${Math.max(0, Math.min(100, v))}%` } }));
-  const cell = (label, value, extra) => h('div', { className: 'cell' }, h('span', null, label), h('b', null, value), extra);
-  return h('div', { className: 'hud' },
+  // key: スマホでたたんだときにも出す計器('wide' は横向きのときだけ)。ほかは広げたときだけ
+  const cell = (label, value, extra, key) => h('div', { className: key ? `cell key${key === 'wide' ? ' wide' : ''}` : 'cell' }, h('span', null, label), h('b', null, value), extra);
+  return box(
     head,
-    cell('速度', `${hud.speedKmh.toFixed(1)} km/h`),
-    cell(demo ? 'パワー(デモ)' : 'パワー', `${Math.round(hud.powerW)} W`, h('span', null, ` 目安 ${sustainableWatts(hud.stamina, ftpW)}W`)),
-    cell('勾配', `${hud.grade.toFixed(1)}%`, h('span', null, ` 体感 ${hud.trainerGrade.toFixed(1)}%`)),
+    cell('速度', `${hud.speedKmh.toFixed(1)} km/h`, null, true),
+    cell(demo ? 'パワー(デモ)' : 'パワー', `${Math.round(hud.powerW)} W`, h('span', null, ` 目安 ${sustainableWatts(hud.stamina, ftpW)}W`), true),
+    cell('勾配', `${hud.grade.toFixed(1)}%`, h('span', null, ` 体感 ${hud.trainerGrade.toFixed(1)}%`), true),
     cell('路面', hud.surface),
-    cell('今日', `${hud.todayKm.toFixed(2)} km`, h('span', null, ` 残り ${hud.remainKm.toFixed(1)} km`)),
+    cell('今日', `${hud.todayKm.toFixed(2)} km`, h('span', null, ` 残り ${hud.remainKm.toFixed(1)} km`), 'wide'),
     cell('旅の時刻', fmtClock(hud.clock), h('span', null, ` ${hud.weather}`)),
-    cell('体力', `${Math.round(hud.stamina)}`, meter(hud.stamina)),
+    cell('体力', `${Math.round(hud.stamina)}`, meter(hud.stamina), true),
     cell('満腹度', `${Math.round(hud.satiety)}`, h('div', null, meter(hud.satiety), h('span', null, satietyLabel(hud.satiety)))),
     cell('所持金', `${hud.yen.toLocaleString()} 円`, h('span', null, ` 食料 ${hud.food.toFixed(2)}kg`)),
-    hud.next && cell('この先', hud.next.name, h('span', null, ` ${((hud.next.atM - hud.segM) / 1000).toFixed(1)} km`)));
+    hud.next && cell('この先', hud.next.name, h('span', null, ` ${((hud.next.atM - hud.segM) / 1000).toFixed(1)} km`)),
+    h('div', { className: 'hud-more', 'aria-hidden': true }));
 }
 
 /** 道連れの話: 吹き出し。話せるペースの目安も出す(超えると話が一休みになるだけで、罰はない)。 */
