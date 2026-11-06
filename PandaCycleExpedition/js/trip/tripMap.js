@@ -30,15 +30,21 @@ export function segmentSlice(segment, fromM, toM) {
   return out;
 }
 
-/** 旅の累積距離 totalM のときの区間と区間内の地点(legs から引く)。 */
-export function locateTotalM(trip, totalM) {
+/**
+ * 旅の累積距離 totalM のときの区間と区間内の地点(legs から引く)。
+ * arrived = その距離で着いた所(泊まった場所)。旧版で保存した旅の、コースを走り直した区間(restart)は同じ累積距離から
+ * 始まるので、着いた所としては走り直す前の区間の地点を返す。
+ */
+export function locateTotalM(trip, totalM, { arrived = false } = {}) {
   const legs = trip.legs ?? [{ segmentId: trip.position.segmentId, startTotalM: 0 }];
   let k = 0;
   for (let i = 0; i < legs.length; i++) if (legs[i].startTotalM <= totalM) k = i;
+  while (arrived && k > 0 && legs[k].restart && legs[k].startTotalM === totalM) k--;
   const seg = getSegment(legs[k].segmentId);
   if (!seg) return null;
   // 電車・船で着いた区間は終点(着いた町)にいる
-  const m = legs[k].transfer ? seg.lengthM : Math.min(seg.lengthM, Math.max(0, totalM - legs[k].startTotalM));
+  // 旧版で保存した旅の、続きから走り直した区間は startM の地点から入っている
+  const m = legs[k].transfer ? seg.lengthM : Math.min(seg.lengthM, Math.max(0, (legs[k].startM ?? 0) + totalM - legs[k].startTotalM));
   return { segment: seg, m, leg: k };
 }
 
@@ -53,8 +59,9 @@ export function pathBetween(trip, fromTotalM, toTotalM) {
     const e = i + 1 < legs.length ? legs[i + 1].startTotalM : trip.position.totalM;
     const a = Math.max(s, fromTotalM);
     const b = Math.min(e, toTotalM);
+    const off = legs[i].startM ?? 0;
     if (b > a) {
-      const line = segmentSlice(seg, a - s, Math.min(seg.lengthM, b - s));
+      const line = segmentSlice(seg, Math.min(seg.lengthM, off + a - s), Math.min(seg.lengthM, off + b - s));
       if (line.length >= 2) out.push(line);
     }
   }
@@ -66,7 +73,7 @@ export function buildTripMap(trip) {
   const roads = Object.values(SEGMENTS).map((s) => s.map ?? []).filter((l) => l.length >= 2);
   const here = locateTotalM(trip, trip.position.totalM);
   const nights = trip.log
-    .map((d) => ({ day: d.day, at: locateTotalM(trip, d.endTotalM) }))
+    .map((d) => ({ day: d.day, at: locateTotalM(trip, d.endTotalM, { arrived: true }) }))
     .filter((x) => x.at)
     .map((x) => ({ day: x.day, lonLat: lonLatAt(x.at.segment, x.at.m) }));
   const towns = [];

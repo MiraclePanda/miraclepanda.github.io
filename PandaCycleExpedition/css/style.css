@@ -280,7 +280,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 
 /* 旅の支度: コースの一覧(日本一周の順。増えてもカードが伸びすぎないよう、一覧の中でスクロール) */
-.course-list { list-style: none; margin: 4px 0 12px; padding: 0; max-height: 320px; overflow-y: auto;
+.course-list { list-style: none; margin: 4px 0 12px; padding: 0;
   border: 1px solid var(--line); border-radius: 10px; }
 .course-list .course-region { padding: 4px 10px; font-size: 0.8rem; color: var(--muted);
   background: color-mix(in srgb, var(--line) 30%, var(--panel)); letter-spacing: 0.1em; }
@@ -294,7 +294,43 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .course-side { margin-left: 6px; padding: 0 6px; border: 1px solid var(--sea); border-radius: 999px; color: var(--sea);
   font-size: 0.75rem; font-weight: 400; }
 .course-stat { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+.course-here { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--accent-ink);
+  font-size: 0.75rem; font-weight: 400; }
+/* 走ったことのあるコースの印: 途中まで = 点線の枠、完走 = 塗りつぶし */
+.course-mark { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 0.75rem; font-weight: 400; white-space: nowrap; }
+.course-mark.partial { border: 1px dashed var(--forest); color: var(--forest); }
+.course-mark.done { border: 1px solid var(--forest); background: var(--forest); color: var(--accent-ink); font-weight: 600; }
+.course-legend { font-size: 0.8rem; margin-top: -6px; }
 @media (max-width: 480px) {
   .course-list button.course { grid-template-columns: 2em 1fr; }
   .course-stat { grid-column: 2; }
 }
+
+/* ---- ホーム: コース一覧を中心にした1つの画面 ---- */
+/* トレーナー接続は上の帯に1つ(革の帯) */
+.trainer-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
+  margin: 0 0 10px; padding: 8px 14px; border-radius: 12px; background: linear-gradient(180deg, #5a3e29 0%, #46301f 55%, #3b2819 100%); color: #f6e7cf; }
+.trainer-bar b { font-family: var(--serif); letter-spacing: 0.1em; }
+.trainer-bar button { padding: 4px 14px; background: transparent; color: inherit; border-color: currentColor; }
+.trainer-on { font-size: 0.9rem; }
+.trainer-on::before { content: "● "; color: #8fcf8f; }
+.course-trip { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--sea); color: var(--accent-ink);
+  font-size: 0.75rem; font-weight: 400; white-space: nowrap; }
+/* 選んだコースの下に開く欄 */
+.course-panel { display: grid; gap: 10px; padding: 12px 12px 14px calc(2em + 18px);
+  border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.panel-title { font-family: var(--serif); font-size: 1.05rem; font-weight: 700; }
+.course-panel details summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+.course-panel details[open] summary { margin-bottom: 8px; }
+.inline-confirm { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--panel); font-size: 0.92rem; }
+button.link { justify-self: start; padding: 0; border: 0; background: none; color: var(--muted); text-decoration: underline; font-size: 0.88rem; }
+button.link:hover:not(:disabled) { box-shadow: none; color: var(--ink); }
+/* 旅の手帳のタブ */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; margin-bottom: 10px; }
+.tabs .tab { border: 0; border-radius: 0; border-bottom: 3px solid transparent; background: none; color: var(--muted); padding: 6px 12px; white-space: nowrap; }
+.tabs .tab:hover:not(:disabled) { box-shadow: none; color: var(--ink); }
+.tabs .tab.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 700; }
+.pane + .pane { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.pane > h3:first-child { margin-top: 0; font-family: var(--serif); }
+@media (max-width: 480px) { .course-panel { padding-left: 12px; } }
+.course-list .course-stat { white-space: normal; }
