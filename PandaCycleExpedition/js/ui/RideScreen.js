@@ -20,6 +20,7 @@ import {
 import { planCompanion, CompanionTalk, talkCeilingW, recordCompanion, recordCompanionMet } from '../trip/companion.js';
 import { createSeaRoadScene } from '../three/seaRoadScene.js';
 import { createRealRoadScene } from '../three/realRoadScene.js';
+import { createSeason } from '../trip/season.js';
 import { loadScenery, loadPanorama } from '../three/sceneryData.js';
 import { RideMap } from './RideMap.js';
 import { nextCameraView } from '../three/cameraViews.js';
@@ -122,7 +123,9 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       setScenery(sc);
       const opts = { qualityMode: loadRenderQuality(), onQualityChange: setActiveTier, cameraView: loadCameraView() };
       try {
-        scene = sc ? createRealRoadScene(canvasRef.current, segment, sc, { ...opts, panorama }) : createSeaRoadScene(canvasRef.current, segment, opts);
+        // 景色の季節(既定は実際の今日の日付)。区間の原点の経緯度で桜・紅葉の進み具合と日の出入りを決める
+        const season = sc ? createSeason({ mode: tripRef.current.settings.season, latDeg: sc.origin[1], lonDeg: sc.origin[0] }) : null;
+        scene = sc ? createRealRoadScene(canvasRef.current, segment, sc, { ...opts, panorama, season }) : createSeaRoadScene(canvasRef.current, segment, opts);
         sceneRef.current = scene;
       } catch (e) {
         setWarning(`3D を表示できません(${e.message})。走行と記録は続けられます。`);
