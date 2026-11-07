@@ -6,6 +6,7 @@ import { curvatureAtM } from '../three/routeLayout.js';
 import { RIDER_X_M, updateRiderAvatar, setCameraFov, setAvatarVisible } from '../three/sceneKit.js';
 import {
   riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+  AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_SIDE_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { yawFromDir } from '../three/atamiRealLayout.js';
 
@@ -177,18 +178,23 @@ export function updateCamera(st, dist, { speedKmh, cadenceRpm, roll, riderX }) {
     updateCineCamera(st, dist, riderX);
     return;
   }
-  setCameraFov(st.camera, CHASE_FOV_DEG);
+  // chase(斜め後ろ)と aerial(後方上空)は同じ組み方で、後ろの距離・高さ・注視点・画角だけが違う
+  const aerial = view === 'aerial';
+  setCameraFov(st.camera, aerial ? AERIAL_FOV_DEG : CHASE_FOV_DEG);
   const { sideM, raiseM, backM } = st.rider.camera;
-  const back = CAM_BACK_M + backM;
-  const up = CAM_HEIGHT_M + raiseM;
-  const cam = mix(worldPoint(st, dist - back, riderX + 0.4 + sideM, up), headingPoint(st, dist, riderX, -back, 0.4 + sideM, up), w);
+  const back = (aerial ? AERIAL_BACK_M : CAM_BACK_M) + backM;
+  const up = (aerial ? AERIAL_HEIGHT_M : CAM_HEIGHT_M) + raiseM;
+  const side = 0.4 + sideM + (aerial ? AERIAL_SIDE_M : 0);
+  const cam = mix(worldPoint(st, dist - back, riderX + side, up), headingPoint(st, dist, riderX, -back, side, up), w);
   // 坂の途中でカメラが地面に埋まらないよう、地形より上に置く
   const groundY = st.heightAt(cam[0], -cam[2]);
   cam[1] = Math.max(cam[1], groundY + 1.5);
   st.camera.position.set(cam[0], cam[1], cam[2]);
+  const lookAhead = aerial ? AERIAL_LOOKAHEAD_M : CAM_LOOKAHEAD_M;
+  const lookUp = aerial ? AERIAL_LOOK_HEIGHT_M : CAM_LOOKAHEAD_HEIGHT_M;
   const look = mix(
-    worldPoint(st, dist + CAM_LOOKAHEAD_M, riderX - 0.8, CAM_LOOKAHEAD_HEIGHT_M),
-    headingPoint(st, dist, riderX, CAM_LOOKAHEAD_M, -0.8, CAM_LOOKAHEAD_HEIGHT_M),
+    worldPoint(st, dist + lookAhead, riderX - 0.8, lookUp),
+    headingPoint(st, dist, riderX, lookAhead, -0.8, lookUp),
     w
   );
   st.camera.lookAt(look[0], look[1], look[2]);

@@ -15,6 +15,7 @@ import {
 } from '../three/sceneKit.js';
 import {
   createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+  AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_SIDE_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
 import { createOtherRiders } from '../three/otherRiders.js';
@@ -423,7 +424,7 @@ function initScene(canvas, courseEngine, L, vehicle) {
     placement: null,
     // route モードの水面の模様用: ライダーの道路中心の位置を、方位を積分して追う(さざ波を地面に固定する)
     waterOdo: { s: null, x: 0, z: 0 },
-    // 視点: view = 'chase' | 'fp' | 'cine'、crankRad = 目線の揺れ用のクランク角、director = cine のショット切り替え
+    // 視点: view = 'chase' | 'aerial' | 'fp' | 'cine'、crankRad = 目線の揺れ用のクランク角、director = cine のショット切り替え
     cam: { view: 'chase', crankRad: 0, director: createCineDirector() },
     clock: new THREE.Clock(),
     startedAt: performance.now(),
@@ -1062,13 +1063,17 @@ function updateCamera(st, dist, { speedKmh, cadenceRpm, roll, riderX }) {
     updateCineCamera(st, dist, riderX);
     return;
   }
-  setCameraFov(st.camera, CHASE_FOV_DEG);
+  // chase(斜め後ろ)と aerial(後方上空)は同じ組み方で、後ろの距離・高さ・注視点・画角だけが違う
+  const aerial = view === 'aerial';
+  setCameraFov(st.camera, aerial ? AERIAL_FOV_DEG : CHASE_FOV_DEG);
   // アバターごとの補正(スワンボートは斜め後ろ上から見る)
   const { sideM, raiseM, backM } = st.rider.camera;
   // 自分のアバターの横移動に追従する(myLaneOffsetM = 0 なら riderX = RIDER_X_M で従来と同じ)
-  const cam = worldPoint(st, dist, dist - CAM_BACK_M - backM, riderX + 0.4 + sideM, CAM_HEIGHT_M + raiseM);
+  const back = (aerial ? AERIAL_BACK_M : CAM_BACK_M) + backM;
+  const cam = worldPoint(st, dist, dist - back, riderX + 0.4 + sideM + (aerial ? AERIAL_SIDE_M : 0), (aerial ? AERIAL_HEIGHT_M : CAM_HEIGHT_M) + raiseM);
   st.camera.position.set(cam[0], cam[1], cam[2]);
-  const look = worldPoint(st, dist, dist + CAM_LOOKAHEAD_M, CAM_LOOK_LATERAL_M + (riderX - RIDER_X_M), CAM_LOOKAHEAD_HEIGHT_M);
+  const lookAhead = aerial ? AERIAL_LOOKAHEAD_M : CAM_LOOKAHEAD_M;
+  const look = worldPoint(st, dist, dist + lookAhead, CAM_LOOK_LATERAL_M + (riderX - RIDER_X_M), aerial ? AERIAL_LOOK_HEIGHT_M : CAM_LOOKAHEAD_HEIGHT_M);
   st.camera.lookAt(look[0], look[1], look[2]);
 }
 

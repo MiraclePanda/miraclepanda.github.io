@@ -1,4 +1,4 @@
-// 走行画面の視点(chase / fp / cine)とライダーの傾きの計算。Three.js 非依存の純粋ロジック(テスト対象)。
+// 走行画面の視点(chase / aerial / fp / cine)とライダーの傾きの計算。Three.js 非依存の純粋ロジック(テスト対象)。
 // 実際のカメラ・アバターへの反映は各シーン(CityScene / LandscapeScene / PondScene)が行う。
 //
 // cine(中継風のカメラワーク)のショットの切り替え:
@@ -9,17 +9,31 @@
 
 // ---- 視点・傾き・目線の揺れ ----
 
-// chase = 斜め後ろ(従来・既定)、fp = ライダーの目線、cine = 沿道の固定カメラとヘリ視点
-export const CAMERA_VIEWS = ['chase', 'fp', 'cine'];
+// chase = 斜め後ろ(従来・既定)、aerial = 後方上空(後ろの斜め上から見下ろす)、fp = ライダーの目線、
+// cine = 沿道の固定カメラとヘリ視点
+export const CAMERA_VIEWS = ['chase', 'aerial', 'fp', 'cine'];
 const ROLL_GRAVITY = 9.81; // 傾きの見た目用(物理演算には使わない)
 const MAX_RIDER_ROLL_RAD = 0.35;
 const MAX_FP_ROLL_RAD = 0.08;
 const FP_BOB_M = 0.012;
 export const CHASE_FOV_DEG = 60;
 
+// aerial(後方上空): ライダーの後ろ AERIAL_BACK_M・路面から AERIAL_HEIGHT_M の高さに置き、
+// ライダーの少し前(AERIAL_LOOKAHEAD_M 先の路面付近)を見下ろす。見下ろす角は約 atan(8/21) ≈ 21°で、
+// ライダーは画面の下寄り、その先の道と沿道の景色が広く入る。アバターごとの補正(sideM 等)は chase と同じく足す。
+// 都市(CityScene)の道路は後方 20m までしか作らないので、後ろの距離はそれより十分短くする。
+export const AERIAL_BACK_M = 11;
+export const AERIAL_HEIGHT_M = 8;
+// 横は chase より AERIAL_SIDE_M だけ道路の中央寄り(右)に置く: 左の歩道の街路樹・ヤシの葉が
+// カメラの高さ(約8m)にかかって手前を覆わないように(上野の池は水上で木がないので寄せない)
+export const AERIAL_SIDE_M = 2;
+export const AERIAL_LOOKAHEAD_M = 10;
+export const AERIAL_LOOK_HEIGHT_M = 0.5;
+export const AERIAL_FOV_DEG = 55;
+
 /** 不正な値は 'chase' に丸める。allowCine=false(上野不忍池)なら cine も chase 扱い。 */
 export function normalizeCameraView(view, allowCine = true) {
-  if (view === 'fp') return 'fp';
+  if (view === 'fp' || view === 'aerial') return view;
   if (view === 'cine' && allowCine) return 'cine';
   return 'chase';
 }

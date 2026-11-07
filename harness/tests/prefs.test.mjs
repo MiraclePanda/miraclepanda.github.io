@@ -78,6 +78,8 @@ test('prefs: environment / camera view / pack toggle defaults and validation', (
   assert.deepEqual(prefs.loadEnvironment(), { time: 'noon', weather: 'clear' });
 
   assert.equal(prefs.loadCameraView(), 'chase');
+  prefs.saveCameraView('aerial');
+  assert.equal(prefs.loadCameraView(), 'aerial');
   prefs.saveCameraView('cine');
   assert.equal(prefs.loadCameraView(), 'cine');
   prefs.saveCameraView('drone');

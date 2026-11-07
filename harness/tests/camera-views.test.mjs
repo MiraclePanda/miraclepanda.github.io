@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CAMERA_VIEWS, CINE_SHOT_S, CINE_SHOT_TYPES, CHASE_FOV_DEG, createCineDirector, normalizeCameraView,
+  AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_LOOKAHEAD_M, AERIAL_FOV_DEG,
   riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg,
 } from '../../PandaCycleTrainer/js/three/cameraViews.js';
 
@@ -20,14 +21,26 @@ function runDirector(director, { tEnd, dt = 0.05, speedMps = 0, startM = 1000 })
   return switches;
 }
 
-test('camera views: chase / fp / cine, unknown values fall back to chase, the pond has no cine', () => {
-  assert.deepEqual(CAMERA_VIEWS, ['chase', 'fp', 'cine']);
+test('camera views: chase / aerial / fp / cine, unknown values fall back to chase, the pond has no cine', () => {
+  assert.deepEqual(CAMERA_VIEWS, ['chase', 'aerial', 'fp', 'cine']);
+  assert.equal(normalizeCameraView('aerial'), 'aerial');
+  assert.equal(normalizeCameraView('aerial', false), 'aerial');
   assert.equal(normalizeCameraView(undefined), 'chase');
   assert.equal(normalizeCameraView('drone'), 'chase');
   assert.equal(normalizeCameraView('fp'), 'fp');
   assert.equal(normalizeCameraView('cine'), 'cine');
   assert.equal(normalizeCameraView('cine', false), 'chase');
   assert.equal(normalizeCameraView('fp', false), 'fp');
+});
+
+test('aerial view: behind and well above the rider, looking down past the rider, inside the city road window', () => {
+  // CityScene は後方 20m までしか道路を作らない(スワンボートの補正 backM 1.2m を足しても収まる)
+  assert.ok(AERIAL_BACK_M + 1.2 < 20);
+  assert.ok(AERIAL_HEIGHT_M >= 6, 'clearly higher than the chase camera');
+  // 見下ろす角(注視点まで)は 15〜35°: ライダーと前方の道の両方が入る
+  const deg = (Math.atan2(AERIAL_HEIGHT_M, AERIAL_BACK_M + AERIAL_LOOKAHEAD_M) * 180) / Math.PI;
+  assert.ok(deg > 15 && deg < 35, `pitch ${deg}`);
+  assert.ok(AERIAL_FOV_DEG > 40 && AERIAL_FOV_DEG <= CHASE_FOV_DEG);
 });
 
 test('cine switches shots every 10 seconds (stationary and at a typical riding speed)', () => {
