@@ -13,7 +13,10 @@ import {
   setCameraFov, setAvatarVisible,
   reportReadyAfterDraw,
 } from '../three/sceneKit.js';
-import { normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG } from '../three/cameraViews.js';
+import {
+  normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+  AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
+} from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
 import { createOcean } from '../three/oceanWater.js';
 
@@ -120,7 +123,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
       headlightParent: scene3d.rider.group, weather: false,
     });
     scene3d.env.set(environment, { immediate: true });
-    // 池は chase と fp のみ(cine は chase 扱い)
+    // 池は chase / aerial / fp のみ(cine は chase 扱い)
     scene3d.cam.view = normalizeCameraView(cameraView, false);
 
     const resize = () => resizeScene(scene3d);
@@ -152,7 +155,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
     sceneRef.current?.env.set(environment);
   }, [environment?.time]);
 
-  // 視点の切り替え(即時)。池は chase と fp のみ(cine は chase 扱い)。
+  // 視点の切り替え(即時)。池は chase / aerial / fp のみ(cine は chase 扱い)。
   useEffect(() => {
     if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView, false);
   }, [cameraView]);
@@ -250,7 +253,7 @@ function initScene(canvas, vehicle) {
     canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures, waterNormal,
     ocean: createOcean(water),
     moored, others, rider,
-    // 視点: view = 'chase' | 'fp'、crankRad = 目線の揺れ用のクランク角
+    // 視点: view = 'chase' | 'aerial' | 'fp'、crankRad = 目線の揺れ用のクランク角
     cam: { view: 'chase', crankRad: 0 },
     clock: new THREE.Clock(),
     startedAt: performance.now(),
@@ -544,17 +547,19 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm) {
     st.camera.lookAt(ahead.pos.x, FP_LOOK_HEIGHT_M, ahead.pos.z);
     setCameraFov(st.camera, fpFovDeg(speedKmh / 3.6));
   } else {
-    setCameraFov(st.camera, CHASE_FOV_DEG);
+    // chase(斜め後ろ)と aerial(後方上空)は同じ組み方で、後ろの距離・高さ・注視点・画角だけが違う
+    const aerial = st.cam.view === 'aerial';
+    setCameraFov(st.camera, aerial ? AERIAL_FOV_DEG : CHASE_FOV_DEG);
     // カメラ: 斜め後ろ上から(アバターごとの補正込み)。池の中心側(左)を少し多めに見る
     const { sideM, raiseM, backM } = st.rider.camera;
-    const behind = routeWorld(dist - CAM_BACK_M - backM);
+    const behind = routeWorld(dist - (aerial ? AERIAL_BACK_M : CAM_BACK_M) - backM);
     _right.set(Math.sin(behind.heading), 0, Math.cos(behind.heading));
     st.camera.position.copy(behind.pos).addScaledVector(_right, 0.4 + sideM);
-    st.camera.position.y = CAM_HEIGHT_M + raiseM;
-    const ahead = routeWorld(dist + CAM_LOOKAHEAD_M);
+    st.camera.position.y = (aerial ? AERIAL_HEIGHT_M : CAM_HEIGHT_M) + raiseM;
+    const ahead = routeWorld(dist + (aerial ? AERIAL_LOOKAHEAD_M : CAM_LOOKAHEAD_M));
     _right.set(Math.sin(ahead.heading), 0, Math.cos(ahead.heading));
     const look = ahead.pos.clone().addScaledVector(_right, -CAM_LOOK_LEFT_M);
-    st.camera.lookAt(look.x, CAM_LOOKAHEAD_HEIGHT_M, look.z);
+    st.camera.lookAt(look.x, aerial ? AERIAL_LOOK_HEIGHT_M : CAM_LOOKAHEAD_HEIGHT_M, look.z);
   }
 
   // 影はボートの周りだけ描けばよいので、影カメラごとボートに付いていく

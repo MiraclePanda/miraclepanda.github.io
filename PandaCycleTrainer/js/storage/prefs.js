@@ -156,10 +156,10 @@ export function saveEnvironment(env) {
 }
 
 // ---------------------------------------------------------------------------
-// 視点(後方 chase / 一人称 fp / 映画風 cine)。PR2+3 仕様 §3。既定は従来どおりの chase。
+// 視点(後方 chase / 後方上空 aerial / 一人称 fp / 映画風 cine)。PR2+3 仕様 §3。既定は従来どおりの chase。
 // ---------------------------------------------------------------------------
 const CAMERA_VIEW_KEY = 'pct_camera_view_v1';
-export const CAMERA_VIEWS = ['chase', 'fp', 'cine'];
+export const CAMERA_VIEWS = ['chase', 'aerial', 'fp', 'cine'];
 
 export function loadCameraView() {
   try {

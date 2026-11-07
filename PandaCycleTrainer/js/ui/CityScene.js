@@ -16,6 +16,7 @@ import {
 } from '../three/sceneKit.js';
 import {
   createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+  AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_SIDE_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
 import { createOtherRiders } from '../three/otherRiders.js';
@@ -322,7 +323,7 @@ function initScene(canvas, vehicle) {
     facades, storefronts, roofs, roofUnits,
     trunks, canopies, lamps, carBodies, carGlass, carWheels,
     rider,
-    // 視点: view = 'chase' | 'fp' | 'cine'、crankRad = 目線の揺れ用のクランク角、director = cine のショット切り替え
+    // 視点: view = 'chase' | 'aerial' | 'fp' | 'cine'、crankRad = 目線の揺れ用のクランク角、director = cine のショット切り替え
     cam: { view: 'chase', crankRad: 0, director: createCineDirector() },
     clock: new THREE.Clock(),
     // 道路フレーム(buildRouteFrame の戻り値)。毎フレーム配列と要素を使い回して GC を抑える。
@@ -684,17 +685,20 @@ function updateCamera(s, elevAt, frame, motion) {
     updateCineCamera(s, elevAt, frame, motion);
     return;
   }
-  setCameraFov(s.camera, CHASE_FOV_DEG);
+  // chase(斜め後ろ)と aerial(後方上空)は同じ組み方で、後ろの距離・高さ・注視点・画角だけが違う
+  const aerial = view === 'aerial';
+  setCameraFov(s.camera, aerial ? AERIAL_FOV_DEG : CHASE_FOV_DEG);
   // アバターごとの補正(スワンボートは斜め後ろ上から見る)
   const { sideM, raiseM, backM } = s.rider.camera;
-  const camBack = CAM_BACK_M + backM;
-  const camY = elevAt(-camBack) + CAM_HEIGHT_M + raiseM;
+  const camBack = (aerial ? AERIAL_BACK_M : CAM_BACK_M) + backM;
+  const camY = elevAt(-camBack) + (aerial ? AERIAL_HEIGHT_M : CAM_HEIGHT_M) + raiseM;
   // カメラも道路に沿わせる(後方・前方の道路上の点から見る。直線では従来の位置と一致)。
   // 自分のアバターの横移動に追従する(myLaneOffsetM = 0 なら riderX = RIDER_X_M で従来と同じ)
-  const p = toLocalInto(frame, -camBack, motion.riderX + 0.4 + sideM, _local);
+  const p = toLocalInto(frame, -camBack, motion.riderX + 0.4 + sideM + (aerial ? AERIAL_SIDE_M : 0), _local);
   s.camera.position.set(p.x, camY, p.z);
-  const lookY = elevAt(CAM_LOOKAHEAD_M) + CAM_LOOKAHEAD_HEIGHT_M;
-  const q = toLocalInto(frame, CAM_LOOKAHEAD_M, RIDER_X_M * 0.4 + (motion.riderX - RIDER_X_M), _local);
+  const lookAhead = aerial ? AERIAL_LOOKAHEAD_M : CAM_LOOKAHEAD_M;
+  const lookY = elevAt(lookAhead) + (aerial ? AERIAL_LOOK_HEIGHT_M : CAM_LOOKAHEAD_HEIGHT_M);
+  const q = toLocalInto(frame, lookAhead, RIDER_X_M * 0.4 + (motion.riderX - RIDER_X_M), _local);
   s.camera.lookAt(q.x, lookY, q.z);
 }
 

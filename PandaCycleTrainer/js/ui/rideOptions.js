@@ -6,7 +6,7 @@ import { ENVIRONMENT_TIMES, ENVIRONMENT_WEATHERS, CAMERA_VIEWS } from '../storag
 
 export const TIME_LABELS = { morning: '朝', noon: '昼', sunset: '夕方', night: '夜' };
 export const WEATHER_LABELS = { clear: '晴れ', cloudy: 'くもり', rain: '雨', fog: '霧' };
-export const VIEW_LABELS = { chase: '後方', fp: '目線', cine: 'シネマ' };
+export const VIEW_LABELS = { chase: '後方', aerial: '後方上空', fp: '目線', cine: 'シネマ' };
 
 export const TIME_OPTIONS = ENVIRONMENT_TIMES.map((id) => ({ id, label: TIME_LABELS[id] ?? id }));
 export const WEATHER_OPTIONS = ENVIRONMENT_WEATHERS.map((id) => ({ id, label: WEATHER_LABELS[id] ?? id }));
@@ -16,7 +16,7 @@ export function supportsWeather(courseProfile) {
   return courseProfile?.scenery !== 'ueno' && courseProfile?.scenery !== 'ryugu';
 }
 
-/** コースで選べる視点。上野不忍池は後方/目線のみ(シネマは後方扱い)。 */
+/** コースで選べる視点。上野不忍池は後方/後方上空/目線のみ(シネマは後方扱い)。 */
 export function viewsFor(courseProfile) {
   return courseProfile?.scenery === 'ueno' ? CAMERA_VIEWS.filter((v) => v !== 'cine') : CAMERA_VIEWS.slice();
 }
@@ -27,7 +27,7 @@ export function effectiveView(view, courseProfile) {
   return views.includes(view) ? view : 'chase';
 }
 
-/** 後方 → 目線 → シネマ → 後方 …(上野は 後方 ⇄ 目線)。 */
+/** 後方 → 後方上空 → 目線 → シネマ → 後方 …(上野は 後方 → 後方上空 → 目線)。 */
 export function nextView(view, courseProfile) {
   const views = viewsFor(courseProfile);
   const i = views.indexOf(effectiveView(view, courseProfile));
