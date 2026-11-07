@@ -24,8 +24,9 @@ function mercatorPx(lon, lat, z) {
  * @param {{anisotropy?:number, loadImage?:(url:string)=>Promise<HTMLImageElement>}} [opts]
  *   anisotropy: 斜めから見た地面の写真をぼかさないための異方性フィルタ(端末の上限)。loadImage はテスト用。
  *   patchMaterial: 写真の地面の material に元の地面と同じ加工(トンネルの中を描かない)をする関数
+ *   color: 写真に掛ける色(季節で緑・黄みに寄せる。seasonLook.js の photoTint)
  */
-export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMaterial = (m) => m } = {}) {
+export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMaterial = (m) => m, color = 0xa4ad94 } = {}) {
   const tiles = [...sc.near.values()].filter((t) => t.mesh);
   const N = sc.n;
   let cfg = null;
@@ -100,7 +101,7 @@ export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMateria
       map.channel = 1;
       map.anisotropy = anisotropy;
       // 写真には影も写っているので、日の光で明るくなりすぎないよう少し暗い緑がかった色を掛ける
-      photo.material = patchMaterial(new THREE.MeshStandardMaterial({ map, color: 0xa4ad94, roughness: 0.95 }));
+      photo.material = patchMaterial(new THREE.MeshStandardMaterial({ map, color, roughness: 0.95 }));
       t.baseMaterial ??= t.mesh.material;
       t.mesh.material = photo.material;
     };

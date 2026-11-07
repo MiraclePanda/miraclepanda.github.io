@@ -7,22 +7,31 @@
 
 import THREE from './three.js';
 import { fromLonLat, curvatureDropM } from './sceneryData.js';
+import { vegetationColor, snowCover, withSnow } from './seasonLook.js';
 
 const _c = new THREE.Color();
 
-function panoramaColor(h, ny) {
-  if (h > 3000) return _c.setHex(0xf4f6f8); // 富士山の冠雪
-  if (h > 2300) return _c.setHex(0x8d7f73).lerp(new THREE.Color(0xf4f6f8), (h - 2300) / 700);
-  if (h > 1500) return _c.setHex(0x5d6650).lerp(new THREE.Color(0x8d7f73), (h - 1500) / 800);
-  if (h < 1) return _c.setHex(0xc9bb94);
-  return ny < 0.75 ? _c.setHex(0x4a573e) : _c.setHex(0x3d5a30).lerp(new THREE.Color(0x6f8a4a), h < 80 ? 0.6 : 0);
+/** 遠くの山の色。snowLine から上は雪(夏は無し)、その下 700 m は岩肌から雪へ。 */
+function panoramaColor(h, ny, season) {
+  const snowLine = season ? season.snowLineM : 2300;
+  if (h > snowLine + 700) return _c.setHex(0xf4f6f8); // 富士山の冠雪
+  if (h > 2300) return _c.setHex(0x8d7f73).lerp(new THREE.Color(0xf4f6f8), Math.max((h - Math.max(snowLine, 2300)) / 700, 0));
+  if (h > 1500) _c.setHex(0x5d6650).lerp(new THREE.Color(0x8d7f73), (h - 1500) / 800);
+  else if (h < 1) return _c.setHex(0xc9bb94);
+  else if (ny < 0.75) _c.setHex(0x4a573e);
+  else _c.setHex(0x3d5a30).lerp(new THREE.Color(0x6f8a4a), h < 80 ? 0.6 : 0);
+  if (!season) return _c;
+  // 季節: 森の色(紅葉・冬枯れ)と、雪線より上の雪
+  _c.setHex(vegetationColor(_c.getHex(), 'forest', season.plants(h)));
+  return _c.setHex(withSnow(_c.getHex(), snowCover(h, snowLine)));
 }
 
 /**
  * @param {object} pano decodePanorama の戻り値
  * @param {object} sc 区間の景色データ(座標の原点と、地球の丸みを測る中心に使う)
+ * @param {object|null} [season] 景色の季節(js/trip/season.js)。富士山の雪の量と山の色が変わる
  */
-export function createPanorama(pano, sc) {
+export function createPanorama(pano, sc, season = null) {
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0xd3e6f3, 0.00002);
   const camera = new THREE.PerspectiveCamera(62, 1, 50, 300000);
@@ -65,7 +74,7 @@ export function createPanorama(pano, sc) {
   const nrm = g.attributes.normal.array;
   const col = new Float32Array(nx * ny * 3);
   for (let k = 0; k < nx * ny; k++) {
-    const c = panoramaColor(pano.h[k], nrm[k * 3 + 1]);
+    const c = panoramaColor(pano.h[k], nrm[k * 3 + 1], season);
     col.set([c.r, c.g, c.b], k * 3);
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));

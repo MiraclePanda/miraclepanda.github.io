@@ -18,6 +18,7 @@ import { buildLandmarks } from './landmarkParts.js';
 import { createAerialPhotos } from './aerialPhoto.js';
 import { planRoadside, isYellowAt } from './roadsideLayout.js';
 import { createRoadside } from './roadsideParts.js';
+import { broadleafLook, coniferColor, evergreenShare, photoTint, snowCover, vegetationColor, withSnow } from './seasonLook.js';
 import { VIEW_RIGS, normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg } from './cameraViews.js';
 
 const SKY_BY_WEATHER = {
@@ -133,16 +134,21 @@ function waveNormalTexture() {
 const _c = new THREE.Color();
 const _c2 = new THREE.Color();
 
-/** 地面の色: 高さ・斜面の急さ・道や家並みへの近さから。 */
-function groundColor(h, ny, roadD, built, r) {
+/** 地面の色: 高さ・斜面の急さ・道や家並みへの近さから。season があれば植物の色と山の雪を季節に合わせる。 */
+function groundColor(h, ny, roadD, built, r, season) {
   if (h < 0.6) return _c.setHex(0xcdbd92);
   if (roadD < 9) return _c.setHex(0x7b7870);
   if (h < 2.2 && roadD > 20) return _c.setHex(0xc4b68e);
   const slope = 1 - ny;
-  if (slope > 0.45) return _c.setHex(0x6e6656).lerp(_c2.setHex(0x55603f), r * 0.5);
-  if (built) return _c.setHex(0x8e8a80).lerp(_c2.setHex(0x627a4a), 0.35 + r * 0.4);
-  if (slope < 0.06 && h < 60 && roadD < 160) return _c.setHex(r < 0.5 ? 0x748c48 : 0x8b9a58);
-  return _c.setHex(0x2e4b25).lerp(_c2.setHex(0x46672f), r);
+  const p = season?.plants(h);
+  const veg = (hex, kind) => _c.setHex(p ? vegetationColor(hex, kind, p) : hex);
+  if (slope > 0.45) _c.setHex(0x6e6656).lerp(_c2.setHex(0x55603f), r * 0.5);
+  else if (built) _c.setHex(0x8e8a80).lerp(_c2.setHex(0x627a4a), 0.35 + r * 0.4);
+  else if (slope < 0.06 && h < 60 && roadD < 160) veg(r < 0.5 ? 0x748c48 : 0x8b9a58, 'field');
+  else veg(_c2.setHex(0x2e4b25).lerp(_c.setHex(0x46672f), r).getHex(), 'forest');
+  // 急な崖には雪が残りにくい
+  const snow = season ? snowCover(h, season.snowLineM) * (slope > 0.45 ? 0.6 : 1) : 0;
+  return snow > 0 ? _c.setHex(withSnow(_c.getHex(), snow)) : _c;
 }
 
 /**
@@ -151,12 +157,15 @@ function groundColor(h, ny, roadD, built, r) {
  * @param {object} sc 景色データ(decodeScenery の戻り値)
  * @param {{qualityMode?:string, onQualityChange?:(tier:string)=>void, panorama?:object|null}} [opts]
  *   panorama: 遠景の標高(loadPanorama の戻り値)。無ければ遠景なし
+ *   season: 景色の季節(js/trip/season.js の createSeason)。無ければ夏の景色・6時〜18時の太陽
  */
-export function createRealRoadScene(canvas, segment, sc, { qualityMode = 'auto', onQualityChange, panorama = null, cameraView = 'chase' } = {}) {
+export function createRealRoadScene(canvas, segment, sc, {
+  qualityMode = 'auto', onQualityChange, panorama = null, cameraView = 'chase', season = null,
+} = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.autoClear = false; // 遠景 → 近くの景色の順に重ねて描く
-  const pano = panorama ? createPanorama(panorama, sc) : null;
+  const pano = panorama ? createPanorama(panorama, sc, season) : null;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0xd3e6f3, 0.00035);
@@ -337,7 +346,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     const nrm = g.attributes.normal.array;
     const col = new Float32Array(n1 * n1 * 3);
     for (let k = 0; k < n1 * n1; k++) {
-      const c = groundColor(t.h[k], nrm[k * 3 + 1], t.roadD[k], t.built[k], hash2(t.tx * N + (k % n1), t.ty * N + Math.floor(k / n1), 1));
+      const c = groundColor(t.h[k], nrm[k * 3 + 1], t.roadD[k], t.built[k], hash2(t.tx * N + (k % n1), t.ty * N + Math.floor(k / n1), 1), season);
       col.set([c.r, c.g, c.b], k * 3);
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -360,7 +369,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     g.computeVertexNormals();
     const nrm = g.attributes.normal.array;
     for (let k = 0; k < f.nx * f.ny; k++) {
-      const c = groundColor(f.h[k], nrm[k * 3 + 1], 1e9, 0, hash2(k % f.nx, Math.floor(k / f.nx), 2));
+      const c = groundColor(f.h[k], nrm[k * 3 + 1], 1e9, 0, hash2(k % f.nx, Math.floor(k / f.nx), 2), season);
       col.set([c.r, c.g, c.b], k * 3);
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -579,6 +588,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   // 地面の航空写真(最高・高のとき、まわりのタイルだけ)
   const photos = createAerialPhotos(sc, {
     anisotropy: Math.min(16, renderer.capabilities.getMaxAnisotropy()), patchMaterial: cutTunnels,
+    ...(season ? { color: photoTint(season.plants(0)) } : {}),
   });
   const s = {
     renderer, scene, camera, canvas, sunLight, textures, sky: null, clock: new THREE.Clock(),
@@ -605,28 +615,57 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   };
   let sunDir = new THREE.Vector3(1, 0.3, 0.3).normalize();
 
+  // 季節が無いときの太陽: 6時に東の地平線、12時に南の空高く、18時に西へ沈む
+  const SUN_RISE = season?.sunrise ?? 6 * 60;
+  const SUN_SET = season?.sunset ?? 18 * 60;
+  const mood = season?.sky ?? { haze: 1, clear: 0, humid: 0 };
+  // 夜の暗さ: 季節があれば実際の日の入りから 20 分前〜40 分後(薄明)で暗くなる
+  const NIGHT_FROM = season ? SUN_SET - 20 : SUN_SET - 60;
+  /** 時刻の太陽の向き(世界の座標。東 = +X、南 = +Z)と高さの sin。 */
+  function sunAt(clockMinutes) {
+    if (!season) {
+      const t = Math.min(Math.max((clockMinutes - SUN_RISE) / (SUN_SET - SUN_RISE), 0), 1);
+      const dir = new THREE.Vector3(Math.cos(t * Math.PI), Math.sin(t * Math.PI) * 0.75 + 0.05, 0.55 * Math.sin(t * Math.PI)).normalize();
+      return { dir, sinE: Math.sin(t * Math.PI) };
+    }
+    // 季節の太陽: 冬は低く南寄りから、夏は高く北東から昇って北西へ沈む。沈んだ後も光の向きは地平の少し上
+    const { elevDeg, azDeg } = season.sunAt(clockMinutes);
+    const e = (Math.max(elevDeg, 3) * Math.PI) / 180;
+    const az = (azDeg * Math.PI) / 180;
+    const dir = new THREE.Vector3(Math.sin(az) * Math.cos(e), Math.sin(e), -Math.cos(az) * Math.cos(e));
+    return { dir, sinE: Math.max(Math.sin((elevDeg * Math.PI) / 180), 0) };
+  }
+
   function rebakeSky(kind, clockMinutes) {
-    const hour = Math.floor(clockMinutes / 60);
-    const key = `${kind}:${Math.min(Math.max(hour, 6), 18)}`;
+    // 空を焼き直すのは 30 分ごと(日の出前・日の入り後は変わらないのでまとめる)
+    const c = Math.min(Math.max(clockMinutes, SUN_RISE - 30), SUN_SET + 90);
+    const key = `${kind}:${Math.floor(c / 30)}`;
     if (key === s.skyKey) return;
     s.skyKey = key;
     const w = SKY_BY_WEATHER[kind] ?? SKY_BY_WEATHER.sunny;
-    // 太陽: 6時に東(+X)の地平線、12時に南(+Z)の空高く、18時に西へ沈む
-    const t = Math.min(Math.max((clockMinutes - 6 * 60) / (12 * 60), 0), 1);
-    sunDir = new THREE.Vector3(Math.cos(t * Math.PI), Math.sin(t * Math.PI) * 0.75 + 0.05, 0.55 * Math.sin(t * Math.PI)).normalize();
-    const evening = Math.max(0, (clockMinutes - 15.5 * 60) / 90);
-    const horizon = new THREE.Color(w.horizon).lerp(new THREE.Color('#f2a35e'), Math.min(evening, 1) * (kind === 'sunny' ? 0.8 : 0.3));
+    const sun = sunAt(c);
+    sunDir = sun.dir;
+    // 日の入りの 1 時間半前から夕焼けに
+    const evening = Math.max(0, (c - (SUN_SET - 150)) / 90);
+    const fair = kind === 'sunny' || kind === 'cloudy';
+    // 季節の空: 冬は澄んで青が深く、夏は湿気で地平が白っぽい
+    const zenith = new THREE.Color(w.zenith).lerp(new THREE.Color('#2a62b5'), fair ? mood.clear * 0.3 : 0);
+    const horizon = new THREE.Color(w.horizon).lerp(new THREE.Color('#e4eaee'), fair ? mood.humid * 0.25 : 0)
+      .lerp(new THREE.Color('#f2a35e'), Math.min(evening, 1) * (kind === 'sunny' ? 0.8 : 0.3));
     const old = s.sky;
     s.sky = bakeSky(renderer, {
-      zenith: w.zenith, horizon: `#${horizon.getHexString()}`, ground: w.ground, sunColor: '#fff2d2', sunDir,
-      cloudCover: w.cloudCover, sunGlow: w.sunGlow ?? 1, night: Math.max(0, Math.min(1, (clockMinutes - 17 * 60) / 60)),
+      zenith: `#${zenith.getHexString()}`, horizon: `#${horizon.getHexString()}`, ground: w.ground, sunColor: '#fff2d2', sunDir,
+      cloudCover: Math.min(w.cloudCover + (kind === 'sunny' ? mood.humid * 0.1 : 0), 1), sunGlow: w.sunGlow ?? 1,
+      night: Math.max(0, Math.min(1, (c - NIGHT_FROM) / 60)),
     });
     (pano ? pano.scene : scene).background = s.sky.background;
     if (scene.environment) scene.environment = s.sky.getEnvironment();
     old?.dispose();
     scene.fog.color.copy(horizon);
-    scene.fog.density = tier.pano && pano ? w.fog : Math.max(w.fog, 3.5 / tier.far);
-    sunLight.intensity = 1.8 * (w.sunGlow ?? 1) * Math.max(0.15, Math.sin(t * Math.PI));
+    // 霞: 冬は 60 km 先の富士山がくっきり、春・夏は霞んで見えにくい(雨・スコールの霧はそのまま)
+    const fog = w.fog * (fair ? mood.haze : 1);
+    scene.fog.density = tier.pano && pano ? fog : Math.max(fog, 3.5 / tier.far);
+    sunLight.intensity = 1.8 * (w.sunGlow ?? 1) * (season ? Math.min(Math.max(sun.sinE * 1.6, 0.15), 1) : Math.max(0.15, sun.sinE));
     hemi.intensity = 0.55 + 0.45 * (w.sunGlow ?? 1);
     const seaColor = kind === 'sunny' ? 0x1d5a7a : 0x2c4e5e;
     seaMat.color.setHex(seaColor);
@@ -681,13 +720,24 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
         const px = x - ox;
         const pz = -(y - oy);
         pushInstance(trees.trunk, px, h - 0.3, pz, 1, hgt * 0.45, 1);
+        const plants = season?.plants(h);
         if (conifer) {
+          const base = r < 0.5 ? 0x264a26 : 0x2f5a2c;
           pushInstance(trees.cone, px, h + hgt * 0.22, pz, hgt * 0.24, hgt * 0.8, hgt * 0.24, 0, r * 6,
-            r < 0.5 ? 0x264a26 : 0x2f5a2c);
+            plants ? coniferColor(base, plants) : base);
         } else {
-          const w = hgt * (0.3 + hash2(i, j, 16) * 0.15);
-          pushInstance(trees.ball, px, h + hgt * 0.35, pz, w, hgt * 0.32, w, 0, r * 6,
-            [0x3d6a2e, 0x4a7834, 0x35602a, 0x56803a][Math.floor(r * 4)]);
+          let w = hgt * (0.3 + hash2(i, j, 16) * 0.15);
+          let color = [0x3d6a2e, 0x4a7834, 0x35602a, 0x56803a][Math.floor(r * 4)];
+          if (plants) {
+            // 季節の広葉樹: 常緑(椎・樫)と落葉樹(新緑・紅葉・冬の枯れ枝)。町の近くの落葉樹の一部は桜
+            const kind = hash2(i, j, 19);
+            const evergreen = kind < evergreenShare(season.latDeg, h);
+            const sakuraTree = !evergreen && kind > 0.72 && (roadD < 160 || t.built[k]);
+            const look = broadleafLook(plants, { evergreen, sakuraTree }, r, hash2(i, j, 20));
+            color = look.color;
+            w *= look.scale;
+          }
+          pushInstance(trees.ball, px, h + hgt * 0.35, pz, w, hgt * 0.32, w, 0, r * 6, color);
         }
       }
     }

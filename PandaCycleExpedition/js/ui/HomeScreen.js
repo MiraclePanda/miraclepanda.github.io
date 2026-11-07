@@ -12,6 +12,7 @@ import { stampProgress } from '../trip/stamps.js';
 import { gearOptions, gearConfirmText, shipHome, buyGear, buyFood, atTown, FOOD } from '../trip/gear.js';
 import { downloadTrip, importTripFile } from '../storage/tripFile.js';
 import { validateWeight, validateBikeWeight, validateFtp, validatePowerScale } from '../utils/validation.js';
+import { SEASON_MODES, SEASON_LABELS, normalizeSeasonMode } from '../trip/season.js';
 import { packWeightKg } from '../physics/surfaces.js';
 import { satietyLabel } from '../trip/body.js';
 import { forecastDay, forecastText } from '../trip/dayEvents.js';
@@ -219,7 +220,13 @@ function TripTabs({ trip, segment, store, onTripChange, courseName, onImport }) 
         h(NumberSetting, {
           label: 'パワー補正の倍率', value: trip.settings.powerScale ?? 1, step: 0.05, validate: validatePowerScale,
           onSave: (v) => changeSetting({ powerScale: v }),
-        })),
+        }),
+        h('label', { className: 'field' }, '景色の季節',
+          h('select', {
+            value: normalizeSeasonMode(trip.settings.season),
+            onChange: (e) => changeSetting({ season: e.target.value }),
+          }, SEASON_MODES.map((x) => h('option', { key: x, value: x }, SEASON_LABELS[x]))))),
+      h('p', { className: 'muted' }, '「実際の今日の日付」では、走る日の季節がそのまま景色に出ます(桜・新緑・紅葉・冬枯れ、富士山の雪、日の出と日の入り)。桜や紅葉は南北・山の高さで時期がずれます。'),
       midRide && h('p', { className: 'muted' }, '早回しの倍率は走行の途中では変えられません(翌朝から変えられます)。'),
       h('h3', null, '旅の記録'),
       h('p', { className: 'muted' }, '旅は走行中30秒ごとに自動で保存されます。ブラウザのデータは消えることがあるので、ときどき書き出しておくと安心です。書き出すのは、このコースの旅です。'),

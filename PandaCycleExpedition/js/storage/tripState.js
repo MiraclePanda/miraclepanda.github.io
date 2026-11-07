@@ -6,6 +6,7 @@
 // 満腹度は設計書の「空腹(0〜100)」と同じもの。100 = 満腹、0 = 何も食べていない(ハンガーノックの条件)。
 
 import { DEFAULT_PACK } from '../physics/surfaces.js';
+import { SEASON_MODES } from '../trip/season.js';
 
 /** セーブデータの形式のバージョン。形を変えたら上げて、migrateTrip() に変換を足す。 */
 export const SCHEMA_VERSION = 2;
@@ -235,6 +236,7 @@ function checkTrip(t) {
     return '旅の位置が不正です。';
   }
   if (!t.settings || !TIME_SCALES.includes(t.settings.timeScale)) return '早回し倍率が不正です。';
+  if (t.settings.season !== undefined && !SEASON_MODES.includes(t.settings.season)) return '景色の季節が不正です。';
   if (!t.rider || !Number.isFinite(t.rider.weightKg)) return '体重が不正です。';
   if (!t.bike || !Number.isFinite(t.bike.weightKg) || typeof t.bike.pack !== 'object') return '自転車・荷物が不正です。';
   if (!t.wallet || !Number.isFinite(t.wallet.yen)) return '所持金が不正です。';
