@@ -9,7 +9,7 @@
 
 import THREE from './three.js';
 import { bakeSky } from './sceneKit.js';
-import { resolveEnvironment, normalizeEnvironment, sameSky } from './environmentPresets.js';
+import { resolveEnvironment, normalizeEnvironment, sameSky, seasonalAtmo } from './environmentPresets.js';
 
 const TRANSITION_MS = 1500;
 
@@ -78,8 +78,11 @@ function lerpStateInto(out, a, b, t) {
  * @param {{material: THREE.MeshStandardMaterial, night: number}[]} [opts.glowMaterials] 夜に emissiveIntensity を night 倍まで上げる
  * @param {THREE.Object3D} [opts.headlightParent] ヘッドライトを付けるアバターのグループ(前方 = −Z)
  * @param {boolean} [opts.weather=true] false なら天候は常に晴れ(時間帯のみ反映。上野不忍池)
+ * @param {object|null} [opts.season] 走る日の季節(season.js)。空の色・霞・昼の太陽の高さを季節に合わせる。
+ *   シーンが最初に焼いた空は base(季節なし)のままなので、最初の set() で季節の空に焼き直す
  */
-export function createEnvironmentController(s, { base, hemiLight, sunLight, wetMaterials = [], glowMaterials = [], headlightParent = null, weather = true }) {
+export function createEnvironmentController(s, { base: sceneBase, hemiLight, sunLight, wetMaterials = [], glowMaterials = [], headlightParent = null, weather = true, season = null }) {
+  const base = seasonalAtmo(sceneBase, season);
   // 窓の夜度 uniform(cityMaterials.js の外壁マテリアルが userData.night に持つ)
   const nightUniforms = [];
   s.scene.traverse((obj) => {
@@ -100,14 +103,16 @@ export function createEnvironmentController(s, { base, hemiLight, sunLight, wetM
     headlightParent.add(headlight, headlight.target);
   }
 
-  const baseResolved = resolveEnvironment(base, 'noon', 'clear');
+  // いまシーンにある空・光(シーンが季節なしの base で作ったもの)
+  const baseResolved = resolveEnvironment(sceneBase, 'noon', 'clear');
   let bakedSky = baseResolved; // いま焼いてある空の値
   let current = toState(baseResolved);
   let from = current;
   let target = current;
   let startedAt = null; // 補間中なら開始時刻
   let dirty = false; // 一度でも基準から変えたか(変えていなければシーンに何も書かない)
-  let key = 'noon/clear';
+  // 季節で base が変わったなら、最初の set() が「昼・晴れ」でも季節の空・光を反映させる
+  let key = base === sceneBase ? 'noon/clear' : null;
   let rain = null;
   let lastUpdateAt = null;
 

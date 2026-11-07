@@ -61,7 +61,7 @@ const MAX_PARASOLS = 140;
  * 毎フレームはライダー・カメラ・影の範囲・他のライダー・ハプニングだけを動かす。データは非同期に読むので、
  * 読み終わるまでは空だけを描く(canvas の data-atami-data = loading / ready / error)。
  */
-export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
+export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const attributionRef = useRef(null);
@@ -100,6 +100,7 @@ export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle
     let st;
     try {
       st = initScene(canvas, courseEngine, vehicle);
+      st.season = season;
       sceneRef.current = st;
     } catch (err) {
       setRenderError(String(err));
@@ -268,8 +269,8 @@ function buildWorld(st, data) {
   const t = data.terrain;
   const innerBox = { x0: t.x0, y0: t.y0, x1: t.x0 + (t.nx - 1) * t.step, y1: t.y0 + (t.ny - 1) * t.step };
   st.innerBox = innerBox;
-  const inner = buildTerrainMesh(data.terrain, groundMat, { buildings: data.buildings, route, sides });
-  const outer = buildTerrainMesh(data.outer, groundMat, { skipBox: innerBox });
+  const inner = buildTerrainMesh(data.terrain, groundMat, { buildings: data.buildings, route, sides, season: st.season });
+  const outer = buildTerrainMesh(data.outer, groundMat, { skipBox: innerBox, season: st.season });
   outer.traverse((m) => {
     m.receiveShadow = false;
   });
@@ -353,7 +354,7 @@ function buildWorld(st, data) {
     innerBox: { minX: innerBox.x0, maxX: innerBox.x1, minZ: -innerBox.y1, maxZ: -innerBox.y0 },
   };
   st.realCfg = cfg;
-  st.realTerrain = createRealTerrain(cfg, { anisotropy, onStatus: () => updateAttribution(st) });
+  st.realTerrain = createRealTerrain(cfg, { anisotropy, season: st.season, onStatus: () => updateAttribution(st) });
   st.scene.add(st.realTerrain.object);
 
   // 走行環境(時間帯・天候)。窓の夜度を拾うため建物を置いた後に作る
@@ -362,6 +363,7 @@ function buildWorld(st, data) {
     wetMaterials: [roadMat, walkMat, streetMat],
     glowMaterials: [{ material: pools.lampGlobes.mesh.material, night: 6 }],
     headlightParent: st.rider.group,
+    season: st.season,
   });
   st.env.set(st.envSetting, { immediate: true });
   st.ready = true;

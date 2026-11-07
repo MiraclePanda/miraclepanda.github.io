@@ -88,8 +88,9 @@ const TERRAIN_CHUNK_CELLS = 48;
  * @param {object} opts.buildings 建物(近景の地面の色に使う)。opts.route, opts.sides は砂浜の範囲
  * @param {Function} [opts.colorAt] 頂点の色を決める関数 (k, h, normalY, builtUp, noise) → sRGB(実在の街のコース用。
  *   省略時は熱海の groundColor)
+ * @param {object|null} [opts.season] 走る日の季節(熱海の groundColor に渡す)
  */
-export function buildTerrainMesh(grid, material, { buildings = null, route = null, sides = null, skipBox = null, colorAt = null } = {}) {
+export function buildTerrainMesh(grid, material, { buildings = null, route = null, sides = null, skipBox = null, colorAt = null, season = null } = {}) {
   const { nx, ny, step, x0, y0, h } = grid;
   const pos = new Float32Array(nx * ny * 3);
   const uv = new Float32Array(nx * ny * 2);
@@ -133,7 +134,7 @@ export function buildTerrainMesh(grid, material, { buildings = null, route = nul
     const noise = fract(Math.sin(k * 12.9898) * 43758.5453);
     const rgb = colorAt
       ? colorAt(k, h[k], nrm[k * 3 + 1], built ? built[k] : 0, noise)
-      : groundColor(h[k], nrm[k * 3 + 1], built ? built[k] : 0, beach ? beach[k] === 1 : false, noise);
+      : groundColor(h[k], nrm[k * 3 + 1], built ? built[k] : 0, beach ? beach[k] === 1 : false, noise, season);
     c.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
     col[k * 3] = c.r;
     col[k * 3 + 1] = c.g;

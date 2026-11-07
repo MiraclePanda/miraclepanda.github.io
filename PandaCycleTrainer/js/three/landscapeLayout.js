@@ -11,6 +11,7 @@
 // ゆっくり上がる水面/谷底を、道路より常に minDropM 以上低い位置に置く。
 
 import { mulberry32 } from './cityLayout.js';
+import { seasonalGround } from './seasonLook.js';
 import { tourTerrainHeight, tourTerrainColor, collectTourObjects, tourTreeAllowed } from './tourLayout.js';
 
 export const LANDSCAPES = {
@@ -506,8 +507,10 @@ export function terrainHeightM(L, d, s, roadElevM, floorM) {
 /**
  * 地形の色(sRGB 0..1)。高さ・傾斜・水面からの高さで草地/森/岩/雪/砂浜を塗り分ける。
  * @param {number} normalY 地形法線のY成分(1=水平、0=垂直)
+ * @param {object|null} [season] 走る日の季節(season.js)。あれば草地・森の色(新緑・紅葉・冬枯れ)と
+ *   雪(その日の雪線より上)を季節に合わせる。無ければ景色ごとの決まった色と雪線(L.snowline)
  */
-export function terrainColor(L, d, s, h, floorM, normalY) {
+export function terrainColor(L, d, s, h, floorM, normalY, season = null) {
   if (L.tour?.terrain) return tourTerrainColor(L, d, s, h, floorM, normalY);
   const seed = L.seed;
   const aboveFloor = h - floorM;
@@ -516,30 +519,39 @@ export function terrainColor(L, d, s, h, floorM, normalY) {
   let r;
   let g;
   let b;
+  let dense;
   if (L.id === 'mountain') {
     // 針葉樹林(暗緑) ⇄ 高山草原(黄緑) を森林限界で切り替える
     const tree = smoothstep(L.treeline + 80, L.treeline - 120, aboveFloor);
-    const dense = smoothstep(L.forestCover[0], L.forestCover[1], forest) * tree;
+    dense = smoothstep(L.forestCover[0], L.forestCover[1], forest) * tree;
     r = lerp(0.42, 0.13, dense) + (patch - 0.5) * 0.08;
     g = lerp(0.5, 0.25, dense) + (patch - 0.5) * 0.08;
     b = lerp(0.26, 0.13, dense);
   } else {
     // 牧草地(緑〜刈り取り後の黄緑のパッチ、細かなムラ) + 雑木林(暗緑)
-    const dense = smoothstep(L.forestCover[0], L.forestCover[1], forest);
+    dense = smoothstep(L.forestCover[0], L.forestCover[1], forest);
     const field = smoothstep(0.4, 0.75, patch);
     const fine = (valueNoise(s / 31, d / 31, seed + 63) - 0.5) * 0.09;
     r = lerp(lerp(0.36, 0.56, field), 0.17, dense) + fine;
     g = lerp(lerp(0.49, 0.56, field), 0.29, dense) + fine;
     b = lerp(lerp(0.22, 0.28, field), 0.15, dense) + fine * 0.5;
   }
+  // 季節の草地・森の色(山岳の森は針葉樹が多いので、紅葉・冬枯れは控えめ)
+  if (season) [r, g, b] = seasonalGround(season, [r, g, b], h, 1, L.id === 'mountain' ? dense * 0.5 : dense);
   // 急斜面は岩肌
   const rockiness = smoothstep(L.id === 'mountain' ? 0.72 : 0.62, L.id === 'mountain' ? 0.5 : 0.42, normalY);
   const rockTone = 0.42 + (valueNoise(s / 23, d / 23, seed + 71) - 0.5) * 0.12;
   r = lerp(r, rockTone + 0.03, rockiness);
   g = lerp(g, rockTone + 0.01, rockiness);
   b = lerp(b, rockTone - 0.02, rockiness);
-  // 雪(山岳の高所、急すぎない斜面のみ)
-  if (L.snowline !== null) {
+  // 雪(急すぎない斜面のみ)。季節があればその日の雪線より上(夏は無し、冬は低い所まで)
+  if (season) {
+    const snowNoise = (fbm(s / 260, d / 260, seed + 73, 3) - 0.5) * 220;
+    const snow = season.snowAt(h + snowNoise) * smoothstep(0.35, 0.6, normalY);
+    r = lerp(r, 0.93, snow);
+    g = lerp(g, 0.95, snow);
+    b = lerp(b, 0.98, snow);
+  } else if (L.snowline !== null) {
     const snowNoise = (fbm(s / 260, d / 260, seed + 73, 3) - 0.5) * 220;
     const snow = smoothstep(L.snowline - 60, L.snowline + 120, aboveFloor + snowNoise) * smoothstep(0.35, 0.6, normalY);
     r = lerp(r, 0.93, snow);

@@ -9,6 +9,7 @@ import { PondScene } from './PondScene.js';
 import { AtamiScene } from './AtamiScene.js';
 import { RealTownScene } from './RealTownScene.js';
 import { REAL_TOWNS } from '../three/realTownLayout.js';
+import { createCourseSeason, parseSeasonDate } from '../three/season.js';
 import { FullscreenHud } from './FullscreenHud.js';
 import {
   loadRenderQuality,
@@ -95,6 +96,20 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
 
   const physicsRef = useRef(null);
   const courseEngineRef = useRef(null);
+  // 景色の季節: 走る日の実際の日付(端末の暦)とコースの場所で決める(走行中は変えない)。
+  // 確認用に URL の ?date=YYYY-MM-DD で日付を変えられる。竜宮城(海の底)は季節なし(null)
+  const seasonRef = useRef(undefined);
+  if (seasonRef.current === undefined) {
+    let now = null;
+    try {
+      now = parseSeasonDate(window.location.search);
+    } catch {
+      now = null;
+    }
+    seasonRef.current = createCourseSeason(courseProfile, now ?? new Date());
+  }
+  const season = seasonRef.current;
+  const seasonLabel = season ? `${season.emoji} ${season.month}月${season.day}日・${season.name}` : null;
   const wakeLockRef = useRef(null);
 
   const rafIdRef = useRef(null);
@@ -741,6 +756,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
     // 景観と視点(シーン側が未対応でも渡すだけで害はない)
     environment,
     cameraView,
+    season,
     qualityMode,
     onQualityChange: setActiveTier,
     onReady: handleSceneReady,
@@ -800,7 +816,7 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
             // デモはトレーナーへ送らない。ERGは目標W、シミュレーションは勾配%
             controlUnit: demo ? null : controlMode === 'erg' ? 'W' : '%',
             ftpW,
-            chips: [environmentLabel(environment, courseProfile)],
+            chips: [environmentLabel(environment, courseProfile), ...(seasonLabel ? [seasonLabel] : [])],
           },
           // H: 操作(一時停止・視点・環境・描画品質・全画面を終了)
           h(
@@ -822,7 +838,9 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
       'div', { className: 'scene-toolbar' },
       h('button', { className: 'btn btn-secondary', onClick: enterFullscreen }, '⛶ フルスクリーン'),
       viewButton('btn btn-secondary scene-view-btn'),
-      qualitySelect('quality-select')
+      qualitySelect('quality-select'),
+      // 景色の季節は走る日の暦どおり(桜・新緑・紅葉・雪)
+      seasonLabel && h('span', { className: 'season-chip', title: '景色の季節は今日の日付に合わせています' }, seasonLabel)
     ),
     h(Dashboard, { ref: dashboardRef, controlMode }),
     h(

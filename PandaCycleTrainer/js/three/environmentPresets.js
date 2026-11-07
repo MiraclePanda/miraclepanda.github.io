@@ -8,6 +8,10 @@
 // 置き換え、光の強さ・霧の距離・露出は景観ごとの基準値に対する倍率で求める
 // (景観ごとの明るさ・空気の澄み具合の違いを保つため)。天候はその上に灰色化・減光・霧を重ねる。
 // 天候は見た目だけ(物理・トレーナーへの反映はしない)。
+// 走る日の季節(season.js)は seasonalAtmo で baseAtmo そのものに先に掛ける(冬は空が澄んで昼の太陽が低い、
+// 夏は霞んで太陽が高い)。季節の無い景色(竜宮城の海底)では baseAtmo のまま。
+
+import { seasonalSky } from './seasonLook.js';
 
 /**
  * baseAtmo(各シーンの「昼・晴れ」の値)の形:
@@ -183,6 +187,26 @@ export function resolveEnvironment(baseAtmo, timeId, weatherId) {
     cloud: weatherTint(p ? p.cloud : '#ffffff', grey, darken),
     sunGlow: w.sunMul * (1 - t.night * 0.85),
     fogFarM,
+  };
+}
+
+/**
+ * 景観の「昼・晴れ」の値を、走る日の季節に合わせる。season が null・海の底なら base をそのまま返す。
+ * - 空: 冬は天頂の青が深く、春・夏は地平が白っぽい。霞(フォグの濃さ)は季節の倍率を掛ける
+ * - 昼の太陽の高さ: その日・その緯度の南中高度より少し低い所(11時半・12時半ごろ。冬至でも 27 度より下げない)。方位は景観の構図のまま
+ * @param {BaseAtmo} base
+ * @param {object|null} season season.js の createSeason の戻り値
+ */
+export function seasonalAtmo(base, season) {
+  if (!season || base.underwater) return base;
+  const sky = seasonalSky(season);
+  const elevDeg = Math.min(Math.max(season.noonSunElevDeg - 5, 27), 70);
+  return {
+    ...base,
+    zenith: sky.zenith(base.zenith),
+    horizon: sky.horizon(base.horizon),
+    fogDensity: base.fogDensity * sky.fogMul,
+    sunDir: withElevation(base.sunDir, elevDeg),
   };
 }
 
