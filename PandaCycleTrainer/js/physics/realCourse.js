@@ -79,8 +79,19 @@ export function buildRealCourse(trackPoints, opts = {}) {
     fixedLength: true,
     curve,
     points,
+    // スタート地点の場所(景色の季節に使う: 桜・紅葉の時期は緯度と標高で変わる。見た目だけで物理には使わない)
+    geo: {
+      latDeg: round(pts[0].lat, 4),
+      lonDeg: round(pts[0].lon, 4),
+      elevM: hasElevation && Number.isFinite(smoothedEle[0]) ? Math.round(smoothedEle[0]) : null,
+    },
   };
   return { profile, stats };
+}
+
+function round(x, digits) {
+  const k = 10 ** digits;
+  return Math.round(x * k) / k;
 }
 
 /** 獲得標高の密度から既存の景色を割り当てる(実写の景色は無いため)。 */

@@ -9,14 +9,17 @@
 // 座標は熱海と同じ: 原点 = スタート地点、x = 東(m)、y = 北(m)、z = 標高(m)。シーンでは (x, z, −y)。
 
 import { decodeAtamiData, gridHeight, buildingLook } from './atamiRealLayout.js';
+import { seasonalGround } from './seasonLook.js';
 
 /** 実在の街のコース(景色の id → データの URL と見た目の設定)。 */
 export const REAL_TOWNS = {
-  // 京都・東山: 町家の瓦屋根と、東山の紅葉の森
+  // 京都・東山: 町家の瓦屋根と、東山の森(季節は走る日の暦どおり。季節が無いときの色は palette の秋)。
+  // sakura: 落葉樹のうち桜の割合(円山公園のしだれ桜など)
   kyoto: {
     url: new URL('../data/kyoto-town.json', import.meta.url).href,
     label: '京都・東山',
     palette: 'autumn',
+    sakura: 0.15,
     forest: { flat: 0.05, slope: 0.85, minSlopeY: 0.985 },
     fog: 0.00022,
   },
@@ -25,14 +28,17 @@ export const REAL_TOWNS = {
     url: new URL('../data/nara-town.json', import.meta.url).href,
     label: '奈良公園',
     palette: 'park',
+    sakura: 0.2,
     forest: { flat: 0.16, slope: 0.85, minSlopeY: 0.99 },
     fog: 0.0002,
   },
-  // 富士山・河口湖: 湖畔の紅葉と、約18km 先の富士山まで見通せる澄んだ空気(フォグをごく薄く)
+  // 富士山・河口湖: 湖畔の木々と、約18km 先の富士山まで見通せる澄んだ空気(フォグをごく薄く)。
+  // 富士山の雪は走る日の雪線どおり(夏は無く、冬は裾野近くまで)
   kawaguchiko: {
     url: new URL('../data/fuji-town.json', import.meta.url).href,
     label: '河口湖',
     palette: 'autumn',
+    sakura: 0.1,
     forest: { flat: 0.08, slope: 0.8, minSlopeY: 0.99 },
     fog: 0.00003,
   },
@@ -181,18 +187,22 @@ const PALETTES = {
 
 /**
  * 地形の格子の頂点の色。builtUp = 建物の密度(0..1)、depth = 水面からの深さ(m、水中なら正)、forest = 森の度合い(0..1)。
+ * season(season.js)があれば、草地・森を走る日の季節の色(新緑・紅葉・冬枯れ)にし、高さ hM がその日の雪線より
+ * 上なら雪をかぶせる(季節があるときの草地・森は夏の色 = palette 'park' から季節の色にする)。
  */
-export function townGroundColor(palette, normalY, builtUp, depth, forest, noise) {
-  const P = PALETTES[palette] ?? PALETTES.autumn;
+export function townGroundColor(palette, normalY, builtUp, depth, forest, noise, season = null, hM = 0) {
+  const P = season ? PALETTES.park : PALETTES[palette] ?? PALETTES.autumn;
   const n = (noise - 0.5) * 0.06;
   if (depth > 0.3) return [0.36 + n, 0.36 + n, 0.3 + n]; // 水底の泥
   if (depth > -0.8) return P.shore.map((v) => v + n); // 水際
   let rgb = P.grass.map((g, i) => g + (P.forest[i] - g) * forest);
+  if (season) rgb = seasonalGround(season, rgb, hM, 1, forest);
   // 街なか(建物の多い所)は舗装・砂利の色。建物の割合が低めでも街の色になるよう強めに効かせる
   const k = Math.min(1, builtUp * 2.4);
   rgb = rgb.map((v, i) => v + (P.town[i] - v) * k + n);
   const rock = Math.min(1, Math.max(0, (0.62 - normalY) / 0.2));
   rgb = rgb.map((v, i) => v + ([0.45, 0.43, 0.39][i] - v) * rock);
+  if (season) rgb = seasonalGround(season, rgb, hM, 0, 0, 1 - rock * 0.4);
   return rgb.map((v) => Math.min(1, Math.max(0, v)));
 }
 

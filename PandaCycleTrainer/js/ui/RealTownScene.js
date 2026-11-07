@@ -13,6 +13,7 @@ import {
 } from '../three/sceneKit.js';
 import { createCineDirector, normalizeCameraView } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
+import { seasonalTree, seasonalGround } from '../three/seasonLook.js';
 import { createOtherRiders } from '../three/otherRiders.js';
 import { createRoadsideActors } from '../three/roadsideActors.js';
 import { createOcean } from '../three/oceanWater.js';
@@ -23,7 +24,7 @@ import { SIGHT_FOOTPRINTS } from '../three/roadsideLayout.js';
 
 const { forwardRef, useImperativeHandle } = React;
 
-// 晴れた秋の日。太陽は南東の空
+// 晴れた日。太陽は南東の空(高さ・空の色・霞は走る日の季節で sceneEnvironment が変える)
 const ATMO = {
   zenith: '#2f74d0', horizon: '#dbe7f0', ground: '#a7b0a0', sunColor: '#fff2dc',
   sunDir: new THREE.Vector3(0.5, 0.6, 0.62).normalize(),
@@ -39,7 +40,7 @@ const ROAD_TILE_M = 12;
 const PAVE_TILE_M = 2;
 const SIDEWALK_M = 2;
 const MAX_TREES = 16000;
-// 紅葉・常緑の木の色(palette ごと)
+// 木の色(palette ごと)。季節があるときは park(夏の緑)を走る日の季節の色にする
 const TREE_COLORS = {
   autumn: { broad: [0xc8452a, 0xe0802a, 0xd9b23a, 0x8f3a22, 0x5d7a32, 0x6b8a3a], conifer: [0x2f4a2a, 0x37552f, 0x2a4226] },
   park: { broad: [0x4f7a2e, 0x5d8a35, 0x6b9440, 0x47702a, 0xa8822e], conifer: [0x2f4a2a, 0x37552f, 0x2a4226] },
@@ -52,7 +53,7 @@ const TREE_COLORS = {
  * 作る js/data/<id>-town.json)は非同期に読むので、読み終わるまでは空だけを描く(canvas の data-town-data)。
  * 名所(大鳥居・五重塔・大仏殿など)はコースの landmarks として、ハプニングと同じ actors で届く。
  */
-export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, town, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
+export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, town, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const attributionRef = useRef(null);
@@ -92,6 +93,7 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
     let st;
     try {
       st = initScene(canvas, courseEngine, town, vehicle);
+      st.season = season;
       sceneRef.current = st;
     } catch (err) {
       setRenderError(String(err));
@@ -271,7 +273,7 @@ function buildWorld(st, data) {
       const j = Math.floor(k / t.nx);
       const x = t.x0 + i * t.step;
       const y = t.y0 + j * t.step;
-      return townGroundColor(palette, normalY, built, depthAt(x, y, hh), info.forest[k], noise);
+      return townGroundColor(palette, normalY, built, depthAt(x, y, hh), info.forest[k], noise, st.season, hh);
     },
   });
   const o = data.outer;
@@ -281,10 +283,11 @@ function buildWorld(st, data) {
       const x = o.x0 + (k % o.nx) * o.step;
       const y = o.y0 + Math.floor(k / o.nx) * o.step;
       const forest = Math.min(1, Math.max(0, (0.995 - normalY) / 0.02));
-      // 富士山の上の方は森林限界より上の砂礫、頂上付近は初冠雪
-      if (hh > 3300) return [0.93, 0.94, 0.96];
-      if (hh > 2500) return [0.42, 0.33, 0.3];
-      return townGroundColor(palette, normalY, 0, depthAt(x, y, hh), forest, noise);
+      // 富士山の上の方は森林限界より上の砂礫。雪は走る日の雪線より上(夏は無く、冬は裾野近くまで)。
+      // 季節が無ければ頂上付近だけ初冠雪
+      if (!st.season && hh > 3300) return [0.93, 0.94, 0.96];
+      if (hh > 2500) return seasonalGround(st.season, [0.42 + (noise - 0.5) * 0.05, 0.33, 0.3], hh, 0, 0);
+      return townGroundColor(palette, normalY, 0, depthAt(x, y, hh), forest, noise, st.season, hh);
     },
   });
   outer.traverse((m) => {
@@ -396,7 +399,8 @@ function buildWorld(st, data) {
   // 木(森・公園の木・紅葉)
   const trees = planTrees(data, route, heightAt, info, townCfg.forest, { clear, maxTrees: MAX_TREES, seed: hashString(st.town) });
   st.treeCount = trees.length;
-  placeTrees(st, trees, TREE_COLORS[palette] ?? TREE_COLORS.autumn);
+  // 季節があれば夏の緑(park)から走る日の季節の色にする(placeTrees)
+  placeTrees(st, trees, st.season ? TREE_COLORS.park : TREE_COLORS[palette] ?? TREE_COLORS.autumn);
 
   // 描画品質「最高(実験)」: 映り込む水面と、国土地理院のタイルの実在の地形の遠景(近景の範囲の外だけ)
   const base = REAL_TERRAIN[st.town] ?? {};
@@ -413,7 +417,7 @@ function buildWorld(st, data) {
     innerBox: { minX: innerBox.x0, maxX: innerBox.x1, minZ: -innerBox.y1, maxZ: -innerBox.y0 },
   };
   st.realBaseY = cfg.anchor === 'water' ? lake : 0;
-  st.realTerrain = createRealTerrain(cfg, { anisotropy, onStatus: () => updateAttribution(st) });
+  st.realTerrain = createRealTerrain(cfg, { anisotropy, season: st.season, onStatus: () => updateAttribution(st) });
   st.scene.add(st.realTerrain.object);
 
   // 走行環境(時間帯・天候)。窓の夜度を拾うため建物を置いた後に作る
@@ -421,6 +425,7 @@ function buildWorld(st, data) {
     base: st.baseAtmo, hemiLight: st.hemiLight, sunLight: st.sunLight,
     wetMaterials,
     headlightParent: st.rider.group,
+    season: st.season,
   });
   st.env.set(st.envSetting, { immediate: true });
   st.ready = true;
@@ -476,15 +481,21 @@ function placeTrees(st, trees, colors) {
     broad: makePool(broadGeo, new THREE.MeshStandardMaterial({ roughness: 0.95 }), nBroad + 1, { cast: false }),
     conifer: makePool(coniferGeo, new THREE.MeshStandardMaterial({ roughness: 0.95 }), trees.length - nBroad + 1, { cast: false }),
   };
+  // 落葉樹のうち桜の割合(町なか・公園の桜。春に満開になる)
+  const sakura = st.townCfg.sakura ?? 0.12;
   for (const t of trees) {
     const s = t.scale;
     const yaw = t.tone * Math.PI * 2;
+    const r1 = (t.tone * 7919) % 1;
     if (t.conifer) {
       pushInstance(pools.trunks, t.x, t.z - 0.3, -t.y, s * 1.2, 2 * s, s * 1.2);
-      pushInstance(pools.conifer, t.x, t.z, -t.y, s, s, s, 0, yaw, colors.conifer[Math.floor(t.tone * colors.conifer.length) % colors.conifer.length]);
+      const base = colors.conifer[Math.floor(t.tone * colors.conifer.length) % colors.conifer.length];
+      pushInstance(pools.conifer, t.x, t.z, -t.y, s, s, s, 0, yaw, seasonalTree(st.season, base, t.z, r1, { conifer: true }).color);
     } else {
       pushInstance(pools.trunks, t.x, t.z - 0.3, -t.y, s, 4 * s, s);
-      pushInstance(pools.broad, t.x, t.z, -t.y, s, s, s, 0, yaw, colors.broad[Math.floor(t.tone * 997) % colors.broad.length]);
+      const look = seasonalTree(st.season, colors.broad[Math.floor(t.tone * 997) % colors.broad.length], t.z, r1, { sakura });
+      const k = s * look.scale;
+      pushInstance(pools.broad, t.x, t.z, -t.y, k, s, k, 0, yaw, look.color);
     }
   }
   for (const p of Object.values(pools)) {

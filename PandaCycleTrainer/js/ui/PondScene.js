@@ -18,6 +18,7 @@ import {
   AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
+import { seasonalTree, seasonalGround, mixHex } from '../three/seasonLook.js';
 import { createOcean } from '../three/oceanWater.js';
 
 const { forwardRef, useImperativeHandle } = React;
@@ -70,7 +71,7 @@ const world = (x, y, hgt = 0) => new THREE.Vector3(x, hgt, -y);
  * スカイツリー)は1周1.2kmの小さな世界なので、初期化時に1度だけ組み立てて固定し、
  * 毎フレームはボート・カメラ・影の範囲・他のスワンボートだけを動かす。
  */
-export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle = 'swan', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
+export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle = 'swan', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
@@ -109,7 +110,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
 
     let scene3d;
     try {
-      scene3d = initScene(canvas, vehicle);
+      scene3d = initScene(canvas, vehicle, season);
       sceneRef.current = scene3d;
       scene3d.onReady = () => onReadyRef.current?.();
     } catch (err) {
@@ -120,7 +121,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
     // 走行環境は時間帯のみ(天候は晴れ固定)。昼なら何もしない(従来の見た目のまま)。
     scene3d.env = createEnvironmentController(scene3d, {
       base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
-      headlightParent: scene3d.rider.group, weather: false,
+      headlightParent: scene3d.rider.group, weather: false, season,
     });
     scene3d.env.set(environment, { immediate: true });
     // 池は chase / aerial / fp のみ(cine は chase 扱い)
@@ -173,7 +174,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
 
 // ---- シーン初期化 ----
 
-function initScene(canvas, vehicle) {
+function initScene(canvas, vehicle, season = null) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -219,12 +220,12 @@ function initScene(canvas, vehicle) {
   water.receiveShadow = true;
   scene.add(water);
 
-  scene.add(buildGround(detail));
+  scene.add(buildGround(detail, season));
   scene.add(buildEmbankment(stone));
 
   const objects = collectPondObjects();
   const pools = buildPools(scene, city);
-  placeStatic(pools, objects);
+  placeStatic(pools, objects, season);
 
   // 弁天堂・ボート乗り場・スカイツリー
   scene.add(buildBentendo(objects.bentendo));
@@ -268,7 +269,7 @@ function yawFromHeading(heading) {
 }
 
 /** 池の周りの地面: 岸からの距離の同心リングと方位の極座標グリッド。頂点カラーで区域を塗る。 */
-function buildGround(detail) {
+function buildGround(detail, season) {
   const cols = GROUND_ANGLES + 1; // 継ぎ目のUVを連続させるため最初の列を複製
   const rows = GROUND_OFFSETS_M.length;
   const pos = new Float32Array(cols * rows * 3);
@@ -289,8 +290,8 @@ function buildGround(detail) {
       let rgb;
       if (offset < 1) rgb = [0.62, 0.6, 0.56]; // 護岸の笠石
       else if (offset < 7) rgb = [0.7, 0.66, 0.58]; // 池畔の遊歩道
-      else if (offset < (park ? 60 : 30)) rgb = [0.4, 0.55, 0.28]; // 芝生
-      else if (park) rgb = [0.3, 0.42, 0.22]; // 上野公園の森の林床
+      else if (offset < (park ? 60 : 30)) rgb = seasonalGround(season, [0.4, 0.55, 0.28], hgt, 1, 0); // 芝生(冬は枯れ芝)
+      else if (park) rgb = seasonalGround(season, [0.3, 0.42, 0.22], hgt, 1, 1); // 上野公園の森の林床
       else rgb = [0.55, 0.55, 0.53]; // 市街地
       c.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
       col.set([c.r, c.g, c.b], i * 3);
@@ -405,33 +406,43 @@ function buildPools(scene, city) {
   return pools;
 }
 
-function placeStatic(p, o) {
+function placeStatic(p, o, season) {
+  // 走る日の季節: 柳は春に明るい若葉・秋に黄葉・冬は枝だけ、岸の桜は春に満開、蓮は夏に花・冬は枯れ葉
+  const plants = season?.plants(0);
+  const r01 = (seed) => (seed % 9973) / 9973;
   for (const w of o.willows) {
     const g = groundHeightAt(w.x, w.y);
     const v = world(w.x, w.y, g);
     pushInstance(p.trunks, v.x, v.y - 0.2, v.z, w.scale, 5 * w.scale, w.scale);
-    pushInstance(p.willows, v.x, v.y, v.z, w.scale, w.scale, w.scale, 0, (w.seed % 628) / 100, 0x8fb04e);
+    let color = 0x8fb04e;
+    let shrink = 1;
+    if (plants) {
+      color = mixHex(mixHex(mixHex(color, 0xb4d86a, plants.fresh * 0.6), 0xd8c25a, plants.turn * 0.8), 0x8a7c5e, plants.bare * 0.85);
+      shrink = 1 - plants.bare * 0.25;
+    }
+    pushInstance(p.willows, v.x, v.y, v.z, w.scale * shrink, w.scale, w.scale * shrink, 0, (w.seed % 628) / 100, color);
   }
-  const blobs = (t, v) => {
+  const blobs = (t, v, opts) => {
     const rand = mulberry32(t.seed);
+    const look = seasonalTree(season, t.color, 0, r01(t.seed), opts);
     for (let i = 0; i < 3; i++) {
-      const r = (1.7 + rand() * 0.8) * t.scale;
-      pushInstance(p.canopies, v.x + (rand() - 0.5) * 2 * t.scale, v.y + (3.8 + i * 0.9 + rand() * 0.5) * t.scale, v.z + (rand() - 0.5) * 2 * t.scale, r, r * 0.85, r, 0, rand() * Math.PI, t.color);
+      const r = (1.7 + rand() * 0.8) * t.scale * look.scale;
+      pushInstance(p.canopies, v.x + (rand() - 0.5) * 2 * t.scale, v.y + (3.8 + i * 0.9 + rand() * 0.5) * t.scale, v.z + (rand() - 0.5) * 2 * t.scale, r, r * 0.85, r, 0, rand() * Math.PI, look.color);
     }
   };
   for (const t of o.cherries) {
     const v = world(t.x, t.y, groundHeightAt(t.x, t.y));
     pushInstance(p.trunks, v.x, v.y - 0.2, v.z, t.scale * 1.2, 3.6 * t.scale, t.scale * 1.2);
-    blobs(t, v);
+    blobs(t, v, { sakura: 1, evergreen: 0 });
   }
   for (const t of o.parkTrees) {
     const v = world(t.x, t.y, groundHeightAt(t.x, t.y));
     if (t.conifer) {
       pushInstance(p.trunks, v.x, v.y - 0.2, v.z, t.scale, 2 * t.scale, t.scale);
-      pushInstance(p.cones, v.x, v.y, v.z, t.scale * 1.2, t.scale * 1.4, t.scale * 1.2, 0, 0, t.color);
+      pushInstance(p.cones, v.x, v.y, v.z, t.scale * 1.2, t.scale * 1.4, t.scale * 1.2, 0, 0, seasonalTree(season, t.color, 0, 0, { conifer: true }).color);
     } else {
       pushInstance(p.trunks, v.x, v.y - 0.2, v.z, t.scale * 1.3, 4.2 * t.scale, t.scale * 1.3);
-      blobs({ ...t, scale: t.scale * 1.4 }, v);
+      blobs({ ...t, scale: t.scale * 1.4 }, v, { sakura: 0.35 });
     }
   }
   for (const l of o.lamps) {
@@ -442,9 +453,13 @@ function placeStatic(p, o) {
   for (const lf of o.lotus) {
     // 蓮の葉は茎で水面から持ち上がる(高さはまちまち)
     const v = world(lf.x, lf.y, 0.05 + rand() * rand() * 0.9);
-    const green = rand() < 0.5 ? 0x5a8a35 : 0x4d7a30;
-    pushInstance(p.lotus, v.x, v.y, v.z, lf.size, 1, lf.size, lf.tilt, lf.yaw, green);
-    if (rand() < 0.08) pushInstance(p.lotusBuds, v.x + 0.3, v.y + 0.6, v.z, 1, 1, 1);
+    let green = rand() < 0.5 ? 0x5a8a35 : 0x4d7a30;
+    // 蓮の葉: 冬は枯れて茶色く小さく(枯れ蓮)
+    if (plants) green = mixHex(mixHex(green, 0x9a8a4a, plants.turn * 0.6), 0x6e5a3e, plants.bare);
+    const size = lf.size * (plants ? 1 - plants.bare * 0.35 : 1);
+    pushInstance(p.lotus, v.x, v.y, v.z, size, 1, size, lf.tilt, lf.yaw, green);
+    // 蓮の花・つぼみは夏だけ(7月〜8月ごろ)
+    if (rand() < 0.08 && lotusBloom(season)) pushInstance(p.lotusBuds, v.x + 0.3, v.y + 0.6, v.z, 1, 1, 1);
   }
   for (const b of o.buildings) {
     const g = groundHeightAt(b.x, b.y);
@@ -455,6 +470,11 @@ function placeStatic(p, o) {
     pushInstance(p.roofs, v.x, g + height, v.z, b.depthM + 0.4, 0.7, b.widthM + 0.4, 0, yaw);
   }
   for (const pool of Object.values(p)) commitPool(pool);
+}
+
+/** 蓮の花の季節か(季節が無ければ、これまでどおり咲いている)。不忍池の見ごろは7月中旬〜8月中旬。 */
+function lotusBloom(season) {
+  return !season || (season.doy >= 182 && season.doy <= 240);
 }
 
 /** 弁天堂: 石の基壇の上に朱塗りの八角堂と黒い瓦屋根、頂に宝珠。 */

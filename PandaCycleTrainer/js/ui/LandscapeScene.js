@@ -18,6 +18,7 @@ import {
   AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_SIDE_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
+import { seasonalTree } from '../three/seasonLook.js';
 import { createOtherRiders } from '../three/otherRiders.js';
 import { createRoadsideActors } from '../three/roadsideActors.js';
 import { clearZones, inClearZone } from '../three/roadsideLayout.js';
@@ -29,6 +30,8 @@ import { REAL_TERRAIN, GSI_ATTRIBUTION } from '../three/gsiTerrain.js';
 import { buildTourParts, placeTourObjects } from '../three/tourParts.js';
 
 const { forwardRef, useImperativeHandle } = React;
+
+const fract01 = (x) => x - Math.floor(x);
 
 // 景色ごとの空・光・大気。フォグ色は空の地平線色と揃え、遠景が空に溶け込むようにする。
 const ATMOSPHERE = {
@@ -164,7 +167,7 @@ const MAX_BOATS = 16;
  * - curve がないコースは従来どおり景色側の L.curves による横ずらしの蛇行
  *   (lateralX/roadCenterX/roadSlopeX)。見た目を変えないため、計算式もそのまま使う。
  */
-export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
+export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   // 実在の地形(最高(実験))を出している間の出典表示。毎フレームの再描画を避けるため DOM を直接書き換える
@@ -207,6 +210,8 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
     let scene3d;
     try {
       scene3d = initScene(canvas, courseEngine, getLandscape(landscape), vehicle);
+      // 走る日の季節(竜宮城の海底は null)。地形・木の色は次の組み立て(rebuild)から使う
+      scene3d.season = scene3d.L.underwater ? null : season;
       sceneRef.current = scene3d;
       scene3d.onReady = () => onReadyRef.current?.();
     } catch (err) {
@@ -227,6 +232,7 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
       headlightParent: scene3d.rider.group,
       // 海の底に雨は降らない(時間帯だけ反映)
       weather: !scene3d.L.underwater,
+      season: scene3d.season,
     });
     scene3d.env.set(environment, { immediate: true });
     scene3d.cam.view = normalizeCameraView(cameraView);
@@ -663,7 +669,7 @@ function buildTerrain(st, anchorS, floorM) {
   for (let r = 0; r < rows.length; r++) {
     for (let c = 0; c < cols.length; c++) {
       const i = r * cols.length + c;
-      const [cr, cg, cb] = terrainColor(L, cols[c], rows[r], heights[i], floorM, normals.getY(i));
+      const [cr, cg, cb] = terrainColor(L, cols[c], rows[r], heights[i], floorM, normals.getY(i), st.season);
       _col.setRGB(cr, cg, cb, THREE.SRGBColorSpace);
       color.setXYZ(i, _col.r, _col.g, _col.b);
     }
@@ -755,18 +761,20 @@ function placeObjects(st, anchorS, floorM) {
     const hgt = groundAt(t.s, t.d);
     if (!treeOk(t.s, t.d, hgt)) continue;
     const [x, y, z] = local(t.s, t.d, hgt);
+    // 走る日の季節の色(山の上ほど紅葉が早く、雪線より上の木は雪をかぶる)。道ばたの落葉樹の1割は桜
+    const look = seasonalTree(st.season, t.color, hgt, (t.seed % 9973) / 9973, { conifer: t.kind === 'conifer', sakura: 0.1 });
     if (t.kind === 'conifer') {
       pushInstance(p.trunks, x, y - 0.3, z, t.scale * 1.2, 1.8 * t.scale, t.scale * 1.2);
-      pushInstance(p.conifers, x, y, z, t.scale, t.scale, t.scale, 0, t.seed % 7, t.color);
+      pushInstance(p.conifers, x, y, z, t.scale, t.scale, t.scale, 0, t.seed % 7, look.color);
     } else {
       pushInstance(p.trunks, x, y - 0.3, z, t.scale, 3.6 * t.scale, t.scale);
       const rand = mulberry32(t.seed);
       for (let i = 0; i < CANOPY_BLOBS_PER_TREE; i++) {
-        const r = (1.5 + rand() * 0.7) * t.scale;
+        const r = (1.5 + rand() * 0.7) * t.scale * look.scale;
         const ox = (rand() - 0.5) * 1.6 * t.scale;
         const oz = (rand() - 0.5) * 1.6 * t.scale;
         const oy = (3.8 + i * 0.8 + rand() * 0.4) * t.scale;
-        pushInstance(p.canopies, x + ox, y + oy, z + oz, r, r, r, 0, rand() * Math.PI, t.color);
+        pushInstance(p.canopies, x + ox, y + oy, z + oz, r, r, r, 0, rand() * Math.PI, look.color);
       }
     }
   }
@@ -776,10 +784,12 @@ function placeObjects(st, anchorS, floorM) {
     const hgt = groundAt(t.s, t.d);
     if (!treeOk(t.s, t.d, hgt)) continue;
     const [x, y, z] = local(t.s, t.d, hgt);
+    const look = seasonalTree(st.season, t.color, hgt, fract01(t.s * 0.0137 + t.d * 0.071), { conifer: t.kind === 'conifer' });
     if (t.kind === 'conifer') {
-      pushInstance(p.farCones, x, y - 0.5, z, 2.2 * t.scale, 9 * t.scale, 2.2 * t.scale, 0, 0, t.color);
+      pushInstance(p.farCones, x, y - 0.5, z, 2.2 * t.scale, 9 * t.scale, 2.2 * t.scale, 0, 0, look.color);
     } else {
-      pushInstance(p.farBlobs, x, y + 2.6 * t.scale, z, 3 * t.scale, 3.2 * t.scale, 3 * t.scale, 0, 0, t.color);
+      const k = look.scale;
+      pushInstance(p.farBlobs, x, y + 2.6 * t.scale, z, 3 * t.scale * k, 3.2 * t.scale * k, 3 * t.scale * k, 0, 0, look.color);
     }
   }
 

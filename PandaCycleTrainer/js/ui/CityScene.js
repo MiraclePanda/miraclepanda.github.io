@@ -19,6 +19,7 @@ import {
   AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_SIDE_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
+import { seasonalTree } from '../three/seasonLook.js';
 import { createOtherRiders } from '../three/otherRiders.js';
 import { createRoadsideActors } from '../three/roadsideActors.js';
 import { clearZones, inClearZone } from '../three/roadsideLayout.js';
@@ -115,7 +116,7 @@ const ASPHALT_TILE_M = 8;
  * ref経由のdraw()呼び出しで直接Three.jsシーンを更新・描画する
  * (Dashboardと同じ設計方針)。
  */
-export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase' }, ref) {
+export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const [renderError, setRenderError] = useState(null);
@@ -157,6 +158,7 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
     let scene3d;
     try {
       scene3d = initScene(canvas, vehicle);
+      scene3d.season = season;
       sceneRef.current = scene3d;
       scene3d.onReady = () => onReadyRef.current?.();
     } catch (err) {
@@ -169,6 +171,7 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
       base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
       wetMaterials: [scene3d.road.mesh.material, scene3d.crossStreets.mesh.material],
       headlightParent: scene3d.rider.group,
+      season,
     });
     scene3d.env.set(environment, { immediate: true });
     scene3d.cam.view = normalizeCameraView(cameraView);
@@ -582,13 +585,15 @@ function updateStreetFurniture(s, { trees, lamps, cars }, distanceM, elevAt, pit
     place(s.trunks, rel, t.xOffsetM, groundY, t.scale, 3.4 * t.scale, t.scale);
     // 樹冠は複数の葉の塊で構成する。形は木ごとのseedで決定的に決める。
     const rand = mulberry32(t.seed);
+    // 走る日の季節の色(街路樹の3割ほどは桜。冬の落葉樹は枝だけなので樹冠を小さく)
+    const look = seasonalTree(s.season, t.leafColor, 0, (t.seed % 9973) / 9973, { sakura: 0.3 });
     for (let i = 0; i < CANOPY_BLOBS_PER_TREE; i++) {
-      const r = (1.3 + rand() * 0.6) * t.scale;
+      const r = (1.3 + rand() * 0.6) * t.scale * look.scale;
       const ox = (rand() - 0.5) * 1.4 * t.scale;
       const oz = (rand() - 0.5) * 1.4 * t.scale;
       const oy = (3.6 + i * 0.7 + rand() * 0.4) * t.scale;
       // ぶれ(ox, oz)は小さいので道路沿いの座標のまま足す(z + oz は alongM − oz)。
-      place(s.canopies, rel - oz, t.xOffsetM + ox, groundY + oy, r, r, r, 0, rand() * Math.PI, t.leafColor);
+      place(s.canopies, rel - oz, t.xOffsetM + ox, groundY + oy, r, r, r, 0, rand() * Math.PI, look.color);
     }
   }
   for (const l of lamps) {

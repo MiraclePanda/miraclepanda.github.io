@@ -22,6 +22,7 @@ import {
   heightNearOrigin,
   terrainHeights,
 } from './gsiTerrain.js';
+import { photoTintMul, seasonalGround } from './seasonLook.js';
 
 // 大気遠近: backdrops.js と同じ考え方(フォグ密度 × 距離 × 係数)。実際のフォグより弱く
 const HAZE_SCALE = 0.11;
@@ -135,6 +136,11 @@ function createMaterial(innerRadiusM, openSideX, innerBox, minDistM) {
       uOpenSideX: { value: openSideX },
       uMinDist: { value: minDistM },
       uBox: { value: innerBox ? new THREE.Vector4(innerBox.minX, innerBox.maxX, innerBox.minZ, innerBox.maxZ) : new THREE.Vector4(1, -1, 1, -1) },
+      // 季節: 高さ 0 の所の標高(m)、雪(雪線の標高・雪になりきる幅・写真にも掛けるか)、写真の色の倍率、低い所の森の色
+      uBaseM: { value: 0 },
+      uSnow: { value: new THREE.Vector3(2500, 400, 0) },
+      uTint: { value: new THREE.Vector3(1, 1, 1) },
+      uLow: { value: new THREE.Color().setRGB(0.16, 0.24, 0.13, THREE.SRGBColorSpace) },
     },
     vertexShader: /* glsl */ `
       attribute float aVisible;
@@ -163,6 +169,10 @@ function createMaterial(innerRadiusM, openSideX, innerBox, minDistM) {
       uniform float uOpenSideX;
       uniform float uMinDist;
       uniform vec4 uBox;
+      uniform float uBaseM;
+      uniform vec3 uSnow;
+      uniform vec3 uTint;
+      uniform vec3 uLow;
       varying vec3 vLocal;
       varying vec3 vNormalW;
       varying vec2 vUv;
@@ -175,11 +185,13 @@ function createMaterial(innerRadiusM, openSideX, innerBox, minDistM) {
         // 実在の座標に組んだ景色(熱海)は、近景の地形の範囲(矩形)の内側を描かない
         if (vLocal.x > uBox.x && vLocal.x < uBox.y && vLocal.z > uBox.z && vLocal.z < uBox.w) discard;
         vec3 n = normalize(vNormalW);
-        // 写真が無いときは標高で塗る(低い所は緑、高い所は茶色がかった灰色)
-        vec3 byHeight = mix(vec3(0.16, 0.24, 0.13), vec3(0.3, 0.3, 0.26), smoothstep(150.0, 700.0, vLocal.y));
-        // 富士山のように高い山の上は雪(写真が無いときだけ)
-        byHeight = mix(byHeight, vec3(0.85, 0.87, 0.9), smoothstep(2500.0, 2900.0, vLocal.y));
-        vec3 albedo = uHasMap > 0.5 ? texture2D(uMap, vUv).rgb : byHeight;
+        // 写真が無いときは標高で塗る(低い所は森の色、高い所は茶色がかった灰色)
+        vec3 byHeight = mix(uLow, vec3(0.3, 0.3, 0.26), smoothstep(150.0, 700.0, vLocal.y));
+        // 富士山のように高い山の上は雪。季節があればその日の雪線から上(写真にも掛ける。夏は雪なし)、
+        // 無ければ 2500 m から上(写真が無いときだけ)
+        float snow = smoothstep(uSnow.x, uSnow.x + uSnow.y, vLocal.y + uBaseM) * smoothstep(0.3, 0.6, abs(normalize(vNormalW).y));
+        byHeight = mix(byHeight, vec3(0.85, 0.87, 0.9), snow);
+        vec3 albedo = uHasMap > 0.5 ? mix(texture2D(uMap, vUv).rgb * uTint, vec3(0.85, 0.87, 0.9), snow * uSnow.z) : byHeight;
         // 写真には撮影時の日なた・日陰が焼き込まれているので、陰影は弱めにかける
         float diffuse = max(dot(n, normalize(uSunDir)), 0.0);
         vec3 color = albedo * (uAmbient + uSun * (0.35 + 0.65 * diffuse));
@@ -202,10 +214,18 @@ const _sun = new THREE.Vector3();
  * @param {(status: 'loading'|'ready'|'error', err?: Error) => void} [opts.onStatus]
  * @param {number} [opts.anisotropy]
  */
-export function createRealTerrain(cfg, { onStatus, anisotropy = 4 } = {}) {
+export function createRealTerrain(cfg, { onStatus, anisotropy = 4, season = null } = {}) {
   // openSideX が無い設定(京都・奈良)は水側を開けない(十分大きい値 = どの点も「水側でない」)
   // innerBox(回転前のシーン座標の矩形 { minX, maxX, minZ, maxZ })の内側も描かない(熱海: 近景の地形の範囲)
   const material = createMaterial(cfg.innerRadiusM, cfg.openSideX ?? -1e9, cfg.innerBox ?? null, cfg.minDistM ?? 400);
+  if (season) {
+    // 走る日の季節: 写真の色(葉のある季節は緑、秋は黄み)・雪線・標高で塗るときの森の色
+    const u = material.uniforms;
+    u.uSnow.value.set(Number.isFinite(season.snowLineM) ? season.snowLineM : 1e6, 150, 1);
+    u.uTint.value.fromArray(photoTintMul(season, 0));
+    const [r, g, b] = seasonalGround(season, [0.16, 0.24, 0.13], 0, 1, 1);
+    u.uLow.value.setRGB(r, g, b, THREE.SRGBColorSpace);
+  }
   const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
   mesh.name = 'real-terrain';
   mesh.frustumCulled = false;
@@ -239,6 +259,8 @@ export function createRealTerrain(cfg, { onStatus, anisotropy = 4 } = {}) {
         const heights = sampleDemGrid(rgba, dem.size, cfg.gridN);
         const en = gridEastNorth(range, cfg.gridN, cfg.origin);
         const t = terrainHeights(heights, cfg, heightNearOrigin(heights, en));
+        // 季節の雪線は標高で比べるので、高さ 0 の所の標高を渡す(季節が無ければ従来どおり高さそのまま)
+        if (season) material.uniforms.uBaseM.value = t.baseM ?? 0;
         mesh.geometry.dispose();
         mesh.geometry = buildTerrainGeometry(t.y, t.visible, cfg.gridN, en, cfg.bearingDeg);
         if (photo) {

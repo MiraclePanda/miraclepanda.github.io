@@ -444,6 +444,14 @@ p { line-height: 1.6; }
   margin: -0.25rem 0 0.75rem;
 }
 .scene-toolbar .btn { margin: 0; }
+/* 景色の季節(走る日の暦どおり) */
+.season-chip {
+  font-size: 0.85rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: var(--chip-bg, rgba(127, 127, 127, 0.15));
+  white-space: nowrap;
+}
 .quality-select,
 .fs-quality {
   display: inline-flex;

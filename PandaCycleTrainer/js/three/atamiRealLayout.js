@@ -15,6 +15,8 @@
 // 道路の左右 d は進行方向の右が正(既存シーンと同じ)。日本は左側通行なので、往きと帰りで
 // 同じ d < 0 の車線が道路の反対側になる(Uターンでは右回りに反対車線へ移る)。
 
+import { seasonalGround } from './seasonLook.js';
+
 export const ATAMI_DATA_URL = new URL('../data/atami-plateau.json', import.meta.url).href;
 
 // サンビーチの砂浜がある区間(南端からの t、m)。この区間の海側の低い所を砂浜に塗り、ヤシ並木を置く。
@@ -368,8 +370,9 @@ export function collectPromenade(route, sides) {
  * @param {number} normalY 法線のY成分
  * @param {number} builtUp 建物の密度(0..1)
  * @param {boolean} beach サンビーチの砂浜の範囲か
+ * @param {object|null} [season] 走る日の季節(season.js)。草木の色を季節に合わせる
  */
-export function groundColor(h, normalY, builtUp, beach, noise) {
+export function groundColor(h, normalY, builtUp, beach, noise, season = null) {
   const n = (noise - 0.5) * 0.06;
   if (h <= -0.3) return [0.5 + n, 0.48 + n, 0.38 + n]; // 海底の砂
   if (beach && h < 4.2) {
@@ -381,7 +384,9 @@ export function groundColor(h, normalY, builtUp, beach, noise) {
   if (h < 12 && normalY > 0.985) builtUp = Math.max(builtUp, 0.85);
   // 森(斜面・山の上)⇄ 市街地(建物の密集した所は屋根・舗装の灰色)
   const forest = Math.min(1, Math.max(0, (h - 60) / 220)) * 0.5 + 0.35;
-  const green = [0.36 - 0.2 * forest + n, 0.5 - 0.2 * forest + n, 0.24 - 0.09 * forest + n];
+  let green = [0.36 - 0.2 * forest + n, 0.5 - 0.2 * forest + n, 0.24 - 0.09 * forest + n];
+  // 走る日の季節の草木の色(熱海の山は椎・樫などの常緑樹が多いので、紅葉・冬枯れは控えめ)
+  if (season) green = seasonalGround(season, green, h, 0.7, forest);
   const town = [0.6 + n, 0.58 + n, 0.53 + n];
   const k = Math.min(1, builtUp * 1.3);
   let rgb = green.map((g, i) => g + (town[i] - g) * k);
