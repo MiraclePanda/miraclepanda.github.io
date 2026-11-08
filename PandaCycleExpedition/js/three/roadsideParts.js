@@ -10,6 +10,7 @@ import { firstIndexFrom, wireSagM } from './roadsideLayout.js';
 const BEHIND_M = 40;
 const AHEAD_M = 360;
 const GUIDE_VIEW_M = 900;
+const GOAL_VIEW_M = 1500; // ゴールの門はこの手前から見える
 const POLE_H = 11;
 const ARM_Y = 10.3;
 const WIRE_SEGS = 5;
@@ -127,6 +128,27 @@ function guideTexture(lines) {
   }, 512, 256);
 }
 
+/** ゴールの表札: 木の枠にクリーム色の板、上に赤い「ゴール」、下に大きく行き先の名前。 */
+function goalTexture(name) {
+  return signTexture((g, w, h) => {
+    g.fillStyle = '#6b4424';
+    g.fillRect(0, 0, w, h);
+    g.fillStyle = '#f7efdc';
+    g.fillRect(22, 22, w - 44, h - 44);
+    g.strokeStyle = '#b8862f';
+    g.lineWidth = 6;
+    g.strokeRect(36, 36, w - 72, h - 72);
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillStyle = '#c0392b';
+    g.font = 'bold 118px sans-serif';
+    g.fillText('ゴール', w / 2, 132);
+    g.fillStyle = '#2a1d12';
+    g.font = 'bold 200px serif';
+    g.fillText(name, w / 2, 330, w - 120);
+  }, 1024, 480);
+}
+
 /**
  * @param {THREE.Scene} scene
  * @param {ReturnType<import('./roadsideLayout.js').planRoadside>} plan
@@ -187,6 +209,41 @@ export function createRoadside(scene, plan, at, { textures }) {
     scene.add(grp);
     return { m: gd.m, grp };
   });
+
+  // ---- ゴールの表札(道をまたぐ木の門。世界の座標に固定) ----
+  let goal = null;
+  if (plan.goal) {
+    at(plan.goal.m, P);
+    const wood = std(0x6b4424, { roughness: 0.85 });
+    const grp = new THREE.Group();
+    const W = 13;
+    const H = W * 480 / 1024;
+    const Y = 6.0; // 板の中心の高さ(下の端は 3 m くらい)
+    const face = new THREE.Mesh(plane, std(0xffffff, { map: tex(goalTexture(plan.goal.name)), roughness: 0.6 }));
+    face.scale.set(W, H, 1);
+    face.position.set(0, Y, -0.13);
+    face.rotation.y = Math.PI; // 近づいてくるライダーの方を向く
+    const board = new THREE.Mesh(unitBox, wood);
+    board.scale.set(W, H, 0.24);
+    board.position.set(0, Y, 0);
+    const beam = new THREE.Mesh(unitBox, wood); // 上の笠木
+    beam.scale.set(W + 2.4, 0.45, 0.6);
+    beam.position.set(0, Y + H / 2 + 0.35, 0);
+    grp.add(face, board, beam);
+    for (const dx of [-1, 1]) {
+      const post = new THREE.Mesh(unitBox, wood);
+      post.scale.set(0.45, Y + H / 2 + 2.6, 0.45); // 地面の起伏に備えて 2 m 埋める
+      post.position.set(dx * (W / 2 + 0.6), (Y + H / 2 + 0.6) / 2 - 1, 0);
+      grp.add(post);
+    }
+    grp.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    const a = plan.goal.aheadM ?? 0; // 終わりの向きのまま先へ
+    grp.position.set(P.x + P.hx * a, P.z - 0.3, -(P.y + P.hy * a));
+    grp.rotation.y = yawOf(P);
+    grp.visible = false;
+    scene.add(grp);
+    goal = { m: plan.goal.m, grp };
+  }
 
   /** 丸・ひし形の標識1枚(柱つき)。face = 表のプール、back = 裏のプール。 */
   function pushSign(ox, oy, item, face, back, y, size) {
@@ -265,6 +322,7 @@ export function createRoadside(scene, plan, at, { textures }) {
       p.mesh.position.set(ox, 0, -oy);
     }
     for (const g of guides) g.grp.visible = g.m > m0 - 60 && g.m < m0 + GUIDE_VIEW_M;
+    if (goal) goal.grp.visible = goal.m < m0 + GOAL_VIEW_M; // 着いた後も見えたまま
   }
 
   /** 電柱の根もと(世界の座標。z は北 = 負)と、電線をかける点を返す。out には電柱の所の道の向きが入る。 */
