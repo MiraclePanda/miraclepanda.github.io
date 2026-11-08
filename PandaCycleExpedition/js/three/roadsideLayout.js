@@ -6,6 +6,7 @@
 //   - 速度標識: 区間の出だし・トンネルを出た所・2 km ごと。町の中は 40、ほかは 50
 //   - 案内標識(青): 3 km ごとと町を出た所。次の町と行き先までの km
 //   - 中央線の黄色(はみ出し禁止): カーブの続く所とトンネル
+//   - ゴールの表札: 区間の終わりの少し先に、道をまたぐ大きな門。行き先の名前を書く(着いた時に前に見える。電柱はその手前で止める)
 // 同じ区間ならいつも同じ配置になる(乱数を使わない)。道の見た目だけで、物理・トレーナーには関係しない。
 //
 // 座標は区間の平面座標(東 = +x、北 = +y)。at(m) の向き (hx, hy) の左は (-hy, hx)。side は +1 = 左、-1 = 右。
@@ -19,6 +20,8 @@ const MIRROR_TURN = 0.7; // 40° 以上 = 見通しの悪いカーブ(半径 57 
 const YELLOW_TURN = 0.3;
 const TOWN_BEFORE_M = 400;
 const TOWN_AFTER_M = 700;
+const GOAL_CLEAR_M = 20; // ゴールの門のまわりに電柱を立てない
+const GOAL_AHEAD_M = 16; // 着いた所から門まで(真下だとカメラから字が読めない)
 
 /** m の前後 TURN_SPAN_M での向きの変わり(ラジアン、左に曲がると正)。 */
 export function turnAt(at, m, lengthM) {
@@ -86,7 +89,7 @@ export function planRoadside({ lengthM, at, groundAt, inTunnel = () => false, pl
     return runSide.get(r);
   };
   const poles = [];
-  for (let m = 10; m < L - 5; m += POLE_STEP_M) {
+  for (let m = 10; m < L - GOAL_CLEAR_M; m += POLE_STEP_M) {
     if (tunnelNear(m, 15)) continue;
     let side = sideOfRun(Math.floor(m / POLE_RUN_M));
     if (dropAt(m, side * POLE_OFF_M) > 3) side = -side;
@@ -149,7 +152,10 @@ export function planRoadside({ lengthM, at, groundAt, inTunnel = () => false, pl
   turns.forEach((t, i) => { if (Math.abs(t) >= YELLOW_TURN) yellow.push([i * STEP - 40, i * STEP + 40]); });
   for (const tn of tunnelRanges(inTunnel, L)) yellow.push([tn[0] - 30, tn[1] + 30]);
 
-  return { poles, mirrors, warnings, speeds, guides, yellow: mergeRanges(yellow), curves };
+  // ---- ゴールの表札(区間の終わりから道の向きに GOAL_AHEAD_M 先。ライダーは門の手前で止まる) ----
+  const goalSign = goal ? { m: L, aheadM: GOAL_AHEAD_M, name: goal } : null;
+
+  return { poles, mirrors, warnings, speeds, guides, goal: goalSign, yellow: mergeRanges(yellow), curves };
 }
 
 /** 10 m ごとに見たトンネルの範囲 [入口, 出口]。 */
