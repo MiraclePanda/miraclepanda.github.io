@@ -17,6 +17,8 @@ import { createPanorama } from './panoramaParts.js';
 import { buildLandmarks } from './landmarkParts.js';
 import { createAerialPhotos } from './aerialPhoto.js';
 import { planRoadside, isYellowAt } from './roadsideLayout.js';
+import { surfaceAtM } from '../physics/segmentRoute.js';
+import { surfaceOf } from '../physics/surfaces.js';
 import { createRoadside } from './roadsideParts.js';
 import { broadleafLook, coniferColor, evergreenShare, photoTint, snowCover, vegetationColor, withSnow } from './seasonLook.js';
 import { VIEW_RIGS, normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg } from './cameraViews.js';
@@ -57,6 +59,13 @@ const ROAD_COLS = [
   [-4.6, 0.04, 0xe6e6e0], [-4.59, 0.03, 0x46484b], [4.59, 0.03, 0x46484b], [4.6, 0.04, 0xe6e6e0],
   [4.79, 0.04, 0xe6e6e0], [4.8, 0.06, 0x8f8c84], [5.4, 0.06, 0x9a978f], [7, -0.45, 0x77756c],
 ];
+// 砂利道(林道・旧道): 幅 4.8 m ほどの土色。両わきは草の生えた路肩、真ん中は轍の間の少し明るい砂利。
+// 断面の点の数は ROAD_COLS と同じ(舗装と砂利の断面を同じ格子でつなぐため)
+const GRAVEL_COLS = [
+  [-7, -0.45, 0x5b5540], [-5.4, 0.0, 0x66683f], [-3.2, 0.03, 0x76704a], [-2.4, 0.04, 0x9a8462],
+  [-1.5, 0.04, 0x8a7556], [-0.5, 0.05, 0xa48f6c], [0.5, 0.05, 0xa48f6c], [1.5, 0.04, 0x8a7556],
+  [2.4, 0.04, 0x9a8462], [3.2, 0.03, 0x76704a], [5.4, 0.0, 0x66683f], [7, -0.45, 0x5b5540],
+];
 const WALL_COLORS = [0xece6da, 0xdcd2c0, 0xc9ced2, 0xf3efe7, 0xbfb3a0, 0xd8cfc4];
 const HOUSE_ROOFS = [0x4a4f57, 0x5b4636, 0x3e4a5c, 0x6a6a66, 0x7a4b36];
 
@@ -91,6 +100,22 @@ function groundTexture() {
     for (let i = 0; i < n * n; i++) {
       const v = 200 + Math.floor(hash2(i % n, Math.floor(i / n), 3) * 55);
       img.data.set([v, v, v * 0.97, 255], i * 4);
+    }
+    g.putImageData(img, 0, 0);
+  });
+}
+
+/** 砂利のむら(小石の明暗)。砂利道の頂点色に掛ける。 */
+function gravelTexture() {
+  return canvasTexture(128, (g, n) => {
+    const img = g.createImageData(n, n);
+    for (let i = 0; i < n * n; i++) {
+      const x = i % n;
+      const y = Math.floor(i / n);
+      const r = hash2(x, y, 7);
+      const stone = hash2(x >> 1, y >> 1, 8) > 0.82 ? 30 : 0; // ところどころ白っぽい小石
+      const v = Math.min(255, 170 + Math.floor(r * 60) + stone);
+      img.data.set([v, v * 0.98, v * 0.94, 255], i * 4);
     }
     g.putImageData(img, 0, 0);
   });
@@ -179,6 +204,8 @@ export function createRealRoadScene(canvas, segment, sc, {
   const textures = [];
   const tex = (t) => (textures.push(t), t);
   const routeAt = createRouteSampler(sc, segment);
+  /** 区間の距離 m の路面が未舗装か(砂利道は中央線・電柱・標識を出さず、道を土色にする)。 */
+  const unpavedAt = (m) => surfaceOf(surfaceAtM(segment, m)).unpaved;
 
   // ---- トンネル(坑口の外で道より高い地面が残る所まで筒を延ばす) ----
   const tubes = [];
@@ -400,6 +427,14 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   const roadMat = new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
+  // 砂利道は小石のむらのテクスチャを頂点色に掛ける(1枚 2 m)
+  const gravelMat = new THREE.MeshStandardMaterial({
+    map: tex(gravelTexture()), vertexColors: true, roughness: 1, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  const roadLen = (R.n - 1) * sc.step;
+  const rev = segment.id.endsWith('~rev');
+  // データの点 k(元の向き)の路面が未舗装か
+  const unpavedK = (k) => unpavedAt(rev ? roadLen - k * sc.step : k * sc.step);
   for (let k0 = 0; k0 < R.n - 1; k0 += ROAD_CHUNK) {
     const k1 = Math.min(k0 + ROAD_CHUNK, R.n - 1);
     const ox = R.x[k0];
@@ -407,29 +442,39 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     const cols = ROAD_COLS.length;
     const pos = [];
     const col = [];
+    const uv = [];
     for (let k = k0; k <= k1; k++) {
       const a = Math.max(k - 1, 0);
       const b = Math.min(k + 1, R.n - 1);
       const len = Math.hypot(R.x[b] - R.x[a], R.y[b] - R.y[a]) || 1;
       const lx = -(R.y[b] - R.y[a]) / len;
       const ly = (R.x[b] - R.x[a]) / len;
-      for (const [off, dy, hex] of ROAD_COLS) {
+      for (const [off, dy, hex] of unpavedK(k) ? GRAVEL_COLS : ROAD_COLS) {
         pos.push(R.x[k] + lx * off - ox, R.z[k] + dy, -(R.y[k] + ly * off - oy));
         _c.setHex(hex);
         col.push(_c.r, _c.g, _c.b);
+        uv.push(off / 2, (k * sc.step) / 2);
       }
     }
+    // 舗装の帯と砂利の帯を別の材質のグループにする(行ごとに、その行の始まりの点の路面で決める)
     const idx = [];
+    const groups = [];
     for (let r = 0; r < k1 - k0; r++) {
+      const mat = unpavedK(k0 + r) && unpavedK(k0 + r + 1) ? 1 : 0;
+      const last = groups[groups.length - 1];
+      if (!last || last.mat !== mat) groups.push({ start: idx.length, count: 0, mat });
       for (let c = 0; c < cols - 1; c++) {
         const a = r * cols + c;
         idx.push(a, a + cols, a + 1, a + 1, a + cols, a + cols + 1);
       }
+      groups[groups.length - 1].count = idx.length - groups[groups.length - 1].start;
     }
     const g = new THREE.BufferGeometry();
     g.setIndex(idx);
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    for (const gr of groups) g.addGroup(gr.start, gr.count, gr.mat);
     g.computeVertexNormals();
     // 法線が下を向いたら(断面の向きの取り違え)面の向きを反転する
     if (g.attributes.normal.array[1] < 0) {
@@ -437,7 +482,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       g.setIndex(idx);
       g.computeVertexNormals();
     }
-    const mesh = new THREE.Mesh(g, roadMat);
+    const mesh = new THREE.Mesh(g, [roadMat, gravelMat]);
     mesh.position.set(ox, 0, -oy);
     mesh.receiveShadow = true;
     scene.add(mesh);
@@ -555,7 +600,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   // 電柱と電線・カーブミラー・標識(配置は roadsideLayout.js)
   const roadPlan = planRoadside({
     lengthM: segment.lengthM, at: routeAt, groundAt: (x, y) => heightAt(sc, x, y), inTunnel: (m) => !!tubeAt(m),
-    places: segment.places, goalName: segment.goalName,
+    places: segment.places, goalName: segment.goalName, unpavedAt,
   });
   const roadside = createRoadside(scene, roadPlan, routeAt, { textures });
 
@@ -779,6 +824,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     // 中央線(10m ごとに 5m の白い破線。カーブの続く所とトンネルは黄色の実線 = はみ出し禁止。
     // 絶対位置にそろえるので走ると流れる)
     for (let mm = Math.ceil((m0 - 30) / 10) * 10; mm < m0 + 220; mm += 10) {
+      if (unpavedAt(mm + 5)) continue; // 砂利道には中央線が無い
       if (isYellowAt(roadPlan, mm + 5)) {
         // カーブでも折れ目が目立たないよう 2.5 m ずつ
         for (let q = 1.25; q < 10; q += 2.5) {
@@ -820,7 +866,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
         }
         const [x, y, z] = local(PA, 0, 5.5);
         pushInstance(pools.tunnel, x, y, z, 11.8, 0.5, 4.3, 0, yaw);
-        if (mm % 12 === 0) {
+        if (mm % 12 === 0 && !unpavedAt(mm)) { // 旧道の古いトンネルには照明が無い
           const [lx, ly, lz] = local(PA, -4.8, 4.6);
           pushInstance(pools.lamp, lx, ly, lz, 0.2, 0.15, 1.2, 0, yaw);
         }

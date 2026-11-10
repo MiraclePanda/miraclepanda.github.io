@@ -336,6 +336,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border: 1px solid var(--line); border-radius: 10px; }
 .course-list .course-region { padding: 4px 10px; font-size: 0.8rem; color: var(--muted);
   background: color-mix(in srgb, var(--line) 30%, var(--panel)); letter-spacing: 0.1em; }
+/* 地方と地方の間を電車・船で渡るつながり(点線の航路のように) */
+.course-list .course-link { padding: 6px 10px 6px calc(2em + 18px); font-size: 0.85rem; color: var(--sea);
+  border-top: 1px dashed var(--line); background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--sea) 8%, transparent) 0 10px, transparent 10px 16px); }
 .course-list button.course { display: grid; grid-template-columns: 2em 1fr auto; align-items: center; gap: 8px; width: 100%;
   min-height: 44px; padding: 6px 10px; border: 0; border-radius: 0; border-top: 1px dashed var(--line);
   background: transparent; color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
@@ -345,6 +348,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .course-name { font-weight: 600; }
 .course-side { margin-left: 6px; padding: 0 6px; border: 1px solid var(--sea); border-radius: 999px; color: var(--sea);
   font-size: 0.75rem; font-weight: 400; }
+.course-gravel { margin-left: 6px; padding: 0 6px; border: 1px solid #8a6a3e; border-radius: 999px; color: #8a6a3e;
+  font-size: 0.75rem; font-weight: 400; white-space: nowrap; }
 .course-stat { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
 .course-here { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--accent-ink);
   font-size: 0.75rem; font-weight: 400; }

@@ -47,10 +47,12 @@ function mergeRanges(ranges) {
  *   groundAt:(x:number,y:number)=>number, inTunnel?:(m:number)=>boolean,
  *   places?:{atM:number,name:string,kind:string}[], goalName?:string}} o
  */
-export function planRoadside({ lengthM, at, groundAt, inTunnel = () => false, places = [], goalName }) {
+export function planRoadside({ lengthM, at, groundAt, inTunnel = () => false, places = [], goalName, unpavedAt = () => false }) {
   const L = lengthM;
   const p = {};
   const tunnelNear = (m, r) => inTunnel(m) || inTunnel(Math.max(m - r, 0)) || inTunnel(Math.min(m + r, L));
+  // 砂利道(林道・旧道)には電柱・カーブミラー・標識を立てない(山の中の古い道らしく)
+  const wild = (m) => unpavedAt(m);
   const towns = places.filter((q) => q.kind === 'town').sort((q1, q2) => q1.atM - q2.atM);
   const inTown = (m) => towns.some((t) => m > t.atM - TOWN_BEFORE_M && m < t.atM + TOWN_AFTER_M);
   /** 道の脇 off m の地面が、路面よりどれだけ低いか(崖・海・橋なら大きい)。 */
@@ -90,7 +92,7 @@ export function planRoadside({ lengthM, at, groundAt, inTunnel = () => false, pl
   };
   const poles = [];
   for (let m = 10; m < L - GOAL_CLEAR_M; m += POLE_STEP_M) {
-    if (tunnelNear(m, 15)) continue;
+    if (tunnelNear(m, 15) || wild(m)) continue;
     let side = sideOfRun(Math.floor(m / POLE_RUN_M));
     if (dropAt(m, side * POLE_OFF_M) > 3) side = -side;
     if (dropAt(m, side * POLE_OFF_M) > 3) continue; // 両側とも崖・橋
@@ -101,7 +103,7 @@ export function planRoadside({ lengthM, at, groundAt, inTunnel = () => false, pl
   // ---- カーブミラー(きついカーブの外側) ----
   const mirrors = [];
   for (const c of curves) {
-    if (Math.abs(c.turn) < MIRROR_TURN || tunnelNear(c.peakM, 20)) continue;
+    if (Math.abs(c.turn) < MIRROR_TURN || tunnelNear(c.peakM, 20) || wild(c.peakM)) continue;
     if (mirrors.length && c.peakM - mirrors[mirrors.length - 1].m < 120) continue;
     const side = c.turn > 0 ? -1 : 1;
     if (dropAt(c.peakM, side * 6) > 3) continue; // 外側が崖ならガードレールだけ
@@ -112,12 +114,12 @@ export function planRoadside({ lengthM, at, groundAt, inTunnel = () => false, pl
   const warnings = [];
   for (const c of curves) {
     const m = c.fromM - 70;
-    if (m < 30 || tunnelNear(m, 10)) continue;
+    if (m < 30 || tunnelNear(m, 10) || wild(m) || wild(c.peakM)) continue;
     if (warnings.length && m - warnings[warnings.length - 1].m < 150) continue;
     warnings.push({ m, side: 1, dir: c.turn > 0 ? 'left' : 'right' });
   }
   const taken = [...warnings.map((w) => w.m)];
-  const free = (m, r) => m > 20 && m < L - 20 && !tunnelNear(m, 10) && !taken.some((t) => Math.abs(t - m) < r);
+  const free = (m, r) => m > 20 && m < L - 20 && !tunnelNear(m, 10) && !wild(m) && !taken.some((t) => Math.abs(t - m) < r);
 
   const speeds = [];
   const speedAt = [80];

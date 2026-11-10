@@ -62,3 +62,22 @@ export function saveCameraView(value, storage = globalThis.localStorage) {
     // 保存できない環境では、その回だけの選択になる
   }
 }
+
+const SOUND_KEY = 'pce_sound_v1';
+
+/** 走行中の音(風・波・砂利・虫の声など)を鳴らすか(既定は鳴らす)。 */
+export function loadSoundOn(storage = globalThis.localStorage) {
+  try {
+    return storage?.getItem(SOUND_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+export function saveSoundOn(on, storage = globalThis.localStorage) {
+  try {
+    storage?.setItem(SOUND_KEY, on ? 'on' : 'off');
+  } catch {
+    // 保存できない環境では、その回だけの選択になる
+  }
+}

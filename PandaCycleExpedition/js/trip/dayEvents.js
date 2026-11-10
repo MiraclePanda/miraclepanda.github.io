@@ -11,6 +11,7 @@
 import { NODES } from '../data/catalog.js';
 import { routesFrom, segmentSummary } from './network.js';
 import { SURFACES } from '../physics/surfaces.js';
+import { talesFor, pickTale } from './encounters.js';
 import { PhysicsConstants } from '../physics/physicsConstants.js';
 import { nearestPlace } from '../physics/segmentRoute.js';
 import { addRideEvent, endDay, passTripTime } from '../storage/tripState.js';
@@ -79,16 +80,6 @@ export function weatherAt(forecast, minutes) {
 
 // ---- 出会い ----
 
-/** 道ばたの出会い(区間の決まった出会いに加えて、ところどころで起きる)。 */
-export const ROADSIDE_ENCOUNTERS = [
-  { text: '散歩中のおばあさん「その荷物でどこまで行くの?気をつけてね」' },
-  { text: '軽トラのおじさん「この先はトンネルが続くから、ライトをつけてな」' },
-  { text: '釣り帰りの人「今日は海が穏やかでいいね」' },
-  { text: '地元の高校生が手を振ってくれた。' },
-  { text: 'みかん農家さん「ひとつ持っていきな」', gift: { name: 'みかん', satiety: 6 } },
-  { text: 'サイクリストとすれ違った。「グッドライド!」' },
-  { text: '干物屋さん「試食していきなよ」', gift: { name: 'アジの干物の試食', satiety: 4 } },
-];
 
 /** 道の情報を教えてもらう地点: 区間の終点のこの距離手前から、300 m おきに。 */
 export const ROAD_TIP_BEFORE_END_M = 2500;
@@ -117,24 +108,31 @@ export function roadTips(segment) {
 export const ROADSIDE_CHANCE_PER_KM = 0.3;
 
 /**
- * その日の出会いの一覧(区間上の地点の昇順)。区間の encounter 地点と、seed で決まる道ばたの出会い。
- * @returns {{atM:number, text:string, gift?:{name:string, satiety:number}, id:string}[]}
+ * その日の出会いの一覧(区間上の地点の昇順)。区間の encounter 地点と、seed で決まる道ばたの出会い
+ * (話は js/trip/encounters.js から、地方・季節・海沿いか山道かで選ぶ)。
+ * @param {{season?:string|null, recentIds?:Set<string>}} [o] season: seasonOfDay の値。recentIds: 最近の日に出た話
+ * @returns {{atM:number, text:string, gift?:{name:string, satiety:number}, id:string, tale?:string}[]}
  */
-export function planEncounters(segment, tripId, day) {
+export function planEncounters(segment, tripId, day, { season = null, recentIds = new Set() } = {}) {
   const out = [];
   for (const p of segment.places ?? []) {
     if (p.kind === 'encounter') out.push({ atM: p.atM, text: p.text, gift: p.gift, id: p.id });
   }
   const rnd = mulberry32(hashSeed(`${tripId}:encounter:${segment.id}:${day}`));
+  const tales = talesFor(segment, season);
+  const used = new Set();
   for (let km = 1; km * 1000 < segment.lengthM; km++) {
     const hit = rnd() < ROADSIDE_CHANCE_PER_KM;
-    const pick = Math.floor(rnd() * ROADSIDE_ENCOUNTERS.length);
+    const pickRnd = rnd();
     const offset = rnd() * 800;
     if (!hit) continue;
     const atM = km * 1000 + offset - 400;
     // 区間の決まった出会いのすぐ近くでは起こさない
     if (out.some((e) => Math.abs(e.atM - atM) < 300)) continue;
-    out.push({ ...ROADSIDE_ENCOUNTERS[pick], atM, id: `roadside-${km}` });
+    const tale = pickTale(tales, () => pickRnd, used, recentIds);
+    if (!tale) continue;
+    used.add(tale.id);
+    out.push({ text: tale.text, gift: tale.gift, atM, id: `roadside-${km}`, tale: tale.id });
   }
   // 終点が近づいたら、この先の分かれ道の話を聞く(区間の決まった出会いの近くと、ほかの出会いは避ける)
   const tips = roadTips(segment);
@@ -148,7 +146,7 @@ export function planEncounters(segment, tripId, day) {
 
 /** 出会いを旅に記録する(差し入れがあれば満腹度が上がる)。 */
 export function applyEncounter(trip, enc) {
-  let t = addRideEvent(trip, 'encounters', { id: enc.id, text: enc.text, gift: enc.gift?.name });
+  let t = addRideEvent(trip, 'encounters', { id: enc.id, text: enc.text, gift: enc.gift?.name, ...(enc.tale ? { tale: enc.tale } : {}) });
   if (enc.gift) t = { ...t, rider: { ...t.rider, satiety: clamp100(t.rider.satiety + enc.gift.satiety) } };
   return t;
 }
