@@ -5,6 +5,7 @@ import { lodgingOptions, stayAt, FAILURES, LODGING_EFFECTS, forecastDay, forecas
 import { fmtClock } from '../storage/tripState.js';
 import { fmtTime } from '../utils/format.js';
 import { HeroArt } from './HeroArt.js';
+import { trackForDay, downloadTrackTcx } from '../storage/tcx.js';
 
 export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRide }) {
   const [saving, setSaving] = useState(false);
@@ -20,6 +21,7 @@ export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRid
         h('h1', null, `${d.day}日目の終わり`)),
       failed && h('p', { className: 'err' }, FAILURES[reason].text + '。'),
       h(DaySummary, { d }),
+      h(TcxButton, { track: trackForDay(trip, d.day) }),
       h('p', null, `翌朝: 体力 ${Math.round(trip.rider.stamina)}・満腹度 ${Math.round(trip.rider.satiety)}・所持金 ${trip.wallet.yen.toLocaleString()} 円`),
       h('p', { className: 'muted' }, `${trip.day}日目の天気予報: ${forecastText(forecastDay(trip.tripId, trip.day))}`),
       h('button', { className: 'primary', onClick: () => onDone(trip) }, 'ホームへ'));
@@ -44,6 +46,7 @@ export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRid
       h('h1', null, reason === 'arrived' ? `${segment.goalName ?? '終点'}に着いた!` : `${trip.day}日目、ここまで`)),
     h('p', { className: 'sub' }, `旅の時刻 ${fmtClock(trip.clockMinutes)}・今日 ${(trip.ride.distanceM / 1000).toFixed(1)} km・所持金 ${trip.wallet.yen.toLocaleString()} 円`),
     error && h('p', { className: 'err' }, error),
+    h(TcxButton, { track: trackForDay(trip, trip.day) }),
     h('p', { className: 'muted' }, `明日(${trip.day + 1}日目)の天気予報: ${forecastText(forecastDay(trip.tripId, trip.day + 1))}`),
     h('div', { className: 'card' },
       h('h2', null, '今夜の宿'),
@@ -52,6 +55,14 @@ export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRid
           o.reason && h('div', { className: 'err' }, o.reason)),
         h('button', { disabled: !o.available || saving, onClick: () => choose(o) }, 'ここに泊まる')))),
     reason !== 'arrived' && h('button', { onClick: onBackToRide, disabled: saving }, 'もう少し走る'));
+}
+
+/** その日の走行記録を TCX で保存するボタン(Strava などに旅の1日を残す。GPS 座標は入れない)。 */
+export function TcxButton({ track }) {
+  if (!track) return null;
+  return h('div', { className: 'row' },
+    h('button', { onClick: () => downloadTrackTcx(track) }, '今日の走行記録を保存(TCX)'),
+    h('span', { className: 'muted' }, 'Strava などに取り込めます(位置情報なしの屋内ライドとして)。'));
 }
 
 function effectText(kind) {

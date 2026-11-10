@@ -1,9 +1,9 @@
-// TCX (Training Center XML) 形式でのエクスポート。
-// 要件定義書6章に対応:
+// TCX (Training Center XML) 形式でのエクスポート(設計書5章: GPS 座標は入れない)。
+// 旅の1日の走行記録(tripState の ride.samples / lastTrack)を TCX にして保存する。
 //  - GPS座標(<Position>)は含めない。ダミー座標による偽装も行わない
 //  - ケイデンス・パワーはTrackpointに含める
 //
-// Strava側の「バーチャルライド」認識について事前調査した結果:
+// Strava 側の「バーチャルライド」認識について:
 // StravaはGPS座標を含まないアクティビティを基本的に「屋内(Indoor)」として
 // 扱い、GPSを伴う専用スマートトレーナー連携(Zwift等)由来のもののみを
 // 厳密な「Virtual Ride」種別に分類する。本アプリはGPSを付与しない方針の
@@ -24,7 +24,7 @@ export function buildTcx(record) {
       <Id>${escapeXml(startIso)}</Id>
 ${laps}
       <Creator xsi:type="Device_t">
-        <Name>PandaCycleTrainer</Name>
+        <Name>PandaCycleExpedition</Name>
         <UnitId>0</UnitId>
         <ProductID>0</ProductID>
         <Version>
@@ -100,14 +100,40 @@ function escapeXml(str) {
   });
 }
 
-export function downloadTcx(record) {
+/**
+ * その日の走行記録: 走行中(trip.ride)か、最後に終えた日(trip.lastTrack)。無ければ null。
+ * @returns {{day:number, startedAt:number, samples:number[][]}|null}
+ */
+export function trackForDay(trip, day) {
+  const r = trip.ride;
+  if (r && r.day === day && r.samples?.length) return { day, startedAt: r.startedAt, samples: r.samples };
+  const t = trip.lastTrack;
+  return t && t.day === day && t.samples?.length ? t : null;
+}
+
+/**
+ * 走行記録を buildTcx の record にする。点は [走行秒, 距離 m, パワー W, ケイデンス rpm]。
+ * 時刻は「走り出した時刻 + 走行秒」(休憩・食事の止まっていた時間は詰める)。
+ */
+export function trackToRecord(track) {
+  const samples = track.samples.map(([s, m, w, c]) => ({ tOffsetS: s, distanceM: m, powerW: w, cadenceRpm: c }));
+  const last = samples[samples.length - 1];
+  return { startTime: track.startedAt, samples, ridingTimeS: last?.tOffsetS ?? 0, totalDistanceM: last?.distanceM ?? 0 };
+}
+
+/** 旅の d 日目の走行記録を TCX ファイルとして保存する(ファイル名に日数を入れる)。 */
+export function downloadTrackTcx(track) {
+  downloadTcx(trackToRecord(track), `day${track.day}`);
+}
+
+export function downloadTcx(record, label = '') {
   const xml = buildTcx(record);
   const blob = new Blob([xml], { type: 'application/vnd.garmin.tcx+xml' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   const dateStr = new Date(record.startTime).toISOString().replace(/[:.]/g, '-');
   a.href = url;
-  a.download = `PandaCycleTrainer_${dateStr}.tcx`;
+  a.download = `PandaCycleExpedition_${label ? `${label}_` : ''}${dateStr}.tcx`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

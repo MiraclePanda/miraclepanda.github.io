@@ -8,7 +8,7 @@ import { h, useState, useEffect, useRef } from './h.js';
 import { PhysicsEngine } from '../physics/physicsEngine.js';
 import { packWeightKg, surfaceOf } from '../physics/surfaces.js';
 import { createSegmentRoute, nextPlace, tunnelAtM } from '../physics/segmentRoute.js';
-import { startRide, updateRide, passTripTime, fmtClock, chooseNextSegment, addRideEvent } from '../storage/tripState.js';
+import { startRide, updateRide, passTripTime, fmtClock, chooseNextSegment, addRideEvent, addRideSample } from '../storage/tripState.js';
 import { routesFrom, segmentSummary, nodeName, cameFromSegmentId, loadSegment } from '../trip/network.js';
 import { soaked } from '../trip/gear.js';
 import { visitSight, stampFood, SIGHT_VISIT_MINUTES } from '../trip/stamps.js';
@@ -20,15 +20,18 @@ import {
 import { planCompanion, CompanionTalk, talkCeilingW, recordCompanion, recordCompanionMet } from '../trip/companion.js';
 import { createSeaRoadScene } from '../three/seaRoadScene.js';
 import { createRealRoadScene } from '../three/realRoadScene.js';
-import { createSeason } from '../trip/season.js';
+import { createSeason, seasonDayOfYear } from '../trip/season.js';
+import { seasonOfDay, recentTaleIds } from '../trip/encounters.js';
 import { loadScenery, loadPanorama } from '../three/sceneryData.js';
 import { RideMap } from './RideMap.js';
 import { nextCameraView } from '../three/cameraViews.js';
 import { WakeLockManager } from '../utils/wakeLock.js';
 import {
   loadRenderQuality, saveRenderQuality, RENDER_QUALITY_VALUES, loadShowRideMap, saveShowRideMap,
-  loadCameraView, saveCameraView,
+  loadCameraView, saveCameraView, loadSoundOn, saveSoundOn,
 } from '../storage/prefs.js';
+import { soundMix } from '../utils/soundMix.js';
+import { createSoundscape } from '../utils/soundscape.js';
 
 const TOAST_MS = 6000;
 const QUALITY_LABELS = { auto: '自動', ultra: '最高', high: '高', medium: '中', low: '低' };
@@ -67,6 +70,8 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
   const [hudOpen, setHudOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const mapApiRef = useRef(null);
+  const [soundOn, setSoundOn] = useState(loadSoundOn);
+  const soundRef = useRef(null);
 
   function toast(text) {
     const id = Math.random();
@@ -95,7 +100,11 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     physics.elevationGainM = ride.elevationGainM;
     let rideSeconds = ride.rideSeconds;
     const forecast = forecastDay(trip.tripId, trip.day);
-    const encounters = planEncounters(segment, trip.tripId, trip.day);
+    // 道ばたの出会いは、その日の季節(景色と同じ季節の設定)と最近の日誌に出た話も見て選ぶ
+    const encounters = planEncounters(segment, trip.tripId, trip.day, {
+      season: seasonOfDay(seasonDayOfYear(trip.settings.season)), recentIds: recentTaleIds(trip),
+    });
+    const seaSide = !!segment.seaSide && segment.seaSide !== 'none';
     let encIdx = encounters.findIndex((e) => e.atM > trip.position.segmentM);
     if (encIdx < 0) encIdx = encounters.length;
     const places = (segment.places ?? []).filter((p) => p.kind !== 'encounter');
@@ -108,6 +117,19 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     let lastWeather = null;
     let warnedHungry = trip.rider.satiety < BODY.HUNGRY_BELOW;
     let inTunnel = null;
+    let lastSurface = null;
+
+    // 走行中の音(ファイルを使わずに作る)。出発のボタンを押した後なので、そのまま鳴らせる
+    const season = seasonOfDay(seasonDayOfYear(trip.settings.season));
+    let sound = null;
+    try {
+      sound = createSoundscape({ enabled: loadSoundOn() });
+      sound?.resume();
+    } catch {
+      sound = null;
+    }
+    soundRef.current = sound;
+    let lastSound = 0;
 
     const saver = new AutoSaver({ store, getTrip: () => tripRef.current });
     saver.start();
@@ -236,6 +258,8 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
         const snap = physics.step(dt);
         rideSeconds += dt;
         t = updateRide(t, { distanceM: snap.distanceM, rideSeconds, elevationGainM: snap.elevationGainM });
+        // 走行記録(TCX 用、5 走行秒ごと)。デモのパワーは作り物なので残さない
+        if (!demo) t = addRideSample(t, { powerW: power, cadenceRpm: cadenceRef.current });
         t = { ...t, rider: stepBody(t.rider, { tripMinutes, powerW: power, ftpW: t.rider.ftpW, soaked: soaked(t, w.kind) }) };
         if (!demo && client.isConnected) {
           if (client.controlMode === 'erg') client.setErgTarget(physics.computeErgTargetWatts() / (t.settings.powerScale ?? 1));
@@ -273,6 +297,15 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       const tunnel = tunnelAtM(segment, segM);
       if (tunnel && tunnel !== inTunnel) toast(`${tunnel.name}に入った。`);
       inTunnel = tunnel;
+      // 路面が変わったら知らせる(最初の1回は出発地点の路面なので、未舗装のときだけ)
+      const surf = physics.currentSurface;
+      if (surf !== lastSurface) {
+        const sv = surfaceOf(surf);
+        if (lastSurface !== null || sv.unpaved) {
+          toast(sv.unpaved ? `ここから${sv.label}。${physics.wet ? '雨でぬかるんで、ペダルが重い。' : 'タイヤが砂利を噛む音。'}` : `舗装路に戻った。`);
+        }
+        lastSurface = surf;
+      }
       if (talk) {
         const said = talk.step({
           dtSec: dt, powerW: power, ceilingW: talkCeilingW(t.rider.stamina, t.rider.ftpW), segM,
@@ -321,6 +354,15 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
         weatherKind: w.kind, clockMinutes: t.clockMinutes, cadenceRpm: cadenceRef.current,
       });
 
+      if (sound && now - lastSound > 100) {
+        lastSound = now;
+        const speedKmh = runningRef.current ? physics.speedMps * 3.6 : 0;
+        sound.update(soundMix({
+          speedKmh, unpaved: surfaceOf(physics.currentSurface).unpaved, seaSide, inTunnel: !!tunnel,
+          weatherKind: w.kind, season, clockMinutes: t.clockMinutes,
+        }), speedKmh);
+      }
+
       if (now - lastMap > 500) {
         lastMap = now;
         mapApiRef.current?.draw(segM);
@@ -366,12 +408,22 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       alive = false;
       scene?.dispose();
       sceneRef.current = null;
+      sound?.dispose();
+      soundRef.current = null;
     };
   }, []);
 
   function toggleMap() {
     setShowMap((v) => {
       saveShowRideMap(!v);
+      return !v;
+    });
+  }
+
+  function toggleSound() {
+    setSoundOn((v) => {
+      saveSoundOn(!v);
+      soundRef.current?.setEnabled(!v);
       return !v;
     });
   }
@@ -444,6 +496,7 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       // 地図・視点・描画品質は1つのまとまりにして、帯の右端に寄せる
       h('div', { className: 'ride-bar-tools' },
       h('button', { onClick: toggleMap, 'aria-pressed': showMap }, showMap ? '地図を隠す' : '地図を表示'),
+      h('button', { onClick: toggleSound, 'aria-pressed': soundOn, title: '風・波・砂利・虫の声などの音' }, soundOn ? '音: 入' : '音: 切'),
       scenery && h('button', { onClick: changeView, title: '視点を切り替える(V キー)' }, `視点: ${VIEW_LABELS[cameraView]}`),
       // 描画品質は押すたびに 自動 → 最高 → 高 → 中 → 低 → 自動 と切り替える
       h('button', {

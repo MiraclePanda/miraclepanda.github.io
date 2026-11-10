@@ -9,6 +9,7 @@
 // 区間がいくら増えても、起動時に読む量とテストが読む量が区間の数ほどは増えないようにするため。
 
 import { SEGMENTS, NODES, TRANSFERS, REGIONS } from '../data/catalog.js';
+import { SURFACES } from '../physics/surfaces.js';
 import { elevationAtM } from '../physics/segmentRoute.js';
 
 export const REVERSE_SUFFIX = '~rev';
@@ -176,7 +177,7 @@ export function segmentArrivingAt(nodeId) {
  * 旅を始められるコースの一覧(旅の支度で選ぶ)。コース = 区間を順方向に走ること。
  * 並びは日本一周の順(地方の設定の order、地方の中は設定に書いた順)で、つなげていくと一周になる。
  * side は本線から外れる寄り道(行き止まりの岬など)。
- * @returns {{segmentId:string, no:number, name:string, regionName:string, lengthM:number, climbM:number, side:boolean}[]}
+ * @returns {{segmentId:string, no:number, name:string, regionName:string, from:string, to:string, lengthM:number, climbM:number, side:boolean, unpavedM:number}[]}
  */
 export function courseChoices() {
   const regionName = Object.fromEntries(REGIONS.map((r) => [r.id, r.name]));
@@ -185,8 +186,39 @@ export function courseChoices() {
     no: i + 1,
     name: s.name,
     regionName: regionName[s.region] ?? '',
+    from: s.from,
+    to: s.to,
     lengthM: s.lengthM,
     climbM: s.climbM,
     side: Boolean(s.side),
+    unpavedM: unpavedLengthM(s),
   }));
+}
+
+/** 区間の中の未舗装(砂利道・荒れた道・泥道)の長さ(m)。 */
+export function unpavedLengthM(segment) {
+  const rs = segment.surfaces ?? [];
+  return rs.reduce((sum, r, i) => (SURFACES[r.surface]?.unpaved ? sum + (rs[i + 1]?.fromM ?? segment.lengthM) - r.fromM : sum), 0);
+}
+
+/**
+ * コースの一覧で、本線のコースの前に出す「つながり」: 1つ前の本線のコースの終点と、このコースの出発の町が
+ * 違うとき、その間を電車・船でどう渡るか(日本一周の道筋が一覧で途切れて見えないように)。寄り道は数えない。
+ * @param {ReturnType<typeof courseChoices>} courses
+ * @returns {Map<string, {kind:string, name:string, fromName:string, toName:string, minutes:number, yen:number}|{kind:'gap', fromName:string, toName:string}>}
+ *   コースの segmentId → その前に出すつながり
+ */
+export function courseLinks(courses) {
+  const out = new Map();
+  let prev = null;
+  for (const c of courses) {
+    if (c.side) continue;
+    if (prev && prev.to !== c.from) {
+      const t = transfersFrom(prev.to).find((x) => x.to === c.from);
+      const ends = { fromName: nodeName(prev.to), toName: nodeName(c.from) };
+      out.set(c.segmentId, t ? { kind: t.kind, name: t.name, minutes: t.minutes, yen: t.yen, ...ends } : { kind: 'gap', ...ends });
+    }
+    prev = c;
+  }
+  return out;
 }

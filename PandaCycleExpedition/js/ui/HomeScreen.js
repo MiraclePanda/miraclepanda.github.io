@@ -4,7 +4,7 @@
 import { h, useState, useEffect, useRef } from './h.js';
 import { createTrip, resumeLabel, fmtClock, TIME_SCALES, chooseNextSegment, takeTransfer, migrateTrip } from '../storage/tripState.js';
 import {
-  routesFrom, nodeName, currentNode, cameFromSegmentId, transfersFrom, segmentArrivingAt, getSegment, courseChoices,
+  routesFrom, nodeName, currentNode, cameFromSegmentId, transfersFrom, segmentArrivingAt, getSegment, courseChoices, courseLinks,
 } from '../trip/network.js';
 import { routeLabel } from './RideScreen.js';
 import { TripMap } from './TripMap.js';
@@ -18,6 +18,7 @@ import { satietyLabel } from '../trip/body.js';
 import { forecastDay, forecastText } from '../trip/dayEvents.js';
 import { fmtTime } from '../utils/format.js';
 import { HeroArt } from './HeroArt.js';
+import { trackForDay, downloadTrackTcx } from '../storage/tcx.js';
 import { courseProgress, courseMark, tripCourseId, tripsByCourse } from '../trip/courseProgress.js';
 
 const km = (m) => (m / 1000).toFixed(1);
@@ -363,7 +364,11 @@ const MARKS = {
  */
 function CourseList({ courses, selectedId, progress, courseTrips, onSelect, renderPanel }) {
   const list = [];
+  const links = courseLinks(courses);
   courses.forEach((c, i) => {
+    // 前のコースの終点から、このコースの出発の町へ電車・船で渡る(地方の見出しより前に出す)
+    const link = links.get(c.segmentId);
+    if (link) list.push(h('li', { key: `l-${c.segmentId}`, className: 'course-link' }, linkText(link)));
     if (i === 0 || courses[i - 1].regionName !== c.regionName) list.push(h('li', { key: `r-${c.regionName}`, className: 'course-region' }, c.regionName));
     const sel = c.segmentId === selectedId;
     const mark = courseMark(progress, c.segmentId);
@@ -376,12 +381,22 @@ function CourseList({ courses, selectedId, progress, courseTrips, onSelect, rend
       h('span', { className: 'course-no' }, c.no),
       h('span', { className: 'course-name' }, c.name,
         c.side && h('span', { className: 'course-side' }, '寄り道'),
+        c.unpavedM > 0 && h('span', { className: 'course-gravel' }, `砂利道 ${km(c.unpavedM)} km`),
         mark && h('span', { className: `course-mark ${mark}`, title: MARKS[mark].text }, `${MARKS[mark].icon} ${MARKS[mark].text}`),
         saved && h('span', { className: 'course-trip' }, `旅 ${saved.day}日目`)),
       h('span', { className: 'course-stat' }, `${km(c.lengthM)} km・上り ${c.climbM} m${saved ? `・${tripWhere(saved).replace(/^\d+日目・/, '')}` : ''}`)),
       sel && renderPanel?.(c)));
   });
   return h('ul', { className: 'course-list' }, list);
+}
+
+const LINK_ICONS = { ferry: '⛴', train: '🚃' };
+
+/** コースのつながりの1行(例: ⛴ 土肥 → 清水 駿河湾のフェリーで渡る・75 分・3,200 円)。 */
+function linkText(l) {
+  if (l.kind === 'gap') return `… ${l.fromName}から${l.toName}までの道は準備中`;
+  const how = l.kind === 'ferry' ? 'で渡る' : 'で移る';
+  return `${LINK_ICONS[l.kind] ?? '→'} ${l.fromName} → ${l.toName}  ${l.name}${how}・${l.minutes} 分・${l.yen.toLocaleString()} 円`;
 }
 
 function CourseLegend({ progress }) {
@@ -409,5 +424,9 @@ function TripLog({ trip, selectedDay, onSelect }) {
       d.encounters.length > 0 && h('div', null, `出会い: ${d.encounters.length} 回`),
       d.incidents.map((x, i) => h('div', { key: i, className: 'err' }, x.text)),
       (trip.legs ?? []).filter((l) => l.transfer?.day === d.day).map((l, i) => h('div', { key: `tr${i}` }, `移動: ${l.transfer.name}で${nodeName(l.transfer.to)}へ`)),
-      d.lodging && h('div', null, `泊まった場所: ${d.lodging.name}${d.lodging.yen ? `(${d.lodging.yen.toLocaleString()} 円)` : ''}`))));
+      d.lodging && h('div', null, `泊まった場所: ${d.lodging.name}${d.lodging.yen ? `(${d.lodging.yen.toLocaleString()} 円)` : ''}`),
+      trackForDay(trip, d.day) && h('button', {
+        className: 'link',
+        onClick: (e) => { e.stopPropagation(); downloadTrackTcx(trackForDay(trip, d.day)); },
+      }, 'この日の走行記録を保存(TCX)'))));
 }

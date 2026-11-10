@@ -73,8 +73,28 @@ export function startRide(trip, now = Date.now()) {
       meals: [],
       encounters: [],
       incidents: [],
+      samples: [], // 走行記録(TCX 用)。addRideSample
     },
   };
+}
+
+/** 走行記録を残す間隔(走行秒)。1日 12 時間走っても 8640 点に収まる。 */
+export const RIDE_SAMPLE_SEC = 5;
+export const RIDE_SAMPLES_MAX = 8640;
+
+/**
+ * 走行記録(TCX に書き出す点)を1つ足す。前の点から RIDE_SAMPLE_SEC 走行秒たっていなければ何もしない
+ * (毎フレーム呼んでよい)。点は [走行秒, その日の距離 m, パワー W, ケイデンス rpm] の整数の配列
+ * (自動保存のスナップショットを小さく保つため)。GPS 座標は持たない。
+ */
+export function addRideSample(trip, { powerW, cadenceRpm }) {
+  const r = trip.ride;
+  if (!r) return trip;
+  const samples = r.samples ?? [];
+  const last = samples[samples.length - 1];
+  if ((last && r.rideSeconds - last[0] < RIDE_SAMPLE_SEC) || samples.length >= RIDE_SAMPLES_MAX) return trip;
+  const pt = [Math.round(r.rideSeconds), Math.round(r.distanceM), Math.round(finite(powerW, 0)), Math.round(finite(cadenceRpm, 0))];
+  return { ...trip, ride: { ...r, samples: [...samples, pt] } };
 }
 
 /**
@@ -153,6 +173,9 @@ export function endDay(trip, { lodging }, now = Date.now()) {
     clockMinutes: DAY_START_MINUTES,
     ride: null,
     log: [...trip.log, entry],
+    // 最後に終えた日の走行記録(TCX をあとからホームの日誌で保存できるように)。日誌には入れない
+    // (何ヶ月分もたまるとスナップショットが大きくなるので、直近の1日分だけ)
+    lastTrack: r.samples?.length ? { day: trip.day, startedAt: r.startedAt, samples: r.samples } : null,
   };
 }
 
