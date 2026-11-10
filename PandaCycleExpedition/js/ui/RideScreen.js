@@ -20,6 +20,7 @@ import {
 import { planCompanion, CompanionTalk, talkCeilingW, recordCompanion, recordCompanionMet } from '../trip/companion.js';
 import { createSeaRoadScene } from '../three/seaRoadScene.js';
 import { createRealRoadScene } from '../three/realRoadScene.js';
+import { createWebGPURenderer } from '../three/gpuBackend.js';
 import { createSeason, seasonDayOfYear } from '../trip/season.js';
 import { seasonOfDay, recentTaleIds } from '../trip/encounters.js';
 import { loadScenery, loadPanorama } from '../three/sceneryData.js';
@@ -63,6 +64,7 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
   const [qualityMode, setQualityMode] = useState(loadRenderQuality);
   const [cameraView, setCameraView] = useState(loadCameraView);
   const [activeTier, setActiveTier] = useState(null);
+  const [gpuBackend, setGpuBackend] = useState(false); // 景色を WebGPU で描いているか
   // 景色データ: undefined = 読み込み中、null = 無い(簡易の景色)、object = 実在の地形・建物
   const [scenery, setScenery] = useState(undefined);
   const [showMap, setShowMap] = useState(loadShowRideMap);
@@ -140,14 +142,21 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     // 読み込みの間も走行・記録は進む(3D が出ていないだけ)。
     let scene = null;
     let alive = true;
-    Promise.all([loadScenery(segment), loadPanorama()]).then(([sc, panorama]) => {
+    Promise.all([loadScenery(segment), loadPanorama()]).then(async ([sc, panorama]) => {
       if (!alive) return;
+      // 実在の景色は、WebGPU を使える端末なら WebGPU で描く(使えなければ null → WebGL)
+      const gpuRenderer = sc ? await createWebGPURenderer(canvasRef.current) : null;
+      if (!alive) {
+        gpuRenderer?.dispose();
+        return;
+      }
+      setGpuBackend(!!gpuRenderer);
       setScenery(sc);
       const opts = { qualityMode: loadRenderQuality(), onQualityChange: setActiveTier, cameraView: loadCameraView() };
       try {
         // 景色の季節(既定は実際の今日の日付)。区間の原点の経緯度で桜・紅葉の進み具合と日の出入りを決める
         const season = sc ? createSeason({ mode: tripRef.current.settings.season, latDeg: sc.origin[1], lonDeg: sc.origin[0] }) : null;
-        scene = sc ? createRealRoadScene(canvasRef.current, segment, sc, { ...opts, panorama, season }) : createSeaRoadScene(canvasRef.current, segment, opts);
+        scene = sc ? createRealRoadScene(canvasRef.current, segment, sc, { ...opts, panorama, season, renderer: gpuRenderer }) : createSeaRoadScene(canvasRef.current, segment, opts);
         sceneRef.current = scene;
       } catch (e) {
         setWarning(`3D を表示できません(${e.message})。走行と記録は続けられます。`);
@@ -502,8 +511,11 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       h('button', {
         className: 'ride-extra',
         onClick: () => changeQuality(RENDER_QUALITY_VALUES[(RENDER_QUALITY_VALUES.indexOf(qualityMode) + 1) % RENDER_QUALITY_VALUES.length]),
-        title: '描画品質を切り替える',
-      }, `品質: ${qualityMode === 'auto' && activeTier ? `自動(${QUALITY_LABELS[activeTier]})` : QUALITY_LABELS[qualityMode]}`))));
+        title: `描画品質を切り替える(${gpuBackend ? 'WebGPU' : 'WebGL'} で描画中)`,
+      }, `品質: ${qualityMode === 'auto' && activeTier ? `自動(${QUALITY_LABELS[activeTier]})`
+        // 最高で重すぎて自動で下げたときは「最高→高」のように実際の段階も出す
+        : activeTier && activeTier !== qualityMode ? `${QUALITY_LABELS[qualityMode]}→${QUALITY_LABELS[activeTier]}`
+        : QUALITY_LABELS[qualityMode]}${gpuBackend ? '・WebGPU' : ''}`))));
 }
 
 const VIEW_LABELS = { chase: '後ろ', fp: '目線', high: '上空' };
