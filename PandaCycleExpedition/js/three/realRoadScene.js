@@ -13,6 +13,8 @@ import {
   setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, setCameraFov, setAvatarVisible, applyRenderLook,
 } from './sceneKit.js';
 import { createPostFx } from './postFx.js';
+import { createPostFxGpu } from './postFxGpu.js';
+import { threeWebGPU } from './gpuBackend.js';
 import {
   broadleafFarGeometry, broadleafNearGeometry, coniferFarGeometry, coniferNearGeometry, pinePadGeometry,
   trunkFarGeometry, trunkNearGeometry,
@@ -40,7 +42,7 @@ const SKY_BY_WEATHER = {
 // far = 描画距離、waves = 海のさざ波(法線マップ)、pano = 遠景(富士山・大島などの山並み)。
 // 遠景を出さない段階は、描画距離の端が見えないように霞を濃くする(3.5 / far 以上)
 const TIER_SCENERY = {
-  ultra: { treeR: 900, treeCell: 9, treeNearR: 260, bldM: Infinity, far: 20000, waves: true, pano: true },
+  ultra: { treeR: 900, treeCell: 9, treeNearR: 220, bldM: Infinity, far: 20000, waves: true, pano: true },
   high: { treeR: 650, treeCell: 11, treeNearR: 180, bldM: 4000, far: 12000, waves: true, pano: true },
   medium: { treeR: 420, treeCell: 14, treeNearR: 120, bldM: 1800, far: 6000, waves: true, pano: true },
   low: { treeR: 220, treeCell: 20, treeNearR: 60, bldM: 700, far: 3000, waves: false, pano: false },
@@ -189,13 +191,46 @@ function groundColor(h, ny, roadD, built, r, season) {
  * @param {{qualityMode?:string, onQualityChange?:(tier:string)=>void, panorama?:object|null}} [opts]
  *   panorama: 遠景の標高(loadPanorama の戻り値)。無ければ遠景なし
  *   season: 景色の季節(js/trip/season.js の createSeason)。無ければ夏の景色・6時〜18時の太陽
+ *   renderer: 初期化済みの WebGPURenderer(gpuBackend.js の createWebGPURenderer)。無ければ WebGL で描く
  */
+/**
+ * トンネルの筒の中の地面を描かない判定(WebGPU 用、cutTunnels の GLSL と同じ式)。
+ * keep は「描く」なら true のノード、count は使う筒の数の uniform。
+ */
+function tunnelMaskGpu(W, u) {
+  const { Fn, uniformArray, uniform, positionWorld, Loop, If, bool, clamp, dot, max, mix, length } = W.TSL;
+  const tun = uniformArray(u.uTun.value, 'vec4');
+  const tunY = uniformArray(u.uTunY.value, 'vec2');
+  const count = uniform(0, 'int');
+  const keep = Fn(() => {
+    const ok = bool(true).toVar();
+    const p = positionWorld;
+    Loop(TUN_MAX, ({ i }) => {
+      const t = tun.element(i);
+      const a = t.xy;
+      const ab = t.zw.sub(a);
+      const f = clamp(dot(p.xz.sub(a), ab).div(max(dot(ab, ab), 1e-3)), 0, 1);
+      const yy = tunY.element(i);
+      const ry = mix(yy.x, yy.y, f);
+      If(i.lessThan(count)
+        .and(length(p.xz.sub(a).sub(ab.mul(f))).lessThan(TUN_HALF_W))
+        .and(p.y.greaterThan(ry.sub(1)))
+        .and(p.y.lessThan(ry.add(TUN_TOP_M))), () => {
+        ok.assign(false);
+      });
+    });
+    return ok;
+  })();
+  return { keep, count };
+}
+
 export function createRealRoadScene(canvas, segment, sc, {
-  qualityMode = 'auto', onQualityChange, panorama = null, cameraView = 'chase', season = null,
+  qualityMode = 'auto', onQualityChange, panorama = null, cameraView = 'chase', season = null, renderer: gpuRenderer = null,
 } = {}) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  const W = gpuRenderer ? threeWebGPU() : null; // WebGPU で描くときの three.js(ノードと TSL)
+  const renderer = gpuRenderer ?? new THREE.WebGLRenderer({ canvas, antialias: true });
   applyRenderLook(renderer);
-  const postFx = createPostFx(renderer);
+  const postFx = W ? createPostFxGpu(renderer, W) : createPostFx(renderer);
   renderer.autoClear = false; // 遠景 → 近くの景色の順に重ねて描く
   const pano = panorama ? createPanorama(panorama, sc, season) : null;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -249,8 +284,14 @@ export function createRealRoadScene(canvas, segment, sc, {
     uTunY: { value: Array.from({ length: TUN_MAX }, () => new THREE.Vector2()) },
     uTunN: { value: 0 },
   };
+  // WebGPU では同じ判定を TSL で書き、maskNode(false の所を描かない)にする
+  const tunGpu = W ? tunnelMaskGpu(W, tunUniforms) : null;
   function cutTunnels(mat) {
     if (!tunPieces.length) return mat;
+    if (tunGpu) {
+      mat.maskNode = tunGpu.keep; // WebGPURenderer がノードマテリアルへ変換するときに引き継がれる
+      return mat;
+    }
     mat.onBeforeCompile = (sh) => {
       Object.assign(sh.uniforms, tunUniforms);
       sh.vertexShader = sh.vertexShader
@@ -290,6 +331,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       tunUniforms.uTunY.value[i].set(pc[4], pc[5]);
     });
     tunUniforms.uTunN.value = near.length;
+    if (tunGpu) tunGpu.count.value = near.length;
   }
 
   // ---- 地形(近景のタイル + 遠景の1枚) ----
@@ -646,7 +688,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   let treeAt = null;
   // 地面の航空写真(最高・高のとき、まわりのタイルだけ)
   const photos = createAerialPhotos(sc, {
-    anisotropy: Math.min(16, renderer.capabilities.getMaxAnisotropy()), patchMaterial: cutTunnels,
+    anisotropy: Math.min(16, W ? renderer.getMaxAnisotropy() : renderer.capabilities.getMaxAnisotropy()), patchMaterial: cutTunnels,
     ...(season ? { color: photoTint(season.plants(0)) } : {}),
   });
   const s = {
@@ -669,7 +711,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       const r = on ? 80 : 40;
       Object.assign(sunLight.shadow.camera, { left: -r, right: r, top: r, bottom: -r, far: on ? 300 : 200 });
       sunLight.shadow.camera.updateProjectionMatrix();
-      if (on) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 3));
+      if (on) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
     },
   };
   let sunDir = new THREE.Vector3(1, 0.3, 0.3).normalize();

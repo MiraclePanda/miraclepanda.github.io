@@ -11,3 +11,12 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js';
 
 export default THREE;
+
+/**
+ * WebGPU 版の three.js(WebGPURenderer・ノードマテリアル・TSL を含む)を読み込む。
+ * WebGPU を使える端末でだけ呼ぶ(重いので、使わない端末では読まない)。
+ * 中身は上と同じ three.core.js を共有するので、THREE で作った物をそのまま描ける。
+ */
+export function loadThreeWebGPU() {
+  return import('https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.webgpu.js');
+}

@@ -3,6 +3,7 @@
 // リサイズ・破棄など、「どの景色でも同じ」処理をここに集めている。
 
 import THREE from './three.js';
+import { threeWebGPU } from './gpuBackend.js';
 
 // 左側通行: ライダーは左車線の中央付近を走る。
 export const RIDER_X_M = -2.0;
@@ -101,7 +102,11 @@ const SKY_RADIUS_M = 700;
  *   cloudCover?:number, cloud?:string, sunGlow?:number, night?:number, underwater?:boolean}} colors
  */
 export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, cloudCover = 0, cloud = '#ffffff', sunGlow = 1, night = 0, underwater = false }) {
-  const backgroundTarget = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
+  // WebGPU で描くときも、空のシェーダー(GLSL)はそのまま使う: 画面に出さない小さな WebGL で焼き、
+  // 6 面の画素を読み出して WebGPU 用のキューブマップにする(焼くのは 30 分ごとなので読み出しの手間は小さい)
+  const gpu = renderer.isWebGPURenderer;
+  const bakeRenderer = gpu ? skyBakeRenderer() : renderer;
+  const backgroundTarget = new THREE.WebGLCubeRenderTarget(256, { type: gpu ? THREE.FloatType : THREE.HalfFloatType });
   const cubeCamera = new THREE.CubeCamera(0.1, SKY_RADIUS_M * 2, backgroundTarget);
   const weather = cloudCover !== 0 || sunGlow !== 1 || night !== 0;
   const uniforms = {
@@ -130,9 +135,10 @@ export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, c
   skyMesh.frustumCulled = false;
   const skyScene = new THREE.Scene();
   skyScene.add(skyMesh);
-  cubeCamera.update(renderer, skyScene);
+  cubeCamera.update(bakeRenderer, skyScene);
   skyMesh.geometry.dispose();
   material.dispose();
+  if (gpu) return gpuSky(renderer, bakeRenderer, backgroundTarget);
 
   let envTarget = null;
   return {
@@ -149,6 +155,49 @@ export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, c
     dispose() {
       backgroundTarget.dispose();
       envTarget?.dispose();
+    },
+  };
+}
+
+let bakeGl = null;
+/** WebGPU のときに空を焼くための、画面に出さない WebGL(1 つを使い回す)。 */
+function skyBakeRenderer() {
+  bakeGl ??= new THREE.WebGLRenderer({ canvas: document.createElement('canvas') });
+  return bakeGl;
+}
+
+/** WebGL で焼いた空のキューブマップを読み出し、WebGPU 用のキューブマップ(と環境マップ)にする。 */
+function gpuSky(renderer, gl, target) {
+  const size = target.width;
+  const faces = [];
+  for (let f = 0; f < 6; f++) {
+    const data = new Float32Array(size * size * 4);
+    gl.readRenderTargetPixels(target, 0, 0, size, size, data, f);
+    const face = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
+    faces.push(face);
+  }
+  target.dispose();
+  const cube = new THREE.CubeTexture(faces);
+  cube.format = THREE.RGBAFormat;
+  cube.type = THREE.FloatType;
+  cube.colorSpace = THREE.LinearSRGBColorSpace;
+  cube.generateMipmaps = false;
+  cube.minFilter = THREE.LinearFilter;
+  cube.needsUpdate = true;
+  let env = null;
+  return {
+    background: cube,
+    getEnvironment() {
+      if (!env) {
+        const pmrem = new (threeWebGPU().PMREMGenerator)(renderer);
+        env = pmrem.fromCubemap(cube);
+        pmrem.dispose();
+      }
+      return env.texture;
+    },
+    dispose() {
+      cube.dispose();
+      env?.dispose();
     },
   };
 }
@@ -507,6 +556,7 @@ export function setupQuality(s, mode = 'auto') {
     s.frameIntervals = [];
     s.lastDrawAt = null;
     s.ultra = forced === 'ultra';
+    s.forcedQuality = true; // URL で固定した段階は、最高でも自動で下げない
     s.canvas.dataset.qualityMode = forced;
     applyQuality(s, forcedQualityIndex());
     return;
@@ -519,6 +569,7 @@ export function setupQuality(s, mode = 'auto') {
  * 'ultra' / 'high' / 'medium' / 'low' ならその段階に固定する(自動調整は止める)。
  */
 export function setQualityMode(s, mode) {
+  s.forcedQuality = false;
   s.ultra = mode === 'ultra';
   const index = s.ultra ? 0 : QUALITY_TIERS.findIndex((t) => t.name === mode);
   s.autoQuality = index < 0;
@@ -529,7 +580,8 @@ export function setQualityMode(s, mode) {
 }
 
 export function adaptQuality(s) {
-  if (!s.autoQuality) return;
+  // 最高(実験)も測る: 遅ければ「高」へ下げ、以後は自動と同じく必要なら更に下げる
+  if (s.forcedQuality || (!s.autoQuality && !s.ultra)) return;
   const now = performance.now();
   if (s.lastDrawAt !== null) {
     const interval = now - s.lastDrawAt;
@@ -543,6 +595,14 @@ export function adaptQuality(s) {
   const median = sorted[Math.floor(sorted.length / 2)];
   s.frameIntervals.length = 0;
   const lowest = QUALITY_TIERS.length - 1;
+  if (s.ultra) {
+    if (median > SLOW_FRAME_MS) {
+      s.ultra = false;
+      s.autoQuality = true;
+      applyQuality(s, 0);
+    }
+    return;
+  }
   if (median > VERY_SLOW_FRAME_MS && s.qualityIndex < lowest) {
     applyQuality(s, lowest);
   } else if (median > SLOW_FRAME_MS && s.qualityIndex < lowest) {

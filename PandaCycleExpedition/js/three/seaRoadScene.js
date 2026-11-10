@@ -190,7 +190,7 @@ export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQu
       const r = on ? 45 : 25;
       Object.assign(sunLight.shadow.camera, { left: -r, right: r, top: r, bottom: -r, far: on ? 160 : 120 });
       sunLight.shadow.camera.updateProjectionMatrix();
-      if (on) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 3));
+      if (on) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
     },
   };
 
