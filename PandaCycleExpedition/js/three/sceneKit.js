@@ -394,8 +394,22 @@ export function commitPool(pool) {
 // 描画品質の段階。トレーナー横に置くタブレット等の非力な端末でフレームレートが
 // 落ちると物理演算のdt上限(PhysicsEngine: 0.25s)を超えて走行が実時間より遅れて
 // しまうため、実測のフレーム間隔が遅ければ自動で1段ずつ品質を下げる(上げ直しはしない)。
+/**
+ * 画面の明暗と色の出し方(全段階共通)。トーンマッピングで日なたの白飛びを抑えて写真らしい階調にし、
+ * そのぶん暗く見えないよう露出を少し上げる。
+ */
+export const RENDER_LOOK = { toneMapping: 'ACESFilmicToneMapping', exposure: 1.25 };
+
+/** レンダラーに RENDER_LOOK を設定する(各景色のレンダラーを作った直後に呼ぶ)。 */
+export function applyRenderLook(renderer) {
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE[RENDER_LOOK.toneMapping];
+  renderer.toneMappingExposure = RENDER_LOOK.exposure;
+}
+
 export const QUALITY_TIERS = [
-  { name: 'high', maxPixelRatio: 2, shadows: true, envMap: true },
+  // post: 仕上げのポストエフェクト(postFx.js: 光のにじみ・色の整え・周辺減光)を使うか
+  { name: 'high', maxPixelRatio: 2, shadows: true, envMap: true, post: true },
   { name: 'medium', maxPixelRatio: 1, shadows: false, envMap: true },
   { name: 'low', maxPixelRatio: 0.6, shadows: false, envMap: false },
 ];
@@ -416,6 +430,7 @@ export function applyQuality(s, index) {
   s.qualityIndex = index;
   s.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, tier.maxPixelRatio));
   s.renderer.shadowMap.enabled = tier.shadows;
+  s.postOn = !!tier.post;
   s.sunLight.castShadow = tier.shadows;
   s.scene.environment = tier.envMap ? s.sky.getEnvironment() : null;
   // 影・環境マップの有無はシェーダーのdefineに影響するため再コンパイルさせる。

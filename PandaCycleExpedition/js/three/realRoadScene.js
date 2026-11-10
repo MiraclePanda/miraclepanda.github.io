@@ -10,8 +10,13 @@
 import THREE from './three.js';
 import {
   RIDER_X_M, bakeSky, createAvatar, updateRiderAvatar, makePool, pushInstance, pushInstanceYawPitch, commitPool,
-  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, setCameraFov, setAvatarVisible,
+  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, setCameraFov, setAvatarVisible, applyRenderLook,
 } from './sceneKit.js';
+import { createPostFx } from './postFx.js';
+import {
+  broadleafFarGeometry, broadleafNearGeometry, coniferFarGeometry, coniferNearGeometry, pinePadGeometry,
+  trunkFarGeometry, trunkNearGeometry,
+} from './treeModels.js';
 import { createRouteSampler, heightAt, nearTileAt, ringBounds, hash2 } from './sceneryData.js';
 import { createPanorama } from './panoramaParts.js';
 import { buildLandmarks } from './landmarkParts.js';
@@ -31,16 +36,17 @@ const SKY_BY_WEATHER = {
   squall: { zenith: '#2f353d', horizon: '#646c74', ground: '#3b4239', cloudCover: 1, sunGlow: 0.1, fog: 0.0025 },
 };
 
-// 描画品質ごとの景色の重さ。treeR/treeCell = 木を置く半径と格子(m)、bldM = 建物を描く距離、
+// 描画品質ごとの景色の重さ。treeR/treeCell = 木を置く半径と格子(m)、treeNearR = 作り込んだ形で描く木の半径(m)、bldM = 建物を描く距離、
 // far = 描画距離、waves = 海のさざ波(法線マップ)、pano = 遠景(富士山・大島などの山並み)。
 // 遠景を出さない段階は、描画距離の端が見えないように霞を濃くする(3.5 / far 以上)
 const TIER_SCENERY = {
-  ultra: { treeR: 900, treeCell: 9, bldM: Infinity, far: 20000, waves: true, pano: true },
-  high: { treeR: 650, treeCell: 11, bldM: 4000, far: 12000, waves: true, pano: true },
-  medium: { treeR: 420, treeCell: 14, bldM: 1800, far: 6000, waves: true, pano: true },
-  low: { treeR: 220, treeCell: 20, bldM: 700, far: 3000, waves: false, pano: false },
+  ultra: { treeR: 900, treeCell: 9, treeNearR: 260, bldM: Infinity, far: 20000, waves: true, pano: true },
+  high: { treeR: 650, treeCell: 11, treeNearR: 180, bldM: 4000, far: 12000, waves: true, pano: true },
+  medium: { treeR: 420, treeCell: 14, treeNearR: 120, bldM: 1800, far: 6000, waves: true, pano: true },
+  low: { treeR: 220, treeCell: 20, treeNearR: 60, bldM: 700, far: 3000, waves: false, pano: false },
 };
 const TREE_MAX = 22000;
+const TREE_NEAR_MAX = 4000;
 // トンネルの坑口: 地形の格子(25 m)では山肌を坑口でぴったり切れないので、トンネルの筒の中の地面は
 // シェーダーで描かない(TUN_HALF_W より内側・路面 -1 m 〜 TUN_TOP_M)。坑口の外で道より高い地面が残る所は、
 // 筒と坑口の壁をその先(最大 TUN_EXT_MAX_M)まで延ばす(覆道のように見える)。
@@ -188,7 +194,8 @@ export function createRealRoadScene(canvas, segment, sc, {
   qualityMode = 'auto', onQualityChange, panorama = null, cameraView = 'chase', season = null,
 } = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  applyRenderLook(renderer);
+  const postFx = createPostFx(renderer);
   renderer.autoClear = false; // 遠景 → 近くの景色の順に重ねて描く
   const pano = panorama ? createPanorama(panorama, sc, season) : null;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -590,11 +597,18 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     tunnel: makePool(box, std(0x77746c), 400, { cast: false }),
     lamp: makePool(box, std(0xffd27a, { emissive: 0xffb43a, emissiveIntensity: 1.5 }), 80, { cast: false }),
   };
+  // 木は近く(作り込んだ形)と遠く(軽い形)で別のプール。形は treeModels.js、色は頂点色 × インスタンス色
+  const leafMat = std(0xffffff, { roughness: 0.92, vertexColors: true });
+  const coneMat = std(0xffffff, { roughness: 0.92, vertexColors: true, side: THREE.DoubleSide });
+  const barkMat = std(0x5b4632, { roughness: 0.95, vertexColors: true });
   const trees = {
-    trunk: makePool(new THREE.CylinderGeometry(0.12, 0.2, 1, 5).translate(0, 0.5, 0), std(0x5b4632), TREE_MAX, { cast: false }),
-    cone: makePool(new THREE.ConeGeometry(1, 1, 7).translate(0, 0.5, 0), std(0xffffff, { roughness: 0.95 }), TREE_MAX),
-    ball: makePool(new THREE.IcosahedronGeometry(1, 0).translate(0, 1, 0), std(0xffffff, { roughness: 0.95, flatShading: true }), TREE_MAX),
-    disc: makePool(new THREE.CylinderGeometry(1, 0.75, 1, 9).translate(0, 0.5, 0), std(0xffffff, { roughness: 0.95, flatShading: true }), TREE_MAX),
+    trunk: makePool(trunkFarGeometry(), barkMat, TREE_MAX, { cast: false }),
+    trunkNear: makePool(trunkNearGeometry(), barkMat, TREE_NEAR_MAX),
+    cone: makePool(coniferFarGeometry(), coneMat, TREE_MAX),
+    coneNear: makePool(coniferNearGeometry(), coneMat, TREE_NEAR_MAX),
+    ball: makePool(broadleafFarGeometry(), leafMat, TREE_MAX),
+    ballNear: makePool(broadleafNearGeometry(), leafMat, TREE_NEAR_MAX),
+    disc: makePool(pinePadGeometry(), leafMat, TREE_MAX),
   };
   for (const p of [...Object.values(pools), ...Object.values(trees)]) scene.add(p.mesh);
   // 電柱と電線・カーブミラー・標識(配置は roadsideLayout.js)
@@ -725,13 +739,16 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
 
   /** ライダーのまわりに森の木を置き直す(同じ場所はいつも同じ木)。 */
   function placeTrees(ox, oy) {
-    const { treeR, treeCell } = tier;
+    const { treeR, treeCell, treeNearR } = tier;
     const r2 = treeR * treeR;
+    const near2 = treeNearR * treeNearR;
     for (let j = Math.floor((oy - treeR) / treeCell); j <= Math.ceil((oy + treeR) / treeCell); j++) {
       for (let i = Math.floor((ox - treeR) / treeCell); i <= Math.ceil((ox + treeR) / treeCell); i++) {
         const x = (i + hash2(i, j, 11)) * treeCell;
         const y = (j + hash2(i, j, 12)) * treeCell;
-        if ((x - ox) ** 2 + (y - oy) ** 2 > r2) continue;
+        const d2 = (x - ox) ** 2 + (y - oy) ** 2;
+        if (d2 > r2) continue;
+        const near = d2 < near2;
         const t = nearTileAt(sc, x, y);
         if (!t) continue;
         const k = Math.round((y - t.ty * sc.tile) / sc.cell) * (N + 1) + Math.round((x - t.tx * sc.tile) / sc.cell);
@@ -749,7 +766,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
           const px = x - ox;
           const pz = -(y - oy);
           const lean = (hash2(i, j, 17) - 0.5) * 0.5;
-          pushInstance(trees.trunk, px, h - 0.3, pz, 1.3, hgt * 0.8, 1.3, lean, r * 6);
+          pushInstance(near ? trees.trunkNear : trees.trunk, px, h - 0.3, pz, 1.3, hgt * 0.8, 1.3, lean, r * 6);
           for (let d = 0; d < 2; d++) {
             const w = hgt * (0.38 - d * 0.11);
             pushInstance(trees.disc, px, h + hgt * (0.62 + d * 0.15), pz + Math.sin(lean) * hgt * (0.62 + d * 0.15),
@@ -764,11 +781,11 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
         const conifer = hash2(i, j, 15) < 0.35 + Math.min(h / 600, 0.4);
         const px = x - ox;
         const pz = -(y - oy);
-        pushInstance(trees.trunk, px, h - 0.3, pz, 1, hgt * 0.45, 1);
+        pushInstance(near && !conifer ? trees.trunkNear : trees.trunk, px, h - 0.3, pz, 1, hgt * 0.45, 1, 0, r * 6);
         const plants = season?.plants(h);
         if (conifer) {
           const base = r < 0.5 ? 0x264a26 : 0x2f5a2c;
-          pushInstance(trees.cone, px, h + hgt * 0.22, pz, hgt * 0.24, hgt * 0.8, hgt * 0.24, 0, r * 6,
+          pushInstance(near ? trees.coneNear : trees.cone, px, h + hgt * 0.22, pz, hgt * 0.24, hgt * 0.8, hgt * 0.24, 0, r * 6,
             plants ? coniferColor(base, plants) : base);
         } else {
           let w = hgt * (0.3 + hash2(i, j, 16) * 0.15);
@@ -782,7 +799,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
             color = look.color;
             w *= look.scale;
           }
-          pushInstance(trees.ball, px, h + hgt * 0.35, pz, w, hgt * 0.32, w, 0, r * 6, color);
+          pushInstance(near ? trees.ballNear : trees.ball, px, h + hgt * 0.35, pz, w, hgt * 0.32, w, 0, r * 6, color);
         }
       }
     }
@@ -956,6 +973,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     }
 
     adaptQuality(s);
+    postFx.begin(s.postOn);
     renderer.clear();
     if (pano) {
       pano.follow(camera);
@@ -963,6 +981,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       renderer.clearDepth();
     }
     renderer.render(scene, camera);
+    postFx.end();
   }
 
   return {
@@ -979,6 +998,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       s.disposed = true;
       photos?.dispose();
       pano?.dispose();
+      postFx.dispose();
       disposeScene(s);
     },
   };
