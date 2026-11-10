@@ -8,8 +8,9 @@
 import THREE from './three.js';
 import {
   RIDER_X_M, bakeSky, createAvatar, updateRiderAvatar, makePool, pushInstance, pushInstanceYawPitch, commitPool,
-  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, applyRenderLook,
 } from './sceneKit.js';
+import { createPostFx } from './postFx.js';
 import { gradeAtM, tunnelAtM } from '../physics/segmentRoute.js';
 
 const AHEAD_M = 420;
@@ -70,7 +71,8 @@ function cellRand(i, salt) {
  */
 export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQualityChange } = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  applyRenderLook(renderer);
+  const postFx = createPostFx(renderer);
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0xcfe6f7, 0.0016);
@@ -339,7 +341,9 @@ export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQu
     }
 
     adaptQuality(s);
+    postFx.begin(s.postOn);
     renderer.render(scene, camera);
+    postFx.end();
   }
 
   return {
@@ -349,6 +353,7 @@ export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQu
     setQualityMode: (mode) => setQualityMode(s, mode),
     dispose() {
       s.disposed = true;
+      postFx.dispose();
       disposeScene(s);
     },
   };
