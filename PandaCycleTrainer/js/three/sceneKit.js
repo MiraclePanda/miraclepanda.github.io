@@ -694,7 +694,10 @@ export function applyQuality(s, index) {
   s.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, tier.maxPixelRatio));
   s.renderer.shadowMap.enabled = tier.shadows;
   s.postOn = !!tier.post;
-  s.sunLight.castShadow = tier.shadows;
+  // WebGPU では太陽の castShadow を切らない(影の有無は shadowMap.enabled だけで切り替える)。
+  // castShadow を切ると three.js が太陽の影の部品(ShadowNode)を捨てるが、使い回される組み立て結果の一部が
+  // 捨てた部品を持ったままになり、影を戻した(高・最高にした)とたんに描画が例外で止まる。
+  s.sunLight.castShadow = s.renderer.isWebGPURenderer ? true : tier.shadows;
   s.scene.environment = tier.envMap ? s.sky.getEnvironment() : null;
   // 影・環境マップの有無はシェーダーのdefineに影響するため再コンパイルさせる。
   // 環境マップが無いと金属的な面(窓ガラス・車体)は映り込むものが無く真っ黒になるため、
