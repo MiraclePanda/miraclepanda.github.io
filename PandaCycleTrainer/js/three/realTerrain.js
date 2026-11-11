@@ -10,6 +10,7 @@
 // - 地理院タイルの利用条件に従い、表示中は出典を画面に出す(LandscapeScene が GSI_ATTRIBUTION を表示する)。
 
 import THREE from './three.js';
+import { threeWebGPU } from './gpuBackend.js';
 import {
   GSI_DEM_URL,
   GSI_PHOTO_URL,
@@ -119,6 +120,8 @@ export function buildTerrainGeometry(ys, visible, gridN, en, bearingDeg) {
 }
 
 function createMaterial(innerRadiusM, openSideX, innerBox, minDistM) {
+  const W = threeWebGPU();
+  if (W) return createGpuMaterial(W, innerRadiusM, openSideX, innerBox, minDistM);
   return new THREE.ShaderMaterial({
     fog: false,
     lights: false,
@@ -203,6 +206,53 @@ function createMaterial(innerRadiusM, openSideX, innerBox, minDistM) {
       }
     `,
   });
+}
+
+/**
+ * WebGPU 用: createMaterial の GLSL と同じ塗り方を TSL で(ShaderMaterial は WebGPU で使えないため)。
+ * material.uniforms に同じ名前・同じ形(.value)の uniform を持たせ、呼び出し側は WebGL と同じに扱える。
+ */
+function createGpuMaterial(W, innerRadiusM, openSideX, innerBox, minDistM) {
+  const {
+    uniform, texture, attribute, positionGeometry, normalWorldGeometry, uv, vec3, vec4, float, mix, smoothstep,
+    max, min, dot, normalize, exp, abs, length, select,
+  } = W.TSL;
+  const u = {
+    uMap: texture(new THREE.Texture(), uv()),
+    uHasMap: uniform(0),
+    uSunDir: uniform(new THREE.Vector3(0, 1, 0)),
+    uSun: uniform(new THREE.Color(1, 1, 1)),
+    uAmbient: uniform(new THREE.Color(0.5, 0.5, 0.5)),
+    uHaze: uniform(new THREE.Color(0.8, 0.85, 0.9)),
+    uHazeK: uniform(0.0001),
+    uHazeMax: uniform(HAZE_MAX),
+    uBaseM: uniform(0),
+    uSnow: uniform(new THREE.Vector3(2500, 400, 0)),
+    uTint: uniform(new THREE.Vector3(1, 1, 1)),
+    uLow: uniform(new THREE.Color().setRGB(0.16, 0.24, 0.13, THREE.SRGBColorSpace)),
+  };
+  const box = innerBox ?? { minX: 1, maxX: -1, minZ: 1, maxZ: -1 };
+  const material = new W.MeshBasicNodeMaterial({ side: THREE.DoubleSide, fog: false });
+  material.uniforms = u;
+  const p = positionGeometry;
+  const dist = length(p.xz);
+  // 描かない所(GLSL 版の discard と同じ): 海・湖、ライダーのまわり、水側の近く、近景の地形の矩形の内側
+  const hidden = attribute('aVisible', 'float').lessThan(0.5)
+    .or(dist.lessThan(minDistM))
+    .or(dist.lessThan(innerRadiusM).and(p.x.greaterThan(openSideX)))
+    .or(p.x.greaterThan(box.minX).and(p.x.lessThan(box.maxX)).and(p.z.greaterThan(box.minZ)).and(p.z.lessThan(box.maxZ)));
+  material.maskNode = hidden.not();
+  const n = normalize(normalWorldGeometry);
+  const snowWhite = vec3(0.85, 0.87, 0.9);
+  const snow = smoothstep(u.uSnow.x, u.uSnow.x.add(u.uSnow.y), p.y.add(u.uBaseM)).mul(smoothstep(0.3, 0.6, abs(n.y)));
+  const byHeight = mix(mix(u.uLow, vec3(0.3, 0.3, 0.26), smoothstep(150, 700, p.y)), snowWhite, snow);
+  const photo = mix(u.uMap.rgb.mul(u.uTint), snowWhite, snow.mul(u.uSnow.z));
+  const albedo = select(u.uHasMap.greaterThan(0.5), photo, byHeight);
+  const diffuse = max(dot(n, normalize(u.uSunDir)), 0);
+  const lit = albedo.mul(u.uAmbient.add(u.uSun.mul(float(0.35).add(diffuse.mul(0.65)))));
+  const haze = min(u.uHazeMax, float(1).sub(exp(u.uHazeK.negate().mul(dist))));
+  material.colorNode = vec4(mix(lit, u.uHaze, haze), 1);
+  return material;
 }
 
 const _sun = new THREE.Vector3();

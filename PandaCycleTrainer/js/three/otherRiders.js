@@ -10,6 +10,7 @@
 // 使っていない InstancedMesh・ラベルは visible = false にして、描画にも影にも数えない。
 
 import THREE from './three.js';
+import { threeWebGPU } from './gpuBackend.js';
 import { createAvatar, mergeGeometries } from './sceneKit.js';
 import { selectVisibleOthers, ghostLabelText, MAX_PACK, MAX_GHOSTS, LOW_QUALITY_MAX_PACK } from './otherRidersLayout.js';
 
@@ -96,6 +97,9 @@ function createGhostMaterial() {
     color: 0xffffff, roughness: 0.4, transparent: true, opacity: GHOST_OPACITY, depthWrite: false,
     emissive: 0xffffff, emissiveIntensity: GHOST_EMISSIVE_INTENSITY,
   });
+  // WebGPU では同じこと(発光 × インスタンスの色)を TSL で
+  const W = threeWebGPU();
+  if (W) material.emissiveNode = W.TSL.materialEmissive.mul(W.TSL.instanceColor);
   material.onBeforeCompile = (shader) => {
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <emissivemap_fragment>',

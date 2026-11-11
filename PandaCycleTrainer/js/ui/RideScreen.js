@@ -1,4 +1,5 @@
 import { h, useState, useRef, useEffect, useCallback } from './h.js';
+import { gpuBackendMode } from '../three/gpuBackend.js';
 import { PhysicsEngine } from '../physics/physicsEngine.js';
 import { CourseEngine } from '../physics/courseEngine.js';
 import { WakeLockManager } from '../utils/wakeLock.js';
@@ -738,12 +739,17 @@ export function RideScreen({ ftmsClient, controlMode: initialControlMode, riderW
   const qualitySelect = (className) =>
     h(
       'label', { className },
-      h('span', null, '描画品質'),
+      // WebGPU で描いているときは「描画品質・WebGPU」と出す(gpuBackend.js)
+      h('span', { title: `${gpuBackendMode()?.startsWith('webgpu') ? 'WebGPU' : 'WebGL'} で描画中` },
+        gpuBackendMode()?.startsWith('webgpu') ? '描画品質・WebGPU' : '描画品質'),
       h(
         'select', { value: qualityMode, onChange: handleQualityChange, 'aria-label': '描画品質' },
         ['auto', 'ultra', 'high', 'medium', 'low'].map((mode) =>
           h('option', { key: mode, value: mode },
-            mode === 'auto' && activeTier ? `自動（現在: ${QUALITY_LABELS[activeTier]}）` : QUALITY_LABELS[mode])
+            mode === 'auto' && activeTier ? `自動（現在: ${QUALITY_LABELS[activeTier]}）`
+              // 最高(実験)が重すぎて自動で下げたときは「最高(実験)→高」のように実際の段階も出す
+              : mode === qualityMode && activeTier && activeTier !== mode ? `${QUALITY_LABELS[mode]}→${QUALITY_LABELS[activeTier]}`
+              : QUALITY_LABELS[mode])
         )
       )
     );

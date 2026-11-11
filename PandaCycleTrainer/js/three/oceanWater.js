@@ -6,8 +6,11 @@
 //   水面の各点を鏡のカメラへ投影した位置から読んで、波で揺らしながらフレネル(浅い角度ほど強く)で重ねる
 // ので、ホテル街や空が海面に揺れて映る。シーンを毎フレームもう1回描くため重い(高性能なGPU向け)。
 // 平面の水面(LandscapeScene の water。root の Y 回転だけを受ける)を前提にしている。
+// WebGPU で描くときは同じ見た目を TSL で作る(oceanNodes)。映り込みは three.js の reflector(斜めの近接面で
+// 水面より下を切る鏡のカメラ。本描画の中で自動で描かれる)を使うので、render() は時刻を進めるだけ。
 
 import THREE from './three.js';
+import { threeWebGPU, uniqueNodeKey } from './gpuBackend.js';
 
 const REFLECTION_SCALE = 0.5; // 映り込み用の描画の解像度(画面に対する比)
 const DISTORTION = 0.02; // 波による映り込みの揺れ
@@ -74,6 +77,8 @@ export function createOcean(water) {
       );
   };
   material.customProgramCacheKey = () => 'ocean-water-v1';
+  const W = threeWebGPU();
+  const gpu = W ? oceanNodes(W, material, water, uniforms) : null;
 
   const clipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const size = new THREE.Vector2();
@@ -90,11 +95,20 @@ export function createOcean(water) {
       if (on === enabled) return;
       enabled = on;
       water.material = on ? material : baseMaterial;
+      // WebGPU の鏡は水面の子に置いた target の位置・向きで映す(切っている間は外して描かせない)
+      if (gpu) {
+        if (on) water.add(gpu.target);
+        else water.remove(gpu.target);
+      }
     },
     /** 映り込みを描く(本描画の前に毎フレーム呼ぶ)。t は秒。 */
     render(renderer, scene, camera, t) {
       if (!enabled || !water.visible) return;
       uniforms.uTime.value = t;
+      if (renderer.isWebGPURenderer) {
+        if (gpu) gpu.time.value = t;
+        return;
+      }
       renderer.getDrawingBufferSize(size);
       const w = Math.max(1, Math.round(size.x * REFLECTION_SCALE));
       const hgt = Math.max(1, Math.round(size.y * REFLECTION_SCALE));
@@ -137,6 +151,39 @@ export function createOcean(water) {
       if (enabled) water.material = baseMaterial;
       material.dispose();
       target.dispose();
+      gpu?.target.removeFromParent();
+      gpu?.reflection.dispose?.();
     },
   };
+}
+
+/**
+ * WebGPU 用: 水面のマテリアルに、GLSL 版と同じ「大小 2 枚の法線マップ + 揺れる映り込み + フレネル」を
+ * TSL のノードで持たせる(WebGPU のレンダラーがノードのマテリアルへ変換するときに引き継がれる)。
+ */
+function oceanNodes(W, material, water, uniforms) {
+  const {
+    texture, uv, uniform, vec2, vec3, vec4, float, mix, dot, pow, clamp, normalMap,
+    reflector, output, normalView, positionViewDirection,
+  } = W.TSL;
+  const time = uniform(0);
+  const map = material.normalMap;
+  // 法線マップの模様は地面に固定して流す(LandscapeScene が offset を動かす)ので、repeat/offset を毎フレーム読む
+  const baseUv = uv().mul(uniform(map.repeat)).add(uniform(map.offset));
+  const n1 = texture(map, baseUv).xy.mul(2).sub(1);
+  const n2 = texture(map, baseUv.mul(0.37).add(vec2(time.mul(0.0061), time.mul(-0.0043)))).xy.mul(2).sub(1);
+  material.normalNode = normalMap(vec3(n1.add(n2.mul(0.6)).mul(0.5).add(0.5), 1), uniform(material.normalScale));
+
+  const reflection = reflector({ resolutionScale: 0.5 });
+  // 鏡の面は target の XY 面(法線 +Z)。水面(上向き)の子にして上を向ける
+  reflection.target.rotateX(-Math.PI / 2);
+  const n = normalView;
+  reflection.uvNode = reflection.uvNode.add(n.xy.mul(uniforms.uDistortion.value));
+  const diffuse = uniform(material.color);
+  const refl = reflection.rgb.mul(mix(vec3(1), diffuse.mul(2.2), 0.35));
+  const cosT = clamp(dot(n, positionViewDirection), 0, 1);
+  const fresnel = float(0.02).add(pow(float(1).sub(cosT), 5).mul(0.98));
+  material.outputNode = vec4(mix(output.rgb, refl, clamp(fresnel.mul(uniforms.uReflectStrength.value), 0, 1)), output.a);
+  uniqueNodeKey(material, 'ocean-water');
+  return { time, target: reflection.target, reflection };
 }

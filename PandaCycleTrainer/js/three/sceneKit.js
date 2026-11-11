@@ -3,6 +3,10 @@
 // リサイズ・破棄など、「どの景色でも同じ」処理をここに集めている。
 
 import THREE from './three.js';
+import { createPostFx } from './postFx.js';
+import { createPostFxGpu } from './postFxGpu.js';
+import { threeWebGPU } from './gpuBackend.js';
+import { canopyBlobGeometry } from './treeModels.js';
 
 // 左側通行: ライダーは左車線の中央付近を走る。
 export const RIDER_X_M = -2.0;
@@ -101,7 +105,11 @@ const SKY_RADIUS_M = 700;
  *   cloudCover?:number, cloud?:string, sunGlow?:number, night?:number, underwater?:boolean}} colors
  */
 export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, cloudCover = 0, cloud = '#ffffff', sunGlow = 1, night = 0, underwater = false }) {
-  const backgroundTarget = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
+  // WebGPU で描くときも、空のシェーダー(GLSL)はそのまま使う: 画面に出さない小さな WebGL で焼き、
+  // 6 面の画素を読み出して WebGPU 用のキューブマップにする(焼くのは時間帯・天候が変わるときだけなので読み出しの手間は小さい)
+  const gpu = !!renderer.isWebGPURenderer;
+  const bakeRenderer = gpu ? skyBakeRenderer() : renderer;
+  const backgroundTarget = new THREE.WebGLCubeRenderTarget(256, { type: gpu ? THREE.FloatType : THREE.HalfFloatType });
   const cubeCamera = new THREE.CubeCamera(0.1, SKY_RADIUS_M * 2, backgroundTarget);
   const weather = cloudCover !== 0 || sunGlow !== 1 || night !== 0;
   const uniforms = {
@@ -130,9 +138,10 @@ export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, c
   skyMesh.frustumCulled = false;
   const skyScene = new THREE.Scene();
   skyScene.add(skyMesh);
-  cubeCamera.update(renderer, skyScene);
+  cubeCamera.update(bakeRenderer, skyScene);
   skyMesh.geometry.dispose();
   material.dispose();
+  if (gpu) return gpuSky(renderer, bakeRenderer, backgroundTarget);
 
   let envTarget = null;
   return {
@@ -151,6 +160,53 @@ export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, c
       envTarget?.dispose();
     },
   };
+}
+
+let bakeGl = null;
+/** WebGPU のときに空を焼くための、画面に出さない WebGL(1 つを使い回す)。 */
+function skyBakeRenderer() {
+  bakeGl ??= new THREE.WebGLRenderer({ canvas: document.createElement('canvas') });
+  return bakeGl;
+}
+
+/** WebGL で焼いた空のキューブマップを読み出し、WebGPU 用のキューブマップ(と環境マップ)にする。 */
+function gpuSky(renderer, gl, target) {
+  const size = target.width;
+  const faces = [];
+  for (let f = 0; f < 6; f++) {
+    const data = new Float32Array(size * size * 4);
+    gl.readRenderTargetPixels(target, 0, 0, size, size, data, f);
+    faces.push(new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType));
+  }
+  target.dispose();
+  const cube = new THREE.CubeTexture(faces);
+  cube.format = THREE.RGBAFormat;
+  cube.type = THREE.FloatType;
+  cube.colorSpace = THREE.LinearSRGBColorSpace;
+  cube.generateMipmaps = false;
+  cube.minFilter = THREE.LinearFilter;
+  cube.needsUpdate = true;
+  let env = null;
+  return {
+    background: cube,
+    getEnvironment() {
+      if (!env) {
+        const pmrem = new (threeWebGPU().PMREMGenerator)(renderer);
+        env = pmrem.fromCubemap(cube);
+        pmrem.dispose();
+      }
+      return env.texture;
+    },
+    dispose() {
+      cube.dispose();
+      env?.dispose();
+    },
+  };
+}
+
+/** テクスチャの異方性フィルタの上限(WebGL / WebGPU のどちらのレンダラーでも)。 */
+export function maxAnisotropy(renderer) {
+  return renderer.isWebGPURenderer ? renderer.getMaxAnisotropy() : renderer.capabilities.getMaxAnisotropy();
 }
 
 // ---- ジオメトリ生成ヘルパー ----
@@ -174,20 +230,12 @@ export function mergeGeometries(geometries) {
   return merged;
 }
 
-/** 広葉樹の樹冠1塊。球を位置依存のノイズで膨らませ、葉の塊らしいデコボコにする。 */
+/**
+ * 広葉樹の樹冠1塊。デコボコの球に、下ほど暗い頂点色と外向きの柔らかい法線を焼き込んだもの
+ * (treeModels.js)。マテリアルは vertexColors: true で使う。
+ */
 export function buildCanopyGeometry() {
-  // 位置だけの関数なので、継ぎ目の重複頂点も同じだけ動き、割れない。
-  const geo = new THREE.SphereGeometry(1, 12, 9);
-  const pos = geo.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    const n = 1 + 0.12 * Math.sin(x * 5.1 + 1.3) * Math.sin(y * 4.3 + 0.7) + 0.1 * Math.sin(z * 6.7 + y * 2.1);
-    pos.setXYZ(i, x * n, y * n * 0.85, z * n);
-  }
-  geo.computeVertexNormals();
-  return geo;
+  return canopyBlobGeometry();
 }
 
 /** 2点間を結ぶ円柱(自転車のフレームや手足に使う)。 */
@@ -547,6 +595,14 @@ _objYXZ.rotation.order = 'YXZ';
 const _color = new THREE.Color();
 
 export function makePool(geometry, material, max, { cast = true, receive = true } = {}) {
+  // WebGPU では建物の外壁(createFacadeGeometry)の窓の計算にインスタンスのスケールを属性で渡す
+  // (cityMaterials.js の facadeNodes)。プールごとにジオメトリを分けて facadeScale を足す
+  let facadeScale = null;
+  if (threeWebGPU() && geometry.hasAttribute('facadeAxis')) {
+    geometry = geometry.clone();
+    facadeScale = new THREE.InstancedBufferAttribute(new Float32Array(max * 3), 3);
+    geometry.setAttribute('facadeScale', facadeScale);
+  }
   const mesh = new THREE.InstancedMesh(geometry, material, max);
   mesh.count = 0;
   // インスタンスの位置が大きく変わるため、キャッシュされる
@@ -558,7 +614,7 @@ export function makePool(geometry, material, max, { cast = true, receive = true 
   // こうするとインスタンス描画するマテリアルのシェーダーが同じ構成に揃い、
   // コンパイルすべきシェーダープログラムの種類が減る(低速端末での起動時間短縮)。
   mesh.setColorAt(0, _color.setHex(0xffffff));
-  return { mesh, max, n: 0 };
+  return { mesh, max, n: 0, facadeScale };
 }
 
 export function pushInstance(pool, x, y, z, sx, sy, sz, rotX = 0, rotY = 0, colorHex) {
@@ -588,6 +644,17 @@ export function pushInstanceYawPitch(pool, x, y, z, sx, sy, sz, yaw, pitch, colo
 }
 
 export function commitPool(pool) {
+  if (pool.facadeScale) {
+    const m = pool.mesh.instanceMatrix.array;
+    const out = pool.facadeScale.array;
+    for (let i = 0; i < pool.n; i++) {
+      const o = i * 16;
+      out[i * 3] = Math.hypot(m[o], m[o + 1], m[o + 2]);
+      out[i * 3 + 1] = Math.hypot(m[o + 4], m[o + 5], m[o + 6]);
+      out[i * 3 + 2] = Math.hypot(m[o + 8], m[o + 9], m[o + 10]);
+    }
+    pool.facadeScale.needsUpdate = true;
+  }
   pool.mesh.count = pool.n;
   pool.mesh.instanceMatrix.needsUpdate = true;
   if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
@@ -599,15 +666,20 @@ export function commitPool(pool) {
 // 描画品質の段階。トレーナー横に置くタブレット等の非力な端末でフレームレートが
 // 落ちると物理演算のdt上限(PhysicsEngine: 0.25s)を超えて走行が実時間より遅れて
 // しまうため、実測のフレーム間隔が遅ければ自動で1段ずつ品質を下げる(上げ直しはしない)。
+// post: 仕上げのポストエフェクト(postFx.js: 光のにじみ・色の整え・周辺減光)を使うか。
+// treeNearR: 葉の塊・枝の段まで作り込んだ形で描く木の半径(m。treeModels.js。外側は軽い形)。
 export const QUALITY_TIERS = [
-  { name: 'high', maxPixelRatio: 2, shadows: true, envMap: true },
-  { name: 'medium', maxPixelRatio: 1, shadows: false, envMap: true },
-  { name: 'low', maxPixelRatio: 0.6, shadows: false, envMap: false },
+  { name: 'high', maxPixelRatio: 2, shadows: true, envMap: true, post: true, treeNearR: 180 },
+  { name: 'medium', maxPixelRatio: 1, shadows: false, envMap: true, treeNearR: 120 },
+  { name: 'low', maxPixelRatio: 0.6, shadows: false, envMap: false, treeNearR: 60 },
 ];
 // 走行画面の「描画品質」で選べるモード。'auto' は実測のフレーム間隔による自動調整。
 // 'ultra' = 最高(実験): 段階は 'high' と同じ(qualityIndex 0)に、どの景色でも影を 4096 にし、
 // 景色ごとにさらに重い描画(映り込む水面・実在の地形)を足す(s.ultra。景色側は s.onUltraChange で受ける)。
-// 自動調整では選ばれず、ユーザーが選んだときだけ使う。
+// 自動調整では選ばれず、ユーザーが選んだときだけ使う。最高でもフレーム間隔は測り、遅ければ「高」へ
+// 下げて以後は自動と同じく調整する(URL の ?quality= で固定したときは下げない)。
+// 最高の作り込んだ木の半径(高の treeNearR より広い)。
+export const ULTRA_TREE_NEAR_R = 220;
 export const QUALITY_MODES = ['auto', 'ultra', 'high', 'medium', 'low'];
 const QUALITY_SAMPLE_FRAMES = 10;
 const SLOW_FRAME_MS = 45; // 約22fps未満が続いたら品質を下げる
@@ -621,6 +693,7 @@ export function applyQuality(s, index) {
   s.qualityIndex = index;
   s.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, tier.maxPixelRatio));
   s.renderer.shadowMap.enabled = tier.shadows;
+  s.postOn = !!tier.post;
   s.sunLight.castShadow = tier.shadows;
   s.scene.environment = tier.envMap ? s.sky.getEnvironment() : null;
   // 影・環境マップの有無はシェーダーのdefineに影響するため再コンパイルさせる。
@@ -636,14 +709,18 @@ export function applyQuality(s, index) {
     m.needsUpdate = true;
   });
   const ultra = !!s.ultra && index === 0;
+  s.treeNearR = ultra ? ULTRA_TREE_NEAR_R : tier.treeNearR;
   // 最高(実験)は影を細かく(2048 → 4096)。サイズを変えたら影マップを作り直させる
   if (s.sunLight?.shadow) {
     s.baseShadowSize ??= s.sunLight.shadow.mapSize.x;
     const size = ultra ? Math.max(4096, s.baseShadowSize) : s.baseShadowSize;
     if (s.sunLight.shadow.mapSize.x !== size) {
       s.sunLight.shadow.mapSize.set(size, size);
-      s.sunLight.shadow.map?.dispose();
-      s.sunLight.shadow.map = null;
+      // WebGPU は影マップの大きさを mapSize に合わせて自分で作り直す(捨てると影の描画が壊れる)
+      if (!s.renderer.isWebGPURenderer) {
+        s.sunLight.shadow.map?.dispose();
+        s.sunLight.shadow.map = null;
+      }
     }
   }
   s.canvas.dataset.quality = ultra ? 'ultra' : tier.name;
@@ -697,6 +774,7 @@ export function setupQuality(s, mode = 'auto') {
     s.frameIntervals = [];
     s.lastDrawAt = null;
     s.ultra = forced === 'ultra';
+    s.forcedQuality = true; // URL で固定した段階は、最高でも自動で下げない
     s.canvas.dataset.qualityMode = forced;
     applyQuality(s, forcedQualityIndex());
     return;
@@ -709,6 +787,7 @@ export function setupQuality(s, mode = 'auto') {
  * 'ultra' / 'high' / 'medium' / 'low' ならその段階に固定する(自動調整は止める)。
  */
 export function setQualityMode(s, mode) {
+  s.forcedQuality = false;
   s.ultra = mode === 'ultra';
   const index = s.ultra ? 0 : QUALITY_TIERS.findIndex((t) => t.name === mode);
   s.autoQuality = index < 0;
@@ -719,7 +798,10 @@ export function setQualityMode(s, mode) {
 }
 
 export function adaptQuality(s) {
-  if (!s.autoQuality) return;
+  // 最高(実験)も測る: 遅ければ「高」へ下げ、以後は自動と同じく必要なら更に下げる。
+  // 最高は実在の地形の読み込み・組み立てで準備中のフレームが重いので、準備ができてから測る
+  if (s.forcedQuality || (!s.autoQuality && !s.ultra)) return;
+  if (s.ultra && !s.readyReported) return;
   const now = performance.now();
   if (s.lastDrawAt !== null) {
     const interval = now - s.lastDrawAt;
@@ -733,6 +815,14 @@ export function adaptQuality(s) {
   const median = sorted[Math.floor(sorted.length / 2)];
   s.frameIntervals.length = 0;
   const lowest = QUALITY_TIERS.length - 1;
+  if (s.ultra) {
+    if (median > SLOW_FRAME_MS) {
+      s.ultra = false;
+      s.autoQuality = true;
+      applyQuality(s, 0);
+    }
+    return;
+  }
   if (median > VERY_SLOW_FRAME_MS && s.qualityIndex < lowest) {
     applyQuality(s, lowest);
   } else if (median > SLOW_FRAME_MS && s.qualityIndex < lowest) {
@@ -766,6 +856,19 @@ export function reportReadyAfterDraw(s) {
   });
 }
 
+// ---- 描画 ----
+
+/**
+ * 景色を画面へ描く(各景色の毎フレームの最後に呼ぶ)。高・最高では postFx.js の仕上げを通す。
+ * 水面の映り込みなど画面外への描画は、これより前に済ませておく。
+ */
+export function renderScene(s) {
+  s.postFx ??= s.renderer.isWebGPURenderer ? createPostFxGpu(s.renderer, threeWebGPU()) : createPostFx(s.renderer);
+  s.postFx.begin(s.postOn);
+  s.renderer.render(s.scene, s.camera);
+  s.postFx.end();
+}
+
 // ---- リサイズ・破棄 ----
 
 export function resizeScene(s) {
@@ -790,6 +893,7 @@ export function disposeScene(s) {
   // テクスチャ・環境マップ・影マップはマテリアル/ジオメトリのdisposeでは解放されない。
   for (const t of s.textures) t.dispose();
   s.sky.dispose();
+  s.postFx?.dispose();
   s.scene.traverse((obj) => {
     if (obj.isLight && obj.shadow && obj.shadow.map) obj.shadow.map.dispose();
   });

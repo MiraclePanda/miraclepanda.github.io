@@ -1,5 +1,7 @@
 import { h, useRef, useEffect, useState } from './h.js';
 import THREE from '../three/three.js';
+import { startSceneRenderer } from '../three/gpuBackend.js';
+import { trunkNearGeometry } from '../three/treeModels.js';
 import {
   collectSceneObjects, mulberry32,
   ROAD_HALF_WIDTH_M, SIDEWALK_OUTER_M, CURB_HEIGHT_M, FLOOR_HEIGHT_M, BUILDING_STYLES,
@@ -12,7 +14,7 @@ import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
   setCameraFov, setAvatarVisible,
-  reportReadyAfterDraw,
+  reportReadyAfterDraw, renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
 import {
   createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
@@ -151,42 +153,47 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
     },
   }));
 
+  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
+  const live = useRef({});
+  live.current = { qualityMode, environment, cameraView };
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
+    return startSceneRenderer(canvas, (renderer) => {
+      let scene3d;
+      try {
+        scene3d = initScene(canvas, vehicle, renderer);
+        scene3d.season = season;
+        sceneRef.current = scene3d;
+        scene3d.onReady = () => onReadyRef.current?.();
+      } catch (err) {
+        setRenderError(String(err));
+        return;
+      }
 
-    let scene3d;
-    try {
-      scene3d = initScene(canvas, vehicle);
-      scene3d.season = season;
-      sceneRef.current = scene3d;
-      scene3d.onReady = () => onReadyRef.current?.();
-    } catch (err) {
-      setRenderError(String(err));
-      return;
-    }
+      // 走行環境(時間帯・天候)。昼・晴れなら何もしない(従来の見た目のまま)。
+      scene3d.env = createEnvironmentController(scene3d, {
+        base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
+        wetMaterials: [scene3d.road.mesh.material, scene3d.crossStreets.mesh.material],
+        headlightParent: scene3d.rider.group,
+        season,
+      });
+      scene3d.env.set(live.current.environment, { immediate: true });
+      scene3d.cam.view = normalizeCameraView(live.current.cameraView);
 
-    // 走行環境(時間帯・天候)。昼・晴れなら何もしない(従来の見た目のまま)。
-    scene3d.env = createEnvironmentController(scene3d, {
-      base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
-      wetMaterials: [scene3d.road.mesh.material, scene3d.crossStreets.mesh.material],
-      headlightParent: scene3d.rider.group,
-      season,
-    });
-    scene3d.env.set(environment, { immediate: true });
-    scene3d.cam.view = normalizeCameraView(cameraView);
+      const resize = () => resizeScene(scene3d);
+      scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+      scene3d.appliedQualityMode = live.current.qualityMode;
+      setupQuality(scene3d, live.current.qualityMode);
+      window.addEventListener('resize', resize);
 
-    const resize = () => resizeScene(scene3d);
-    scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-    scene3d.appliedQualityMode = qualityMode;
-    setupQuality(scene3d, qualityMode);
-    window.addEventListener('resize', resize);
-
-    return () => {
-      window.removeEventListener('resize', resize);
-      disposeScene(scene3d);
-      sceneRef.current = null;
-    };
+      return () => {
+        window.removeEventListener('resize', resize);
+        disposeScene(scene3d);
+        sceneRef.current = null;
+      };
+    }, (err) => setRenderError(String(err)));
   }, []);
 
   // 走行中に描画品質のモードが変更されたら適用する(初回はsetupQualityで適用済み)。
@@ -220,13 +227,12 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
 
 // ---- シーン初期化 ----
 
-function initScene(canvas, vehicle) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+function initScene(canvas, vehicle, renderer) {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = renderer.isWebGPURenderer ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap; // WebGPU に PCFSoft は無い
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(new THREE.Color(SKY_HORIZON), FOG_DENSITY);
@@ -253,7 +259,7 @@ function initScene(canvas, vehicle) {
   sunLight.shadow.normalBias = 0.04;
   scene.add(hemiLight, sunLight, sunLight.target);
 
-  const anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const anisotropy = Math.min(8, maxAnisotropy(renderer));
   const tex = createCityTextures(anisotropy);
 
   // ---- 地面(毎フレーム頂点を書き換えるリボン) ----
@@ -291,14 +297,14 @@ function initScene(canvas, vehicle) {
     const bayM = style === 'glass' ? 1.8 : FLOOR_HEIGHT_M;
     const material = createFacadeMaterial({
       ...tex.facades[style],
-      bayM, floorM: FLOOR_HEIGHT_M, tileBays: FACADE_TILE.cellBays, tileFloors: FACADE_TILE.cellFloors, sinkM: BUILDING_SINK_M,
+      bayM, floorM: FLOOR_HEIGHT_M, tileBays: FACADE_TILE.cellBays, tileFloors: FACADE_TILE.cellFloors, sinkM: BUILDING_SINK_M, instanced: true,
     });
     facades[style] = makePool(facadeGeo, material, MAX_FACADES_PER_STYLE);
     scene.add(facades[style].mesh);
   }
   const storefrontMat = createFacadeMaterial({
     ...tex.storefront,
-    bayM: 4, floorM: FLOOR_HEIGHT_M, tileBays: FACADE_TILE.cellBays, tileFloors: 1, sinkM: BUILDING_SINK_M,
+    bayM: 4, floorM: FLOOR_HEIGHT_M, tileBays: FACADE_TILE.cellBays, tileFloors: 1, sinkM: BUILDING_SINK_M, instanced: true,
   });
   const storefronts = makePool(facadeGeo, storefrontMat, MAX_BUILDINGS, { cast: false });
   const boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
@@ -307,9 +313,9 @@ function initScene(canvas, vehicle) {
   scene.add(storefronts.mesh, roofs.mesh, roofUnits.mesh);
 
   // ---- 街路樹・街灯・駐車車両 ----
-  const trunkGeo = new THREE.CylinderGeometry(0.1, 0.16, 1, 7).translate(0, 0.5, 0);
-  const trunks = makePool(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 1 }), MAX_TREES);
-  const canopies = makePool(buildCanopyGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.95 }), MAX_TREES * CANOPY_BLOBS_PER_TREE);
+  // 木の形は treeModels.js(枝のある幹・陰影を焼き込んだ樹冠。頂点色 × インスタンス色)
+  const trunks = makePool(trunkNearGeometry(), new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 1, vertexColors: true }), MAX_TREES);
+  const canopies = makePool(buildCanopyGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.95, vertexColors: true }), MAX_TREES * CANOPY_BLOBS_PER_TREE);
   const lamps = makePool(buildLampGeometry(), new THREE.MeshStandardMaterial({ color: 0x3a3e44, roughness: 0.45, metalness: 0.6 }), MAX_LAMPS);
   const car = buildCarGeometries();
   const carBodies = makePool(car.body, new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.55 }), MAX_CARS);
@@ -504,7 +510,7 @@ function drawFrame(s, courseEngine, distanceKm, speedKmh, cadenceRpm, others, my
   s.env.update();
   s.sunLight.position.copy(s.sunLight.target.position).addScaledVector(s.env.sunDir, 180);
 
-  s.renderer.render(s.scene, s.camera);
+  renderScene(s);
 }
 
 /**

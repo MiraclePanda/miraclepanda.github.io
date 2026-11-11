@@ -1,5 +1,7 @@
 import { h, useRef, useEffect, useState } from './h.js';
 import THREE from '../three/three.js';
+import { startSceneRenderer } from '../three/gpuBackend.js';
+import { broadleafFarGeometry, coniferFarGeometry, coniferNearGeometry, trunkNearGeometry } from '../three/treeModels.js';
 import { mulberry32 } from '../three/cityLayout.js';
 import {
   getLandscape, roadEdgeM, roadCenterX, roadSlopeX, lateralX,
@@ -8,10 +10,10 @@ import {
 import { createLandscapeTextures } from '../three/landscapeMaterials.js';
 import { createAnchoredRoute, headingAtM, lateralSigmaM, curvatureAtM, hasCurve } from '../three/routeLayout.js';
 import {
-  RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
+  RIDER_X_M, bakeSky, buildCanopyGeometry, createAvatar, updateRiderAvatar,
   makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
   setCameraFov, setAvatarVisible,
-  reportReadyAfterDraw,
+  reportReadyAfterDraw, renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
 import {
   createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
@@ -203,55 +205,60 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
     },
   }));
 
+  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
+  const live = useRef({});
+  live.current = { qualityMode, environment, cameraView };
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !courseEngine) return;
+    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
+    return startSceneRenderer(canvas, (renderer) => {
+      let scene3d;
+      try {
+        scene3d = initScene(canvas, courseEngine, getLandscape(landscape), vehicle, renderer);
+        // 走る日の季節(竜宮城の海底は null)。地形・木の色は次の組み立て(rebuild)から使う
+        scene3d.season = scene3d.L.underwater ? null : season;
+        sceneRef.current = scene3d;
+        scene3d.onReady = () => onReadyRef.current?.();
+      } catch (err) {
+        setRenderError(String(err));
+        return;
+      }
 
-    let scene3d;
-    try {
-      scene3d = initScene(canvas, courseEngine, getLandscape(landscape), vehicle);
-      // 走る日の季節(竜宮城の海底は null)。地形・木の色は次の組み立て(rebuild)から使う
-      scene3d.season = scene3d.L.underwater ? null : season;
-      sceneRef.current = scene3d;
-      scene3d.onReady = () => onReadyRef.current?.();
-    } catch (err) {
-      setRenderError(String(err));
-      return;
-    }
+      // 走行環境(時間帯・天候)。昼・晴れなら何もしない(従来の見た目のまま)。
+      const pools = scene3d.pools;
+      scene3d.env = createEnvironmentController(scene3d, {
+        base: baseAtmo(scene3d.atmo), hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
+        wetMaterials: [scene3d.road.material],
+        // 夜はデリニエーター(視線誘導標)の反射を明るくする
+        glowMaterials: [
+          { material: pools.delineatorLens.mesh.material, night: 4 },
+          ...(scene3d.tour ? scene3d.tour.glowMaterials : []),
+        ],
+        headlightParent: scene3d.rider.group,
+        // 海の底に雨は降らない(時間帯だけ反映)
+        weather: !scene3d.L.underwater,
+        season: scene3d.season,
+      });
+      scene3d.env.set(live.current.environment, { immediate: true });
+      scene3d.cam.view = normalizeCameraView(live.current.cameraView);
 
-    // 走行環境(時間帯・天候)。昼・晴れなら何もしない(従来の見た目のまま)。
-    const pools = scene3d.pools;
-    scene3d.env = createEnvironmentController(scene3d, {
-      base: baseAtmo(scene3d.atmo), hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
-      wetMaterials: [scene3d.road.material],
-      // 夜はデリニエーター(視線誘導標)の反射を明るくする
-      glowMaterials: [
-        { material: pools.delineatorLens.mesh.material, night: 4 },
-        ...(scene3d.tour ? scene3d.tour.glowMaterials : []),
-      ],
-      headlightParent: scene3d.rider.group,
-      // 海の底に雨は降らない(時間帯だけ反映)
-      weather: !scene3d.L.underwater,
-      season: scene3d.season,
-    });
-    scene3d.env.set(environment, { immediate: true });
-    scene3d.cam.view = normalizeCameraView(cameraView);
+      const resize = () => resizeScene(scene3d);
+      scene3d.attributionEl = attributionRef.current;
+      scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+      scene3d.appliedQualityMode = live.current.qualityMode;
+      setupQuality(scene3d, live.current.qualityMode);
+      window.addEventListener('resize', resize);
 
-    const resize = () => resizeScene(scene3d);
-    scene3d.attributionEl = attributionRef.current;
-    scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-    scene3d.appliedQualityMode = qualityMode;
-    setupQuality(scene3d, qualityMode);
-    window.addEventListener('resize', resize);
-
-    return () => {
-      window.removeEventListener('resize', resize);
-      // 差し替え中の水面マテリアル・実在の地形の写真はシーンをたどっても見つからないので先に解放する
-      scene3d.ocean?.dispose();
-      scene3d.realTerrain?.dispose();
-      disposeScene(scene3d);
-      sceneRef.current = null;
-    };
+      return () => {
+        window.removeEventListener('resize', resize);
+        // 差し替え中の水面マテリアル・実在の地形の写真はシーンをたどっても見つからないので先に解放する
+        scene3d.ocean?.dispose();
+        scene3d.realTerrain?.dispose();
+        disposeScene(scene3d);
+        sceneRef.current = null;
+      };
+    }, (err) => setRenderError(String(err)));
   }, []);
 
   // 走行中に描画品質のモードが変更されたら適用する(初回はsetupQualityで適用済み)。
@@ -286,14 +293,13 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
 
 // ---- シーン初期化 ----
 
-function initScene(canvas, courseEngine, L, vehicle) {
+function initScene(canvas, courseEngine, L, vehicle, renderer) {
   const atmo = ATMOSPHERE[L.id];
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = renderer.isWebGPURenderer ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap; // WebGPU に PCFSoft は無い
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(new THREE.Color(atmo.horizon), atmo.fog);
@@ -313,7 +319,7 @@ function initScene(canvas, courseEngine, L, vehicle) {
   sunLight.shadow.normalBias = 0.05;
   scene.add(hemiLight, sunLight, sunLight.target);
 
-  const anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const anisotropy = Math.min(8, maxAnisotropy(renderer));
   const tex = createLandscapeTextures(L, anisotropy);
 
   // root: 道路の向きに合わせた回転 / inner: ライダーを原点に置く平行移動
@@ -352,12 +358,14 @@ function initScene(canvas, courseEngine, L, vehicle) {
   root.add(water);
 
   // ---- 配置物のプール ----
-  const trunkGeo = new THREE.CylinderGeometry(0.1, 0.16, 1, 7).translate(0, 0.5, 0);
-  const trunks = makePool(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 1 }), MAX_TREES);
-  const canopies = makePool(buildCanopyGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.95 }), MAX_TREES * CANOPY_BLOBS_PER_TREE);
-  const conifers = makePool(buildConiferGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.95 }), MAX_TREES);
-  const farCones = makePool(new THREE.ConeGeometry(1, 1, 6, 1).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ roughness: 1 }), MAX_FAR_TREES, { cast: false });
-  const farBlobs = makePool(new THREE.IcosahedronGeometry(1, 1), new THREE.MeshStandardMaterial({ roughness: 1 }), MAX_FAR_TREES, { cast: false });
+  // 木の形は treeModels.js: 近くは枝のある幹・陰影を焼き込んだ樹冠・垂れた枝先の 6 段の杉、
+  // 遠くは 3 段の杉と丸い樹冠(どれも頂点色 × インスタンス色。円錐の段は裏も見えるので両面)
+  const trunks = makePool(trunkNearGeometry(), new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 1, vertexColors: true }), MAX_TREES);
+  const canopies = makePool(buildCanopyGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.95, vertexColors: true }), MAX_TREES * CANOPY_BLOBS_PER_TREE);
+  const coneMat = new THREE.MeshStandardMaterial({ roughness: 0.95, vertexColors: true, side: THREE.DoubleSide });
+  const conifers = makePool(buildConiferGeometry(), coneMat, MAX_TREES);
+  const farCones = makePool(coniferFarGeometry(), coneMat, MAX_FAR_TREES, { cast: false });
+  const farBlobs = makePool(broadleafFarGeometry().translate(0, -1, 0), new THREE.MeshStandardMaterial({ roughness: 1, vertexColors: true }), MAX_FAR_TREES, { cast: false });
   const rocks = makePool(buildRockGeometry(), new THREE.MeshStandardMaterial({ color: 0x8a867d, roughness: 0.95 }), MAX_ROCKS);
   const railMat = new THREE.MeshStandardMaterial({ color: 0xd4d8dc, roughness: 0.35, metalness: 0.6 });
   const railPosts = makePool(new THREE.CylinderGeometry(0.06, 0.06, 1, 8).translate(0, 0.5, 0), railMat, MAX_GUARDRAIL);
@@ -446,15 +454,9 @@ function initScene(canvas, courseEngine, L, vehicle) {
 
 // ---- ジオメトリ生成ヘルパー ----
 
-/** 針葉樹(高さ約10m、幹は別プール)。4段の円錐を重ねる。 */
+/** 針葉樹(高さ約10m、底の半径2m、幹は別プール)。treeModels.js の垂れた枝先の 6 段を、y 1.2〜10 m に合わせる。 */
 function buildConiferGeometry() {
-  const tiers = [
-    [2.0, 4.0, 1.2],
-    [1.6, 3.6, 3.4],
-    [1.15, 3.2, 5.4],
-    [0.7, 2.6, 7.4],
-  ];
-  return mergeGeometries(tiers.map(([r, hgt, y]) => new THREE.ConeGeometry(r, hgt, 9, 1).translate(0, y + hgt / 2, 0)));
+  return coniferNearGeometry().scale(2, 8.3, 2).translate(0, 1.2, 0);
 }
 
 /** 岩: 多面体を位置依存のノイズで歪ませる。 */
@@ -944,7 +946,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
     if (st.realCfg.hideBackdrop && st.backdrop) st.backdrop.object.visible = !real;
   }
   st.ocean?.render(st.renderer, st.scene, st.camera, t);
-  st.renderer.render(st.scene, st.camera);
+  renderScene(st);
 }
 
 /** 描画品質「最高(実験)」の入り切り(sceneKit の applyQuality から呼ばれる。影の解像度は sceneKit が変える)。 */
