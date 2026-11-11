@@ -101,6 +101,9 @@ const NEAR_AHEAD_M = 330;
 // 世界(地形・道路・配置物)はライダーがこの距離進むごとに組み直す。間のフレームは
 // グループの平行移動・回転だけで描くため、毎フレームの負荷は非常に小さい。
 const REBUILD_M = 16;
+// 組み直しは端末によっては 100 ms を超える(地形の格子 1 万点と配置物)ので、次の組み直しの分を
+// 1 フレームにこの時間ずつ裏(別のジオメトリと控えのプール)で作っておき、組み直す地点で入れ替える
+const REBUILD_BUDGET_MS = 3;
 const ROW_STEP_NEAR_M = 4;
 const ROW_STEP_MID_M = 20;
 const MID_AHEAD_M = 1000;
@@ -256,6 +259,8 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
         // 差し替え中の水面マテリアル・実在の地形の写真はシーンをたどっても見つからないので先に解放する
         scene3d.ocean?.dispose();
         scene3d.realTerrain?.dispose();
+        // 裏の組の地形・道路(シーンに入っていないので disposeScene では見つからない)
+        for (const g of Object.values(scene3d.geoSets[1 - scene3d.front])) g.dispose();
         disposeScene(scene3d);
         sceneRef.current = null;
       };
@@ -437,6 +442,14 @@ function initScene(canvas, courseEngine, L, vehicle, renderer) {
     cols: terrainColumns(L),
     anchorS: null, anchorElev: 0,
     placement: null,
+    // 地形・道路・路肩のジオメトリの表裏 2 組(front が描いている組)と、組み直し中の仕事(worldJob)
+    geoSets: [
+      { terrain: terrain.geometry, road: road.geometry, shoulder: shoulder.geometry },
+      { terrain: new THREE.BufferGeometry(), road: new THREE.BufferGeometry(), shoulder: new THREE.BufferGeometry() },
+    ],
+    front: 0,
+    staging: null,
+    worldJob: null,
     // route モードの水面の模様用: ライダーの道路中心の位置を、方位を積分して追う(さざ波を地面に固定する)
     waterOdo: { s: null, x: 0, z: 0 },
     // 視点: view = 'chase' | 'aerial' | 'fp' | 'cine'、crankRad = 目線の揺れ用のクランク角、director = cine のショット切り替え
@@ -448,6 +461,8 @@ function initScene(canvas, courseEngine, L, vehicle, renderer) {
     actors: createRoadsideActors(inner, tex.all),
     backdrop,
   };
+  // 配置物は控えのプールに置いておき、入れ替えるときに本物のプールへ写す
+  st.staging = Object.fromEntries(Object.entries(st.pools).map(([k, pool]) => [k, stagingPool(pool)]));
   st.actorPlace = actorPlacer(st);
   st.actorGround = (gapM, lateralM) => groundOffsetM(st, st.actorDist + gapM, lateralM);
   return st;
@@ -520,6 +535,47 @@ function terrainColumns(L) {
   const valley = OUTER_COLUMNS_M.map((u) => -(edge + u)).reverse();
   const hill = OUTER_COLUMNS_M.filter((u) => u <= HILL_MAX_COLUMN_M).map((u) => edge + u);
   return [...valley, -edge, -(L.roadHalfWidthM + 0.6), L.roadHalfWidthM + 0.6, edge, ...hill];
+}
+
+/**
+ * geometry.computeVertexNormals() と同じ計算(三角形ごとの面の法線を頂点へ足して正規化)を、
+ * 三角形 NORMAL_CHUNK 個ごとに区切って行う(ジェネレーター)。地形の格子は 2 万三角形近くあり、
+ * 一度に計算すると遅い端末では 1 フレームの予算を超える。
+ */
+const NORMAL_CHUNK = 3000;
+function* computeNormalsInSteps(geometry) {
+  const pos = geometry.attributes.position.array;
+  const index = geometry.index.array;
+  let normal = geometry.attributes.normal;
+  if (!normal || normal.count !== geometry.attributes.position.count) {
+    normal = new THREE.BufferAttribute(new Float32Array(pos.length), 3);
+    geometry.setAttribute('normal', normal);
+  }
+  const n = normal.array;
+  n.fill(0);
+  for (let t = 0; t < index.length; t += 3) {
+    const a = index[t] * 3;
+    const b = index[t + 1] * 3;
+    const c = index[t + 2] * 3;
+    // cb × ab(three.js と同じ向き)
+    const cbx = pos[c] - pos[b], cby = pos[c + 1] - pos[b + 1], cbz = pos[c + 2] - pos[b + 2];
+    const abx = pos[a] - pos[b], aby = pos[a + 1] - pos[b + 1], abz = pos[a + 2] - pos[b + 2];
+    const nx = cby * abz - cbz * aby;
+    const ny = cbz * abx - cbx * abz;
+    const nz = cbx * aby - cby * abx;
+    n[a] += nx; n[a + 1] += ny; n[a + 2] += nz;
+    n[b] += nx; n[b + 1] += ny; n[b + 2] += nz;
+    n[c] += nx; n[c + 1] += ny; n[c + 2] += nz;
+    if (t % (NORMAL_CHUNK * 3) === NORMAL_CHUNK * 3 - 3) yield;
+  }
+  for (let i = 0; i < n.length; i += 3) {
+    const len = Math.hypot(n[i], n[i + 1], n[i + 2]) || 1;
+    n[i] /= len;
+    n[i + 1] /= len;
+    n[i + 2] /= len;
+  }
+  normal.needsUpdate = true;
+  yield;
 }
 
 /** 頂点数が変わった時だけ属性とインデックスを確保し直す。 */
@@ -626,24 +682,103 @@ function createPlacement(st, anchorS) {
   };
 }
 
-function rebuildWorld(st, anchorS) {
-  const { L, elev } = st;
-  st.anchorS = anchorS;
-  st.anchorElev = elev.elevAt(anchorS);
-  st.placement = createPlacement(st, anchorS);
-  const floorM = st.floor.floorAt(anchorS);
-
-  buildTerrain(st, anchorS, floorM);
-  buildRoad(st, anchorS);
-  placeObjects(st, anchorS, floorM);
+/**
+ * 配置物の控えのプール(pushInstance / pushInstanceYawPitch が書き込める、GPU に送らない配列だけのもの)。
+ */
+function stagingPool(pool) {
+  const m = new Float32Array(pool.max * 16);
+  const c = new Float32Array(pool.max * 3);
+  return {
+    max: pool.max, n: 0, m, c,
+    mesh: { setMatrixAt: (i, mat) => mat.toArray(m, i * 16), setColorAt: (i, col) => col.toArray(c, i * 3) },
+  };
 }
 
-function buildTerrain(st, anchorS, floorM) {
+/**
+ * アンカー anchorS での組み直しを始める。st を下敷きにした w(アンカー・配置アダプター・裏のジオメトリ・
+ * 控えのプールだけ自前)に作る。進めるのは stepWorldJob、できたら swapWorld で表と入れ替える。
+ */
+function startWorldJob(st, anchorS) {
+  const w = Object.create(st);
+  w.anchorS = anchorS;
+  w.anchorElev = st.elev.elevAt(anchorS);
+  w.placement = null; // buildWorld の最初の区切りで作る
+  w.geo = st.geoSets[1 - st.front];
+  w.pools = st.staging;
+  for (const pool of Object.values(w.pools)) pool.n = 0;
+  // 竜宮城は動く物(魚の群れ・泡)の位置を tour.anim に控えるので、入れ替えまで本物に触らない
+  w.tour = st.tour ? Object.create(st.tour) : null;
+  return { w, steps: buildWorld(w), done: false };
+}
+
+/** 組み直しの中身(ジェネレーター。区切りごとに yield する)。 */
+function* buildWorld(w) {
+  w.placement = createPlacement(w, w.anchorS);
+  yield;
+  const floorM = w.floor.floorAt(w.anchorS);
+  yield* buildTerrain(w, w.anchorS, floorM);
+  buildRoad(w, w.anchorS);
+  yield;
+  yield* placeObjects(w, w.anchorS, floorM);
+}
+
+/** 組み直しを untilMs(performance.now の時刻)まで進める。終わっていれば true。 */
+function stepWorldJob(job, untilMs) {
+  while (!job.done) {
+    job.done = !!job.steps.next().done;
+    if (performance.now() >= untilMs) break;
+  }
+  return job.done;
+}
+
+/** できあがった裏の組を表にする(アンカー・配置アダプター・ジオメトリ・配置物をまとめて切り替える)。 */
+function swapWorld(st, job) {
+  const { w } = job;
+  st.anchorS = w.anchorS;
+  st.anchorElev = w.anchorElev;
+  st.placement = w.placement;
+  st.front = 1 - st.front;
+  st.terrain.geometry = w.geo.terrain;
+  st.road.geometry = w.geo.road;
+  st.shoulder.geometry = w.geo.shoulder;
+  for (const [k, pool] of Object.entries(st.pools)) {
+    const stg = st.staging[k];
+    pool.mesh.instanceMatrix.array.set(stg.m.subarray(0, stg.n * 16));
+    pool.mesh.instanceColor.array.set(stg.c.subarray(0, stg.n * 3));
+    pool.n = stg.n;
+    commitPool(pool);
+  }
+  if (w.tour && Object.hasOwn(w.tour, 'anim')) st.tour.anim = w.tour.anim;
+  st.worldJob = null;
+}
+
+/**
+ * 世界を組み直す。ライダーがアンカーから REBUILD_M 離れたら組み直すのは従来どおりで、前へ走っている間は
+ * 次のアンカー(今の REBUILD_M 先)の分を毎フレーム REBUILD_BUDGET_MS ずつ先に作っておく。
+ * 間に合わなかった分・距離が飛んだとき・最初はその場で一度に作る。
+ */
+function updateWorld(st, dist) {
+  if (st.anchorS === null || Math.abs(dist - st.anchorS) > REBUILD_M) {
+    let job = st.worldJob;
+    if (!job || Math.abs(dist - job.w.anchorS) > REBUILD_M) {
+      job = startWorldJob(st, Math.round(dist / ROW_STEP_NEAR_M) * ROW_STEP_NEAR_M);
+    }
+    stepWorldJob(job, Infinity);
+    swapWorld(st, job);
+    return;
+  }
+  if (!st.worldJob && dist >= st.anchorS) st.worldJob = startWorldJob(st, st.anchorS + REBUILD_M);
+  // 組み直す地点が近いのにまだできていなければ、少し多めに進める(下り坂など速いとき)
+  const budget = dist - st.anchorS > REBUILD_M * 0.75 ? REBUILD_BUDGET_MS * 3 : REBUILD_BUDGET_MS;
+  if (st.worldJob) stepWorldJob(st.worldJob, performance.now() + budget);
+}
+
+function* buildTerrain(st, anchorS, floorM) {
   const { L, elev, anchorElev, placement } = st;
   const rows = terrainRows(anchorS);
   const cols = st.cols;
   const curved = placement.route !== null;
-  const geometry = st.terrain.geometry;
+  const geometry = st.geo.terrain;
   ensureGrid(geometry, rows.length, cols.length, true);
   const pos = geometry.attributes.position;
   const uv = geometry.attributes.uv;
@@ -662,11 +797,14 @@ function buildTerrain(st, anchorS, floorM) {
       pos.setXYZ(i, p.x, hgt - anchorElev, p.z);
       // route モードの x はアンカーごとに回転した座標なので、模様は横距離 d に固定する
       uv.setXY(i, (curved ? d : p.x) / TERRAIN_TILE_M, v);
+      // カーブのある道では、列ごとの平滑化した経路を最初の行で初めて求める(routeLayout.js、列ごとに数百 µs〜)
+      if (r === 0 && curved) yield;
     }
+    if (r % 8 === 7) yield;
   }
   pos.needsUpdate = true;
   uv.needsUpdate = true;
-  geometry.computeVertexNormals();
+  yield* computeNormalsInSteps(geometry);
   const normals = geometry.attributes.normal;
   const color = geometry.attributes.color;
   for (let r = 0; r < rows.length; r++) {
@@ -676,6 +814,7 @@ function buildTerrain(st, anchorS, floorM) {
       _col.setRGB(cr, cg, cb, THREE.SRGBColorSpace);
       color.setXYZ(i, _col.r, _col.g, _col.b);
     }
+    if (r % 16 === 15) yield;
   }
   color.needsUpdate = true;
 }
@@ -694,8 +833,7 @@ function buildRoad(st, anchorS) {
   const rows = [];
   for (let s = first; s <= anchorS + NEAR_AHEAD_M + REBUILD_M; s += ROAD_STEP_M) rows.push(s);
 
-  const fill = (mesh, cols, tileM, yOffset, quadPairs) => {
-    const geometry = mesh.geometry;
+  const fill = (geometry, cols, tileM, yOffset, quadPairs) => {
     const vertexCount = rows.length * cols.length;
     if (!geometry.attributes.position || geometry.attributes.position.count !== vertexCount) {
       geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3));
@@ -731,17 +869,19 @@ function buildRoad(st, anchorS) {
     uv.needsUpdate = true;
     geometry.computeVertexNormals();
   };
-  fill(st.road, roadCols, ROAD_TILE_M, 0, [[0, 1]]);
-  fill(st.shoulder, shoulderCols, SHOULDER_TILE_M, -0.03, [[0, 1], [2, 3]]);
+  fill(st.geo.road, roadCols, ROAD_TILE_M, 0, [[0, 1]]);
+  fill(st.geo.shoulder, shoulderCols, SHOULDER_TILE_M, -0.03, [[0, 1], [2, 3]]);
 }
 
-function placeObjects(st, anchorS, floorM) {
+function* placeObjects(st, anchorS, floorM) {
   const { L, elev, anchorElev, pools: p, placement } = st;
   const from = anchorS - NEAR_BEHIND_M;
   const to = anchorS + NEAR_AHEAD_M + REBUILD_M;
   const objects = collectLandscapeObjects(L, from, to, { farToM: anchorS + FAR_TREE_AHEAD_M });
+  yield;
   const edge = roadEdgeM(L);
   // 名所(大鳥居の柱・五重塔の基壇)のある所には木・岩・家を置かない(名所のないコースでは空)
+  yield;
   const zones = clearZones(landmarkActors(st.profile, anchorS, NEAR_BEHIND_M + REBUILD_M, FAR_TREE_AHEAD_M), L.roadHalfWidthM);
   const blocked = (s, d, r) => zones.length > 0 && inClearZone(zones, s, d, r, r);
 
@@ -759,7 +899,9 @@ function placeObjects(st, anchorS, floorM) {
     return steepness(s, d, hgt) < L.trees.maxSlope;
   };
 
+  let k = 0;
   for (const t of objects.trees) {
+    if (++k % 64 === 0) yield;
     if (blocked(t.s, t.d, 2 * t.scale)) continue;
     const hgt = groundAt(t.s, t.d);
     if (!treeOk(t.s, t.d, hgt)) continue;
@@ -782,7 +924,9 @@ function placeObjects(st, anchorS, floorM) {
     }
   }
 
+  yield;
   for (const t of objects.farTrees) {
+    if (++k % 128 === 0) yield;
     if (blocked(t.s, t.d, 3 * t.scale)) continue;
     const hgt = groundAt(t.s, t.d);
     if (!treeOk(t.s, t.d, hgt)) continue;
@@ -796,6 +940,7 @@ function placeObjects(st, anchorS, floorM) {
     }
   }
 
+  yield;
   for (const r of objects.rocks) {
     if (blocked(r.s, r.d, r.size)) continue;
     const hgt = groundAt(r.s, r.d);
@@ -866,9 +1011,9 @@ function placeObjects(st, anchorS, floorM) {
     pushInstance(p.boatSails, x, y, z, b.scale, b.scale, b.scale, 0, b.yaw);
   }
 
+  yield;
   if (objects.tour) placeTourObjects(st, objects.tour, { groundAt, local, blocked, floorM });
-
-  for (const pool of Object.values(p)) commitPool(pool);
+  // 控えのプール(st.pools = st.staging)に置いただけ。本物のプールへは swapWorld で写す
 }
 
 // ---- 毎フレームの更新 ----
@@ -878,9 +1023,7 @@ const _sun = new THREE.Vector3();
 function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors) {
   const { L, elev } = st;
   const dist = distanceKm * 1000;
-  if (st.anchorS === null || Math.abs(dist - st.anchorS) > REBUILD_M) {
-    rebuildWorld(st, Math.round(dist / ROW_STEP_NEAR_M) * ROW_STEP_NEAR_M);
-  }
+  updateWorld(st, dist);
   const riderElev = elev.elevAt(dist);
   // ライダー地点の道路中心を原点へ平行移動し、進行方向が −Z になるよう回す
   const frame = st.placement.riderFrame(dist);
