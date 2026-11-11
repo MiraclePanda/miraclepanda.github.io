@@ -60,6 +60,9 @@ const TUN_EXT_MAX_M = 60;
 const TUN_CUT_R = 900;
 const FP_LOOK_M = 20;
 const TREE_REBUILD_M = 40;
+// 木の置き直しは数十 ms かかる(高・最高で木が数万本)ので、1フレームにこの時間ずつ分けて裏の組で作り、
+// できたら表の組と入れ替える(作っている間は前の木をそのまま描く)
+const TREE_BUDGET_MS = 3;
 const ROAD_CHUNK = 50; // 道のメッシュ1つあたりの点の数(10 m ごと)
 // 道の断面: [中心からの距離(m), 路面からの高さ, 色]。同じ色の列を2本並べて白線の縁をくっきりさせる
 const ROAD_COLS = [
@@ -643,16 +646,21 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   const leafMat = std(0xffffff, { roughness: 0.92, vertexColors: true });
   const coneMat = std(0xffffff, { roughness: 0.92, vertexColors: true, side: THREE.DoubleSide });
   const barkMat = std(0x5b4632, { roughness: 0.95, vertexColors: true });
-  const trees = {
+  // 遠くの木(treeNearR より外)は影の範囲(ライダーのまわり 40〜80 m)に入らないので影を落とさない
+  // (落とす設定だと、影を描く段でも数万本を描き直していた)
+  const makeTrees = () => ({
     trunk: makePool(trunkFarGeometry(), barkMat, TREE_MAX, { cast: false }),
     trunkNear: makePool(trunkNearGeometry(), barkMat, TREE_NEAR_MAX),
-    cone: makePool(coniferFarGeometry(), coneMat, TREE_MAX),
+    cone: makePool(coniferFarGeometry(), coneMat, TREE_MAX, { cast: false }),
     coneNear: makePool(coniferNearGeometry(), coneMat, TREE_NEAR_MAX),
-    ball: makePool(broadleafFarGeometry(), leafMat, TREE_MAX),
+    ball: makePool(broadleafFarGeometry(), leafMat, TREE_MAX, { cast: false }),
     ballNear: makePool(broadleafNearGeometry(), leafMat, TREE_NEAR_MAX),
     disc: makePool(pinePadGeometry(), leafMat, TREE_MAX),
-  };
-  for (const p of [...Object.values(pools), ...Object.values(trees)]) scene.add(p.mesh);
+  });
+  // 表(描いている組)と裏(置き直し中の組)
+  const treeSets = [makeTrees(), makeTrees()];
+  let trees = treeSets[1];
+  for (const p of [...Object.values(pools), ...treeSets.flatMap((t) => Object.values(t))]) scene.add(p.mesh);
   // 電柱と電線・カーブミラー・標識(配置は roadsideLayout.js)
   const roadPlan = planRoadside({
     lengthM: segment.lengthM, at: routeAt, groundAt: (x, y) => heightAt(sc, x, y), inTunnel: (m) => !!tubeAt(m),
@@ -686,6 +694,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
 
   let tier = TIER_SCENERY.high;
   let treeAt = null;
+  let treeJob = null; // 置き直し中の木 { at, steps }
   // 地面の航空写真(最高・高のとき、まわりのタイルだけ)
   const photos = createAerialPhotos(sc, {
     anisotropy: Math.min(16, W ? renderer.getMaxAnisotropy() : renderer.capabilities.getMaxAnisotropy()), patchMaterial: cutTunnels,
@@ -703,6 +712,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       seaMat.normalMap = tier.waves ? waveTex : null;
       seaMat.needsUpdate = true;
       treeAt = null; // 木を置き直す
+      treeJob = null;
       s.skyKey = null; // 霧の濃さを掛け直す
       onQualityChange?.(name);
     },
@@ -779,8 +789,11 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   rebakeSky('sunny', 7 * 60);
   setupQuality(s, qualityMode);
 
-  /** ライダーのまわりに森の木を置き直す(同じ場所はいつも同じ木)。 */
-  function placeTrees(ox, oy) {
+  /**
+   * ライダーのまわりに森の木を置き直す(同じ場所はいつも同じ木)。裏の組 trees に置き、1行ごとに区切る
+   * (ジェネレーター。最後まで進めると裏の組ができあがる)。
+   */
+  function* placeTrees(ox, oy) {
     const { treeR, treeCell, treeNearR } = tier;
     const r2 = treeR * treeR;
     const near2 = treeNearR * treeNearR;
@@ -844,11 +857,33 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
           pushInstance(near ? trees.ballNear : trees.ball, px, h + hgt * 0.35, pz, w, hgt * 0.32, w, 0, r * 6, color);
         }
       }
+      yield;
     }
+  }
+
+  /** 木の置き直しを進める。budgetMs まで進めて、できあがったら表と裏を入れ替える。 */
+  function stepTrees(ox, oy) {
+    if (!treeJob && (!treeAt || Math.hypot(ox - treeAt[0], oy - treeAt[1]) > TREE_REBUILD_M)) {
+      for (const p of Object.values(trees)) p.n = 0;
+      treeJob = { at: [ox, oy], steps: placeTrees(ox, oy) };
+    }
+    if (!treeJob) return;
+    // 最初(と品質を変えた後)は木が無いので一度に作る
+    const until = treeAt ? performance.now() + TREE_BUDGET_MS : Infinity;
+    let done = false;
+    while (!(done = treeJob.steps.next().done) && performance.now() < until);
+    if (!done) return;
+    const [x, y] = treeJob.at;
+    const shown = trees === treeSets[0] ? treeSets[1] : treeSets[0];
     for (const p of Object.values(trees)) {
       commitPool(p);
-      p.mesh.position.set(ox, 0, -oy);
+      p.mesh.position.set(x, 0, -y);
+      p.mesh.visible = true;
     }
+    for (const p of Object.values(shown)) p.mesh.visible = false;
+    trees = shown;
+    treeAt = treeJob.at;
+    treeJob = null;
   }
 
   const P0 = {};
@@ -875,10 +910,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     const local = (p, off, dz = 0) => [p.x - p.hy * off - ox, p.z + dz, -(p.y + p.hx * off - oy)];
     const yawOf = (p) => Math.atan2(p.hx, -p.hy);
 
-    if (!treeAt || Math.hypot(ox - treeAt[0], oy - treeAt[1]) > TREE_REBUILD_M) {
-      treeAt = [ox, oy];
-      placeTrees(ox, oy);
-    }
+    stepTrees(ox, oy);
 
     // 中央線(10m ごとに 5m の白い破線。カーブの続く所とトンネルは黄色の実線 = はみ出し禁止。
     // 絶対位置にそろえるので走ると流れる)
