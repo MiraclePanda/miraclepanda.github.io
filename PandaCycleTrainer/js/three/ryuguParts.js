@@ -11,6 +11,7 @@
 // どれも画像ファイルを使わない(ビルド・アセット不要の制約)。見た目だけで、物理・トレーナーへの指示には影響しない。
 
 import THREE from './three.js';
+import { threeWebGPU, uniqueNodeKey } from './gpuBackend.js';
 import { makePool, pushInstance, pushInstanceYawPitch, commitPool } from './sceneKit.js';
 import { mulberry32 } from './cityLayout.js';
 
@@ -380,6 +381,20 @@ function addCaustics(material, shared, scale, periodM) {
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * uCauStrength * causticLight(vCauUv, uCauTime);');
   };
   material.customProgramCacheKey = () => `ryugu-caustics-${periodM}`;
+  const W = threeWebGPU();
+  if (W) {
+    // WebGPU: 同じ式を TSL で(GLSL の causticLight と同じ)
+    const { uv, vec2, sin, abs, pow, float, diffuseColor } = W.TSL;
+    const p = uv().mul(vec2(scale[0], scale[1]));
+    const t = shared.time;
+    const [fx, fy, fz] = uFreq.value.toArray();
+    const a = sin(p.x.mul(2.3).add(sin(p.y.mul(fx).add(t.mul(0.9))).mul(1.4)).add(t.mul(0.7)));
+    const b = sin(p.y.mul(fy).add(sin(p.x.mul(1.7).sub(t.mul(0.6))).mul(1.3)).sub(t.mul(0.5)));
+    const c = sin(p.x.mul(3.1).add(p.y.mul(fz)).add(t.mul(0.8)));
+    const light = pow(float(1).sub(abs(a.add(b).add(c)).div(3)), 6);
+    material.emissiveNode = diffuseColor.rgb.mul(shared.strength).mul(light);
+    uniqueNodeKey(material, 'ryugu-caustics');
+  }
   material.needsUpdate = true;
 }
 
@@ -398,6 +413,22 @@ function addSway(material, shared) {
   transformed.z += cos(uSwayTime * 0.8 + swayPh * 1.3 + transformed.y * 2.0) * 0.05 * swayK;`);
   };
   material.customProgramCacheKey = () => 'ryugu-sway';
+  const W = threeWebGPU();
+  if (W) {
+    // WebGPU: TSL では位置の差し替えがインスタンスの行列を掛けた後になるので、揺れの位相はインスタンスの位置
+    // (掛けた後の座標)から、揺れの大きさは元の形の高さから取る
+    const { positionLocal, positionGeometry, sin, cos, vec3 } = W.TSL;
+    const t = shared.time;
+    const ph = positionLocal.x.mul(0.37).add(positionLocal.z.mul(0.23));
+    const y = positionGeometry.y;
+    const k = y.mul(y);
+    material.positionNode = positionLocal.add(vec3(
+      sin(t.mul(1.1).add(ph).add(y.mul(3))).mul(0.09).mul(k),
+      0,
+      cos(t.mul(0.8).add(ph.mul(1.3)).add(y.mul(2))).mul(0.05).mul(k),
+    ));
+    uniqueNodeKey(material, 'ryugu-sway');
+  }
 }
 
 // ---- 本体 ----
@@ -411,7 +442,11 @@ function addSway(material, shared) {
  * @returns {{pools: object, animPools: object, glowMaterials: Array, textures: THREE.Texture[], animate: Function}}
  */
 export function buildRyuguParts(inner, L, { causticTargets = [] } = {}) {
-  const shared = { time: { value: 0 }, strength: { value: CAUSTIC_STRENGTH } };
+  // WebGPU では TSL の uniform(.value を持つので GLSL の uniform としてもそのまま使える)
+  const W = threeWebGPU();
+  const shared = W
+    ? { time: W.TSL.uniform(0), strength: W.TSL.uniform(CAUSTIC_STRENGTH) }
+    : { time: { value: 0 }, strength: { value: CAUSTIC_STRENGTH } };
   for (const t of causticTargets) addCaustics(t.material, shared, t.scale, t.periodM);
 
   const pools = {};

@@ -1,5 +1,9 @@
 import { h, useRef, useEffect, useState } from './h.js';
 import THREE from '../three/three.js';
+import { startSceneRenderer } from '../three/gpuBackend.js';
+import {
+  broadleafFarGeometry, broadleafNearGeometry, coniferFarGeometry, coniferNearGeometry, trunkFarGeometry, trunkNearGeometry,
+} from '../three/treeModels.js';
 import { FLOOR_HEIGHT_M } from '../three/cityLayout.js';
 import { createCityTextures, createTownFacadeTextures, createFacadeMaterial, FACADE_TILE } from '../three/cityMaterials.js';
 import { createCountryRoadTexture, createTerrainDetailTexture, createWaterNormalTexture } from '../three/landscapeMaterials.js';
@@ -7,9 +11,9 @@ import { createAtamiRoute, createTerrainSampler } from '../three/atamiRealLayout
 import { REAL_TOWNS, loadTownData, townGroundColor, analyzeGrid, planTrees, waterLevelAt, waterCells, townBuildingLook } from '../three/realTownLayout.js';
 import { buildTerrainMesh, buildRouteMeshes, buildStreetGeometry, buildBuildingGeometries } from '../three/atamiParts.js';
 import {
-  bakeSky, createAvatar, makePool, pushInstance, commitPool, mergeGeometries,
+  bakeSky, createAvatar, makePool, pushInstance,
   applyQuality, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
-  reportReadyAfterDraw,
+  reportReadyAfterDraw, renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
 import { createCineDirector, normalizeCameraView } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
@@ -87,57 +91,63 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
     },
   }));
 
+  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
+  const live = useRef({});
+  live.current = { qualityMode, environment, cameraView };
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !courseEngine) return;
-    let st;
-    try {
-      st = initScene(canvas, courseEngine, town, vehicle);
-      st.season = season;
-      sceneRef.current = st;
-    } catch (err) {
-      setRenderError(String(err));
-      return;
-    }
-    st.attributionEl = attributionRef.current;
-    st.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-    st.onReady = () => onReadyRef.current?.();
-    st.appliedQualityMode = qualityMode;
-    st.envSetting = environment;
-    st.cam.view = normalizeCameraView(cameraView);
-    canvas.dataset.townData = 'loading';
-    loadTownData(town).then(
-      (data) => {
-        if (st.disposed) return;
-        try {
-          buildWorld(st, data);
-          canvas.dataset.townData = 'ready';
-          canvas.dataset.buildings = String(st.buildingCount);
-          canvas.dataset.trees = String(st.treeCount);
-        } catch (err) {
-          setRenderError(String(err));
-        }
-      },
-      (err) => {
-        if (st.disposed) return;
-        console.warn('実在の街のデータを読み込めませんでした:', err);
-        canvas.dataset.townData = 'error';
-        setDataError(true);
-        // 街のデータが無くても走行と記録は続けられるので、走行を始める
-        onReadyRef.current?.();
+    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
+    return startSceneRenderer(canvas, (renderer) => {
+      let st;
+      try {
+        st = initScene(canvas, courseEngine, town, vehicle, renderer);
+        st.season = season;
+        sceneRef.current = st;
+      } catch (err) {
+        setRenderError(String(err));
+        return;
       }
-    );
-    const resize = () => resizeScene(st);
-    setupQuality(st, qualityMode);
-    window.addEventListener('resize', resize);
-    return () => {
-      window.removeEventListener('resize', resize);
-      st.disposed = true;
-      st.ocean?.dispose();
-      st.realTerrain?.dispose();
-      disposeScene(st);
-      sceneRef.current = null;
-    };
+      st.attributionEl = attributionRef.current;
+      st.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+      st.onReady = () => onReadyRef.current?.();
+      st.appliedQualityMode = live.current.qualityMode;
+      st.envSetting = live.current.environment;
+      st.cam.view = normalizeCameraView(live.current.cameraView);
+      canvas.dataset.townData = 'loading';
+      loadTownData(town).then(
+        (data) => {
+          if (st.disposed) return;
+          try {
+            buildWorld(st, data);
+            canvas.dataset.townData = 'ready';
+            canvas.dataset.buildings = String(st.buildingCount);
+            canvas.dataset.trees = String(st.treeCount);
+          } catch (err) {
+            setRenderError(String(err));
+          }
+        },
+        (err) => {
+          if (st.disposed) return;
+          console.warn('実在の街のデータを読み込めませんでした:', err);
+          canvas.dataset.townData = 'error';
+          setDataError(true);
+          // 街のデータが無くても走行と記録は続けられるので、走行を始める
+          onReadyRef.current?.();
+        }
+      );
+      const resize = () => resizeScene(st);
+      setupQuality(st, live.current.qualityMode);
+      window.addEventListener('resize', resize);
+      return () => {
+        window.removeEventListener('resize', resize);
+        st.disposed = true;
+        st.ocean?.dispose();
+        st.realTerrain?.dispose();
+        disposeScene(st);
+        sceneRef.current = null;
+      };
+    }, (err) => setRenderError(String(err)));
   }, []);
 
   useEffect(() => {
@@ -173,14 +183,13 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
 
 // ---- 初期化(データを待たずに作れるもの) ----
 
-function initScene(canvas, courseEngine, town, vehicle) {
+function initScene(canvas, courseEngine, town, vehicle, renderer) {
   const cfg = REAL_TOWNS[town];
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = renderer.isWebGPURenderer ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap; // WebGPU に PCFSoft は無い
 
   const atmo = { ...ATMO, fog: cfg.fog };
   const scene = new THREE.Scene();
@@ -202,7 +211,7 @@ function initScene(canvas, courseEngine, town, vehicle) {
   sunLight.shadow.normalBias = 0.05;
   scene.add(hemiLight, sunLight, sunLight.target);
 
-  const anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const anisotropy = Math.min(8, maxAnisotropy(renderer));
   const textures = [];
   const waterNormal = createWaterNormalTexture();
   textures.push(waterNormal);
@@ -466,20 +475,29 @@ function sightClearZones(st) {
   return out;
 }
 
+// 作り込んだ形で描く木の数の上限(描画品質の treeNearR の内側でも、これを超えた分は軽い形)
+const TREE_NEAR_MAX = 4000;
+// ライダーがこれだけ動いたら、近く/遠くの木を分け直す(m)
+const TREE_LOD_STEP_M = 25;
+
+/**
+ * 木を置く。形は treeModels.js で、ライダーの近く(描画品質の treeNearR の内側)は葉の塊・枝の段まで
+ * 作り込んだ形、遠くは軽い形で描く。木の位置・色は最初に一度だけ決めて控えておき(src)、
+ * ライダーが動いたら近く/遠くのプールへ写し直すだけにする(updateTreeLod)。
+ */
 function placeTrees(st, trees, colors) {
-  const trunkGeo = new THREE.CylinderGeometry(0.12, 0.2, 1, 6).translate(0, 0.5, 0);
-  const broadGeo = mergeGeometries([
-    new THREE.IcosahedronGeometry(1, 1).scale(1.6, 1.25, 1.6).translate(0, 4.4, 0),
-    new THREE.IcosahedronGeometry(1, 1).scale(1.15, 1, 1.15).translate(0.5, 5.6, 0.3),
-  ]);
-  const coniferGeo = mergeGeometries([
-    [2.0, 4.0, 1.4], [1.55, 3.4, 3.6], [1.05, 3.0, 5.6], [0.6, 2.4, 7.6],
-  ].map(([r, hh, y]) => new THREE.ConeGeometry(r, hh, 8, 1).translate(0, y + hh / 2, 0)));
+  const barkMat = new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 1, vertexColors: true });
+  const leafMat = new THREE.MeshStandardMaterial({ roughness: 0.95, vertexColors: true });
+  const coneMat = new THREE.MeshStandardMaterial({ roughness: 0.95, vertexColors: true, side: THREE.DoubleSide });
+  // 単位の形(treeModels.js)を、これまでの木の大きさに合わせる:
+  // 落葉樹の樹冠は y 3.1〜6.6 m・半径約 1.75 m、針葉樹は y 1.4〜10 m・底の半径 2 m
+  const broadFit = (g) => g.scale(1.75, 1.75, 1.75).translate(0, 3.1, 0);
+  const coniferFit = (g) => g.scale(2, 8.2, 2).translate(0, 1.4, 0);
   const nBroad = trees.filter((t) => !t.conifer).length;
-  const pools = {
-    trunks: makePool(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 1 }), trees.length + 1, { cast: false }),
-    broad: makePool(broadGeo, new THREE.MeshStandardMaterial({ roughness: 0.95 }), nBroad + 1, { cast: false }),
-    conifer: makePool(coniferGeo, new THREE.MeshStandardMaterial({ roughness: 0.95 }), trees.length - nBroad + 1, { cast: false }),
+  const lods = {
+    trunks: treeLod(trunkNearGeometry(), trunkFarGeometry(), barkMat, trees.length),
+    broad: treeLod(broadFit(broadleafNearGeometry()), broadFit(broadleafFarGeometry()), leafMat, nBroad),
+    conifer: treeLod(coniferFit(coniferNearGeometry()), coniferFit(coniferFarGeometry()), coneMat, trees.length - nBroad),
   };
   // 落葉樹のうち桜の割合(町なか・公園の桜。春に満開になる)
   const sakura = st.townCfg.sakura ?? 0.12;
@@ -488,19 +506,88 @@ function placeTrees(st, trees, colors) {
     const yaw = t.tone * Math.PI * 2;
     const r1 = (t.tone * 7919) % 1;
     if (t.conifer) {
-      pushInstance(pools.trunks, t.x, t.z - 0.3, -t.y, s * 1.2, 2 * s, s * 1.2);
+      lodPush(lods.trunks, t.x, t.z - 0.3, -t.y, s * 1.2, 2 * s, s * 1.2, 0, yaw);
       const base = colors.conifer[Math.floor(t.tone * colors.conifer.length) % colors.conifer.length];
-      pushInstance(pools.conifer, t.x, t.z, -t.y, s, s, s, 0, yaw, seasonalTree(st.season, base, t.z, r1, { conifer: true }).color);
+      lodPush(lods.conifer, t.x, t.z, -t.y, s, s, s, 0, yaw, seasonalTree(st.season, base, t.z, r1, { conifer: true }).color);
     } else {
-      pushInstance(pools.trunks, t.x, t.z - 0.3, -t.y, s, 4 * s, s);
+      lodPush(lods.trunks, t.x, t.z - 0.3, -t.y, s, 4 * s, s, 0, yaw);
       const look = seasonalTree(st.season, colors.broad[Math.floor(t.tone * 997) % colors.broad.length], t.z, r1, { sakura });
       const k = s * look.scale;
-      pushInstance(pools.broad, t.x, t.z, -t.y, k, s, k, 0, yaw, look.color);
+      lodPush(lods.broad, t.x, t.z, -t.y, k, s, k, 0, yaw, look.color);
     }
   }
-  for (const p of Object.values(pools)) {
-    commitPool(p);
-    st.world.add(p.mesh);
+  for (const lod of Object.values(lods)) {
+    lodSeal(lod);
+    st.world.add(lod.near.mesh, lod.far.mesh);
+  }
+  st.treeLods = lods;
+  st.treeLodAt = null;
+  // 最初はライダーの出発点(まだ置いていないので原点)の近くで分けておく
+  updateTreeLod(st, 0, 0, true);
+}
+
+/** 近く(作り込んだ形)と遠く(軽い形)の 2 つのプールと、全部の木の控え。 */
+function treeLod(nearGeo, farGeo, material, count) {
+  return {
+    near: makePool(nearGeo, material, Math.min(count, TREE_NEAR_MAX) + 1, { cast: false }),
+    far: makePool(farGeo, material, count + 1, { cast: false }),
+    pos: new Float32Array((count + 1) * 2),
+    n: 0,
+    src: null,
+    srcColor: null,
+  };
+}
+
+/** 木を1本控える(いったん遠くのプールへ置き、行列と色を lodSeal で写し取る)。 */
+function lodPush(lod, x, y, z, sx, sy, sz, rotX, rotY, colorHex) {
+  if (lod.n >= lod.far.max) return;
+  pushInstance(lod.far, x, y, z, sx, sy, sz, rotX, rotY, colorHex);
+  lod.pos[lod.n * 2] = x;
+  lod.pos[lod.n * 2 + 1] = z;
+  lod.n++;
+}
+
+function lodSeal(lod) {
+  lod.src = lod.far.mesh.instanceMatrix.array.slice(0, lod.n * 16);
+  lod.srcColor = lod.far.mesh.instanceColor.array.slice(0, lod.n * 3);
+}
+
+/** ライダー(x, z)のまわり treeNearR の内側の木を作り込んだ形のプールへ、残りを軽い形のプールへ写す。 */
+function updateTreeLod(st, x, z, force = false) {
+  const lods = st.treeLods;
+  if (!lods) return;
+  const r = st.treeNearR ?? 0;
+  const at = st.treeLodAt;
+  if (!force && at && at.r === r && (at.x - x) ** 2 + (at.z - z) ** 2 < TREE_LOD_STEP_M ** 2) return;
+  st.treeLodAt = { x, z, r };
+  const r2 = r * r;
+  for (const lod of Object.values(lods)) {
+    const { near, far, pos, src, srcColor } = lod;
+    const nm = near.mesh.instanceMatrix.array;
+    const nc = near.mesh.instanceColor.array;
+    const fm = far.mesh.instanceMatrix.array;
+    const fc = far.mesh.instanceColor.array;
+    let a = 0;
+    let b = 0;
+    for (let i = 0; i < lod.n; i++) {
+      const isNear = a < near.max && (pos[i * 2] - x) ** 2 + (pos[i * 2 + 1] - z) ** 2 < r2;
+      const m = src.subarray(i * 16, i * 16 + 16);
+      const c = srcColor.subarray(i * 3, i * 3 + 3);
+      if (isNear) {
+        nm.set(m, a * 16);
+        nc.set(c, a * 3);
+        a++;
+      } else {
+        fm.set(m, b * 16);
+        fc.set(c, b * 3);
+        b++;
+      }
+    }
+    for (const [pool, n] of [[near, a], [far, b]]) {
+      pool.mesh.count = n;
+      pool.mesh.instanceMatrix.needsUpdate = true;
+      pool.mesh.instanceColor.needsUpdate = true;
+    }
   }
 }
 
@@ -510,10 +597,12 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
   const t = (performance.now() - st.startedAt) / 1000;
   st.waterNormal.offset.set((t * 0.004) % 1, (t * 0.01) % 1);
   if (!st.ready) {
-    st.renderer.render(st.scene, st.camera);
+    renderScene(st);
     return;
   }
   updateRide(st, distanceKm * 1000, speedKmh, cadenceRpm, others, myLaneM, actors);
+  // 近くの木だけ作り込んだ形に(ライダーが TREE_LOD_STEP_M 動くか、描画品質が変わったら分け直す)
+  updateTreeLod(st, st.rider.group.position.x, st.rider.group.position.z);
   st.env.update();
   st.realTerrain.update({
     enabled: st.ultraOn, skyHeading: 0, baseY: st.realBaseY,
@@ -521,7 +610,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
   });
   st.outerTerrain.visible = !st.realTerrain.object.visible;
   if (st.ocean) st.ocean.render(st.renderer, st.scene, st.camera, t);
-  st.renderer.render(st.scene, st.camera);
+  renderScene(st);
 }
 
 // ---- 最高(実験)と出典 ----

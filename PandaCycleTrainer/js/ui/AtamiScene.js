@@ -1,5 +1,6 @@
 import { h, useRef, useEffect, useState } from './h.js';
 import THREE from '../three/three.js';
+import { startSceneRenderer } from '../three/gpuBackend.js';
 import { mulberry32, FLOOR_HEIGHT_M } from '../three/cityLayout.js';
 import { createCityTextures, createFacadeMaterial, FACADE_TILE } from '../three/cityMaterials.js';
 import { createCountryRoadTexture, createTerrainDetailTexture, createWaterNormalTexture } from '../three/landscapeMaterials.js';
@@ -13,7 +14,7 @@ import {
 import {
   bakeSky, createAvatar,
   makePool, pushInstance, commitPool, applyQuality, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
-  reportReadyAfterDraw,
+  reportReadyAfterDraw, renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
 import { createCineDirector, normalizeCameraView } from '../three/cameraViews.js';
 import { placeOnRoad, actorLateral, groundAboveRoadM, updateRide } from './realSceneShared.js';
@@ -94,57 +95,63 @@ export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle
     },
   }));
 
+  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
+  const live = useRef({});
+  live.current = { qualityMode, environment, cameraView };
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !courseEngine) return;
-    let st;
-    try {
-      st = initScene(canvas, courseEngine, vehicle);
-      st.season = season;
-      sceneRef.current = st;
-    } catch (err) {
-      setRenderError(String(err));
-      return;
-    }
-    st.attributionEl = attributionRef.current;
-    st.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-    st.onReady = () => onReadyRef.current?.();
-    st.appliedQualityMode = qualityMode;
-    st.envSetting = environment;
-    st.cam.view = normalizeCameraView(cameraView);
-    // 世界ができるまでは走行環境の切り替え(窓の夜度などを拾う)を作らない
-    canvas.dataset.atamiData = 'loading';
-    loadAtamiData().then(
-      (data) => {
-        if (st.disposed) return;
-        try {
-          buildWorld(st, data);
-          canvas.dataset.atamiData = 'ready';
-          canvas.dataset.buildings = String(st.buildingCount);
-        } catch (err) {
-          setRenderError(String(err));
-        }
-      },
-      (err) => {
-        if (st.disposed) return;
-        console.warn('熱海の街のデータを読み込めませんでした:', err);
-        canvas.dataset.atamiData = 'error';
-        setDataError(true);
-        // 街のデータが無くても走行と記録は続けられるので、走行を始める
-        onReadyRef.current?.();
+    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
+    return startSceneRenderer(canvas, (renderer) => {
+      let st;
+      try {
+        st = initScene(canvas, courseEngine, vehicle, renderer);
+        st.season = season;
+        sceneRef.current = st;
+      } catch (err) {
+        setRenderError(String(err));
+        return;
       }
-    );
-    const resize = () => resizeScene(st);
-    setupQuality(st, qualityMode);
-    window.addEventListener('resize', resize);
-    return () => {
-      window.removeEventListener('resize', resize);
-      st.disposed = true;
-      st.ocean?.dispose();
-      st.realTerrain?.dispose();
-      disposeScene(st);
-      sceneRef.current = null;
-    };
+      st.attributionEl = attributionRef.current;
+      st.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+      st.onReady = () => onReadyRef.current?.();
+      st.appliedQualityMode = live.current.qualityMode;
+      st.envSetting = live.current.environment;
+      st.cam.view = normalizeCameraView(live.current.cameraView);
+      // 世界ができるまでは走行環境の切り替え(窓の夜度などを拾う)を作らない
+      canvas.dataset.atamiData = 'loading';
+      loadAtamiData().then(
+        (data) => {
+          if (st.disposed) return;
+          try {
+            buildWorld(st, data);
+            canvas.dataset.atamiData = 'ready';
+            canvas.dataset.buildings = String(st.buildingCount);
+          } catch (err) {
+            setRenderError(String(err));
+          }
+        },
+        (err) => {
+          if (st.disposed) return;
+          console.warn('熱海の街のデータを読み込めませんでした:', err);
+          canvas.dataset.atamiData = 'error';
+          setDataError(true);
+          // 街のデータが無くても走行と記録は続けられるので、走行を始める
+          onReadyRef.current?.();
+        }
+      );
+      const resize = () => resizeScene(st);
+      setupQuality(st, live.current.qualityMode);
+      window.addEventListener('resize', resize);
+      return () => {
+        window.removeEventListener('resize', resize);
+        st.disposed = true;
+        st.ocean?.dispose();
+        st.realTerrain?.dispose();
+        disposeScene(st);
+        sceneRef.current = null;
+      };
+    }, (err) => setRenderError(String(err)));
   }, []);
 
   useEffect(() => {
@@ -180,13 +187,12 @@ export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle
 
 // ---- 初期化(データを待たずに作れるもの) ----
 
-function initScene(canvas, courseEngine, vehicle) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+function initScene(canvas, courseEngine, vehicle, renderer) {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = renderer.isWebGPURenderer ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap; // WebGPU に PCFSoft は無い
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(new THREE.Color(ATMO.horizon), ATMO.fog);
@@ -207,7 +213,7 @@ function initScene(canvas, courseEngine, vehicle) {
   sunLight.shadow.normalBias = 0.05;
   scene.add(hemiLight, sunLight, sunLight.target);
 
-  const anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const anisotropy = Math.min(8, maxAnisotropy(renderer));
   const textures = [];
 
   // 海(相模湾)。海面 = 標高 0
@@ -454,7 +460,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
   const t = (performance.now() - st.startedAt) / 1000;
   st.waterNormal.offset.set((t * 0.004) % 1, (t * 0.01) % 1);
   if (!st.ready) {
-    st.renderer.render(st.scene, st.camera);
+    renderScene(st);
     return;
   }
   updateRide(st, distanceKm * 1000, speedKmh, cadenceRpm, others, myLaneM, actors);
@@ -466,7 +472,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
   // 実在の地形(写真付き)が出ている間は、遠景の格子は隠す(重なってちらつかないように)
   st.outerTerrain.visible = !st.realTerrain.object.visible;
   st.ocean.render(st.renderer, st.scene, st.camera, t);
-  st.renderer.render(st.scene, st.camera);
+  renderScene(st);
 }
 
 // ---- 最高(実験)と出典 ----

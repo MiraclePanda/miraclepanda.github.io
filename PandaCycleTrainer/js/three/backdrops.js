@@ -12,6 +12,7 @@
 // 山の形は回転対称なので、どの向きから見ても同じ富士山の姿になる(雪の筋だけは山に固定して一緒に回す)。
 
 import THREE from './three.js';
+import { threeWebGPU } from './gpuBackend.js';
 
 // 富士山の大きさ(m)と置き方。カメラの far(25km)に収まるよう、山の奥の裾まで 24km 以内にする
 const FUJI_HEIGHT_M = 3700;
@@ -106,7 +107,8 @@ const _sun = new THREE.Vector3();
  * @returns {{ object: THREE.Object3D, update: Function, dispose: Function } | null}
  */
 export function createBackdrop(kind) {
-  if (kind !== 'fuji') return null;
+  // 今は使うコースが無い。GLSL の ShaderMaterial なので WebGPU で描くときは出さない
+  if (kind !== 'fuji' || threeWebGPU()) return null;
   const geometry = new THREE.LatheGeometry(fujiProfile(), 96);
   const material = createFujiMaterial();
   const mesh = new THREE.Mesh(geometry, material);

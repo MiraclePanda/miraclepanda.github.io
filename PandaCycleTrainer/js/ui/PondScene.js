@@ -1,5 +1,7 @@
 import { h, useRef, useEffect, useState } from './h.js';
 import THREE from '../three/three.js';
+import { startSceneRenderer } from '../three/gpuBackend.js';
+import { trunkNearGeometry } from '../three/treeModels.js';
 import { mulberry32, FLOOR_HEIGHT_M } from '../three/cityLayout.js';
 import { createCityTextures, createFacadeMaterial, createFacadeGeometry, FACADE_TILE } from '../three/cityMaterials.js';
 import { createWaterNormalTexture, createRetainingWallTexture, createTerrainDetailTexture } from '../three/landscapeMaterials.js';
@@ -11,7 +13,7 @@ import {
   bakeSky, mergeGeometries, buildCanopyGeometry, buildSwanBoat, createAvatar, updateRiderAvatar,
   makePool, pushInstance, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
   setCameraFov, setAvatarVisible,
-  reportReadyAfterDraw,
+  reportReadyAfterDraw, renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
 import {
   normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
@@ -104,43 +106,48 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
     },
   }));
 
+  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
+  const live = useRef({});
+  live.current = { qualityMode, environment, cameraView };
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
+    return startSceneRenderer(canvas, (renderer) => {
+      let scene3d;
+      try {
+        scene3d = initScene(canvas, vehicle, season, renderer);
+        sceneRef.current = scene3d;
+        scene3d.onReady = () => onReadyRef.current?.();
+      } catch (err) {
+        setRenderError(String(err));
+        return;
+      }
 
-    let scene3d;
-    try {
-      scene3d = initScene(canvas, vehicle, season);
-      sceneRef.current = scene3d;
-      scene3d.onReady = () => onReadyRef.current?.();
-    } catch (err) {
-      setRenderError(String(err));
-      return;
-    }
+      // 走行環境は時間帯のみ(天候は晴れ固定)。昼なら何もしない(従来の見た目のまま)。
+      scene3d.env = createEnvironmentController(scene3d, {
+        base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
+        headlightParent: scene3d.rider.group, weather: false, season,
+      });
+      scene3d.env.set(live.current.environment, { immediate: true });
+      // 池は chase / aerial / fp のみ(cine は chase 扱い)
+      scene3d.cam.view = normalizeCameraView(live.current.cameraView, false);
 
-    // 走行環境は時間帯のみ(天候は晴れ固定)。昼なら何もしない(従来の見た目のまま)。
-    scene3d.env = createEnvironmentController(scene3d, {
-      base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
-      headlightParent: scene3d.rider.group, weather: false, season,
-    });
-    scene3d.env.set(environment, { immediate: true });
-    // 池は chase / aerial / fp のみ(cine は chase 扱い)
-    scene3d.cam.view = normalizeCameraView(cameraView, false);
+      const resize = () => resizeScene(scene3d);
+      // 描画品質「最高(実験)」: 池の水面にボート・木々・空が映り込む
+      scene3d.onUltraChange = (on) => scene3d.ocean.setEnabled(on);
+      scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
+      scene3d.appliedQualityMode = live.current.qualityMode;
+      setupQuality(scene3d, live.current.qualityMode);
+      window.addEventListener('resize', resize);
 
-    const resize = () => resizeScene(scene3d);
-    // 描画品質「最高(実験)」: 池の水面にボート・木々・空が映り込む
-    scene3d.onUltraChange = (on) => scene3d.ocean.setEnabled(on);
-    scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-    scene3d.appliedQualityMode = qualityMode;
-    setupQuality(scene3d, qualityMode);
-    window.addEventListener('resize', resize);
-
-    return () => {
-      window.removeEventListener('resize', resize);
-      scene3d.ocean.dispose();
-      disposeScene(scene3d);
-      sceneRef.current = null;
-    };
+      return () => {
+        window.removeEventListener('resize', resize);
+        scene3d.ocean.dispose();
+        disposeScene(scene3d);
+        sceneRef.current = null;
+      };
+    }, (err) => setRenderError(String(err)));
   }, []);
 
   // 走行中に描画品質のモードが変更されたら適用する(初回はsetupQualityで適用済み)。
@@ -174,13 +181,12 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
 
 // ---- シーン初期化 ----
 
-function initScene(canvas, vehicle, season = null) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+function initScene(canvas, vehicle, season, renderer) {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = renderer.isWebGPURenderer ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap; // WebGPU に PCFSoft は無い
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(new THREE.Color(ATMO.horizon), FOG_DENSITY);
@@ -199,7 +205,7 @@ function initScene(canvas, vehicle, season = null) {
   sunLight.shadow.normalBias = 0.05;
   scene.add(hemiLight, sunLight, sunLight.target);
 
-  const anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const anisotropy = Math.min(8, maxAnisotropy(renderer));
   const textures = [];
   const track = (t) => {
     textures.push(t);
@@ -386,9 +392,10 @@ function buildLampGeometry() {
 function buildPools(scene, city) {
   const box = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
   const pools = {
-    trunks: makePool(new THREE.CylinderGeometry(0.12, 0.2, 1, 8).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ color: 0x5b4a3a, roughness: 1 }), 1400),
+    // 木の形は treeModels.js(枝のある幹・陰影を焼き込んだ樹冠。頂点色 × インスタンス色)
+    trunks: makePool(trunkNearGeometry(), new THREE.MeshStandardMaterial({ color: 0x5b4a3a, roughness: 1, vertexColors: true }), 1400),
     willows: makePool(buildWillowCrownGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.9, side: THREE.DoubleSide }), 200),
-    canopies: makePool(buildCanopyGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.95 }), 3000),
+    canopies: makePool(buildCanopyGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.95, vertexColors: true }), 3000),
     cones: makePool(buildConeTreeGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.95 }), 400),
     lamps: makePool(buildLampGeometry(), new THREE.MeshStandardMaterial({ color: 0x33393e, roughness: 0.5, metalness: 0.5 }), 60),
     lotus: makePool(new THREE.CircleGeometry(1, 14).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ roughness: 0.7, side: THREE.DoubleSide }), 1600, { cast: false }),
@@ -399,7 +406,7 @@ function buildPools(scene, city) {
   for (const style of ['stucco', 'concrete', 'glass', 'brick']) {
     const bayM = style === 'glass' ? 1.8 : FLOOR_HEIGHT_M;
     pools[`bld_${style}`] = makePool(facadeGeo, createFacadeMaterial({
-      ...city.facades[style], bayM, floorM: FLOOR_HEIGHT_M, tileBays: FACADE_TILE.cellBays, tileFloors: FACADE_TILE.cellFloors, sinkM: FLOOR_HEIGHT_M,
+      ...city.facades[style], bayM, floorM: FLOOR_HEIGHT_M, tileBays: FACADE_TILE.cellBays, tileFloors: FACADE_TILE.cellFloors, sinkM: FLOOR_HEIGHT_M, instanced: true,
     }), 120);
   }
   for (const p of Object.values(pools)) scene.add(p.mesh);
@@ -600,7 +607,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm) {
   st.waterNormal.offset.set((t * 0.004) % 1, (t * 0.007) % 1);
   st.env.update();
   st.ocean.render(st.renderer, st.scene, st.camera, t);
-  st.renderer.render(st.scene, st.camera);
+  renderScene(st);
 }
 
 function bob(boat, t, amp) {

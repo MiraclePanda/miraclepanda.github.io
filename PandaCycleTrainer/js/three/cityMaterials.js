@@ -9,9 +9,12 @@
 // インスタンスごとに建物サイズが違っても窓の大きさが一定になるよう、
 // createFacadeMaterialがシェーダーを差し替えて、instanceMatrixから取り出した
 // スケールでUVを計算し直す(ジオメトリのUVを建物ごとに書き換えずに済む)。
+// WebGPU で描くときは同じ計算を TSL で持たせる(facadeNodes)。TSL からはインスタンスの行列を読めないので、
+// インスタンスのスケールは makePool が付ける facadeScale 属性(commitPool が行列から写す)で受け取る。
 
 import THREE from './three.js';
 import { mulberry32 } from './cityLayout.js';
+import { threeWebGPU, uniqueNodeKey } from './gpuBackend.js';
 
 function makeCanvas(w, h) {
   const canvas = document.createElement('canvas');
@@ -460,8 +463,10 @@ const FACADE_PAINTERS = {
  * @param {number} opts.tileBays   テクスチャ1枚に含まれるベイ数
  * @param {number} opts.tileFloors テクスチャ1枚に含まれる階数
  * @param {number} opts.sinkM   地面下に埋めている深さ(坂道対策)。窓の段をずらさないため
+ * @param {boolean} [opts.instanced] createFacadeGeometry() の InstancedMesh(makePool)で使うか
+ *   (WebGPU 用。false ならジオメトリの UV をそのまま使う = 熱海・実在の街の建物)
  */
-export function createFacadeMaterial({ map, ormMap, bayM, floorM, tileBays, tileFloors, sinkM }) {
+export function createFacadeMaterial({ map, ormMap, bayM, floorM, tileBays, tileFloors, sinkM, instanced = false }) {
   const material = new THREE.MeshStandardMaterial({
     map,
     roughnessMap: ormMap,
@@ -471,7 +476,10 @@ export function createFacadeMaterial({ map, ormMap, bayM, floorM, tileBays, tile
   });
   // 夜度(0〜1)。走行環境の時間帯に合わせて各シーンが毎フレーム書き換え、窓に明かりを灯す。
   // 0(昼)では発光に0を足すだけなので、従来の見た目と同じになる。
-  material.userData.night = { value: 0 };
+  // WebGPU では TSL の uniform(.value を持つので GLSL の uniform としてもそのまま使える)
+  const W = threeWebGPU();
+  material.userData.night = W ? W.TSL.uniform(0) : { value: 0 };
+  if (W) facadeNodes(W, material, { map, ormMap, bayM, floorM, tileBays, tileFloors, sinkM, instanced });
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uFacade = { value: new THREE.Vector4(bayM, floorM, tileBays, tileFloors) };
     shader.uniforms.uFacadeSink = { value: sinkM };
@@ -529,6 +537,37 @@ vFacadeSeed = 0.0;
       );
   };
   return material;
+}
+
+/** WebGPU 用: createFacadeMaterial の GLSL の差し替えと同じ窓の UV・夜の窓明かりを TSL のノードで持たせる。 */
+function facadeNodes(W, material, { map, ormMap, bayM, floorM, tileBays, tileFloors, sinkM, instanced }) {
+  const {
+    texture, uv, attribute, uniform, vec2, vec3, float, floor, fract, max, sin, dot, step, smoothstep, select,
+    materialMetalness, materialRoughness,
+  } = W.TSL;
+  let fuv;
+  let seed;
+  if (instanced) {
+    const fs = attribute('facadeScale', 'vec3');
+    const faceW = select(attribute('facadeAxis', 'float').greaterThan(0.5), fs.z, fs.x);
+    // 建物の幅に収まる整数個のベイに合わせて少しだけ伸縮させ、角で窓が切れないようにする(GLSL 版と同じ式)
+    const bays = max(1, floor(faceW.div(bayM).add(0.5)));
+    fuv = vec2(uv().x.mul(bays).div(tileBays), uv().y.mul(fs.y).sub(sinkM).div(floorM).div(tileFloors));
+    seed = floor(fract(fs.x.mul(0.731).add(fs.y.mul(0.377)).add(fs.z.mul(0.519))).mul(97));
+  } else {
+    fuv = uv();
+    seed = float(0);
+  }
+  const orm = texture(ormMap, fuv);
+  material.colorNode = texture(map, fuv).mul(uniform(material.color));
+  material.roughnessNode = orm.g.mul(materialRoughness);
+  material.metalnessNode = orm.b.mul(materialMetalness);
+  // 夜の窓明かり: ガラス(低粗さ・高金属度)の窓 1 枚ごとに約半数を暖色に光らせる
+  const glassMask = smoothstep(0.35, 0.6, orm.b).mul(float(1).sub(smoothstep(0.2, 0.35, orm.g)));
+  const cell = floor(fuv.mul(vec2(tileBays, tileFloors)));
+  const lit = step(0.45, fract(sin(dot(cell.add(floor(seed.add(0.5))), vec2(12.9898, 78.233))).mul(43758.5453)));
+  material.emissiveNode = vec3(1.0, 0.76, 0.46).mul(material.userData.night.mul(glassMask).mul(lit).mul(0.75));
+  uniqueNodeKey(material, 'facade');
 }
 
 /**
