@@ -83,6 +83,7 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
         drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
         reportReadyAfterDraw(s);
       } catch (err) {
+        console.error('3D の描画に失敗しました:', err);
         setRenderError(String(err));
       }
     },

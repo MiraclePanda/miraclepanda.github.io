@@ -97,6 +97,7 @@ export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle =
         reportReadyAfterDraw(s);
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
+        console.error('3D の描画に失敗しました:', err);
         setRenderError(String(err));
       }
     },

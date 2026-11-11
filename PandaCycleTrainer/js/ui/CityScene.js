@@ -144,6 +144,7 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
       } catch (err) {
         // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を
         // 巻き込んでクラッシュさせない。
+        console.error('3D の描画に失敗しました:', err);
         setRenderError(String(err));
       }
     },
