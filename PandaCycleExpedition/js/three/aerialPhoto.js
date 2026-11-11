@@ -34,6 +34,8 @@ export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMateria
   let last = null;
   const queue = [];
   let inFlight = 0;
+  // 読み終えたタイルの写真は 1 フレームに 1 枚ずつ貼る(何枚もまとめて GPU へ送るとそのフレームが詰まる)
+  const ready = [];
 
   const load = loadImage ?? ((url) => new Promise((resolve, reject) => {
     const img = new Image();
@@ -85,7 +87,8 @@ export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMateria
     g.filter = 'saturate(1.35) contrast(1.05)';
     let left = (tx1 - tx0 + 1) * (ty1 - ty0 + 1);
     let got = 0;
-    const finish = () => {
+    const finish = () => ready.push(apply);
+    const apply = () => {
       if (photo.cancelled || gen !== generation || got === 0) return;
       // 地形の頂点ごとの写真上の位置(2つめの UV)
       const uv = new Float32Array((N + 1) ** 2 * 2);
@@ -136,6 +139,7 @@ export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMateria
     },
     /** ライダーの位置 (x, y)。近づいたタイルに写真を貼り、遠ざかったタイルからは外す。 */
     update(x, y) {
+      ready.shift()?.();
       if (!cfg || (last && Math.hypot(x - last[0], y - last[1]) < CHECK_EVERY_M)) return;
       last = [x, y];
       const near = [];
@@ -149,6 +153,7 @@ export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMateria
     dispose() {
       generation++;
       queue.length = 0;
+      ready.length = 0;
       for (const t of tiles) revert(t);
     },
   };

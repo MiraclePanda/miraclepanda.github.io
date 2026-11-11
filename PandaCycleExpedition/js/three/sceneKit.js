@@ -432,9 +432,15 @@ export function pushInstanceYawPitch(pool, x, y, z, sx, sy, sz, yaw, pitch, colo
 }
 
 export function commitPool(pool) {
-  pool.mesh.count = pool.n;
-  pool.mesh.instanceMatrix.needsUpdate = true;
-  if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
+  const { mesh, n } = pool;
+  mesh.count = n;
+  // GPU へ送るのは使った分だけ(何もしないと max 個ぶん全部を毎回送り直す。木のプールは 2 万個ぶん)
+  for (const [attr, size] of [[mesh.instanceMatrix, 16], [mesh.instanceColor, 3]]) {
+    if (!attr) continue;
+    attr.clearUpdateRanges();
+    if (n > 0) attr.addUpdateRange(0, n * size);
+    attr.needsUpdate = n > 0;
+  }
   pool.n = 0;
 }
 
@@ -608,6 +614,11 @@ export function adaptQuality(s) {
   }
   if (median > VERY_SLOW_FRAME_MS && s.qualityIndex < lowest) {
     applyQuality(s, lowest);
+  } else if (median > SLOW_FRAME_MS && s.qualityIndex === 0 && s.renderer.getPixelRatio() > 1.01) {
+    // 高のまま(影・光のにじみは残して)まず画面の細かさだけ下げる。高精細の画面の端末では、
+    // 画素の数が重さの大半なので、これで足りることが多い
+    s.renderer.setPixelRatio(Math.max(1, s.renderer.getPixelRatio() * 0.75));
+    resizeScene(s);
   } else if (median > SLOW_FRAME_MS && s.qualityIndex < lowest) {
     applyQuality(s, s.qualityIndex + 1);
   }
