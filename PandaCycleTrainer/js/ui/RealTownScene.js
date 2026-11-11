@@ -11,7 +11,7 @@ import { createAtamiRoute, createTerrainSampler } from '../three/atamiRealLayout
 import { REAL_TOWNS, loadTownData, townGroundColor, analyzeGrid, planTrees, waterLevelAt, waterCells, townBuildingLook } from '../three/realTownLayout.js';
 import { buildTerrainMesh, buildRouteMeshes, buildStreetGeometry, buildBuildingGeometries } from '../three/atamiParts.js';
 import {
-  bakeSky, createAvatar, makePool, pushInstance,
+  bakeSky, createAvatar, makePool, pushInstance, uploadInstances,
   applyQuality, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
   reportReadyAfterDraw, renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
@@ -480,11 +480,17 @@ function sightClearZones(st) {
 const TREE_NEAR_MAX = 4000;
 // ライダーがこれだけ動いたら、近く/遠くの木を分け直す(m)
 const TREE_LOD_STEP_M = 25;
+// 分け直しは木が 1 万本を超える町では数 ms かかるので、1 フレームにこの時間ずつ裏の組へ写し、
+// 写し終えたら表の組と入れ替える(写している間は前の分け方のまま描く)
+const TREE_BUDGET_MS = 3;
+// これだけの本数を写すごとに時間を見る
+const TREE_CHUNK = 1024;
 
 /**
  * 木を置く。形は treeModels.js で、ライダーの近く(描画品質の treeNearR の内側)は葉の塊・枝の段まで
  * 作り込んだ形、遠くは軽い形で描く。木の位置・色は最初に一度だけ決めて控えておき(src)、
- * ライダーが動いたら近く/遠くのプールへ写し直すだけにする(updateTreeLod)。
+ * ライダーが動いたら近く/遠くのプールへ写し直すだけにする(updateTreeLod)。プールは表(描いている組)と
+ * 裏(写し直し中の組)の 2 組ある。
  */
 function placeTrees(st, trees, colors) {
   const barkMat = new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 1, vertexColors: true });
@@ -519,19 +525,24 @@ function placeTrees(st, trees, colors) {
   }
   for (const lod of Object.values(lods)) {
     lodSeal(lod);
-    st.world.add(lod.near.mesh, lod.far.mesh);
+    for (const set of lod.sets) st.world.add(set.near.mesh, set.far.mesh);
   }
   st.treeLods = lods;
   st.treeLodAt = null;
+  st.treeJob = null;
   // 最初はライダーの出発点(まだ置いていないので原点)の近くで分けておく
   updateTreeLod(st, 0, 0, true);
 }
 
-/** 近く(作り込んだ形)と遠く(軽い形)の 2 つのプールと、全部の木の控え。 */
+/** 近く(作り込んだ形)と遠く(軽い形)の 2 つのプールを表裏の 2 組と、全部の木の控え。 */
 function treeLod(nearGeo, farGeo, material, count) {
-  return {
+  const set = () => ({
     near: makePool(nearGeo, material, Math.min(count, TREE_NEAR_MAX) + 1, { cast: false }),
     far: makePool(farGeo, material, count + 1, { cast: false }),
+  });
+  return {
+    sets: [set(), set()],
+    shown: 0,
     pos: new Float32Array((count + 1) * 2),
     n: 0,
     src: null,
@@ -539,31 +550,59 @@ function treeLod(nearGeo, farGeo, material, count) {
   };
 }
 
-/** 木を1本控える(いったん遠くのプールへ置き、行列と色を lodSeal で写し取る)。 */
+/** 木を1本控える(いったん 1 組目の遠くのプールへ置き、行列と色を lodSeal で写し取る)。 */
 function lodPush(lod, x, y, z, sx, sy, sz, rotX, rotY, colorHex) {
-  if (lod.n >= lod.far.max) return;
-  pushInstance(lod.far, x, y, z, sx, sy, sz, rotX, rotY, colorHex);
+  const far = lod.sets[0].far;
+  if (lod.n >= far.max) return;
+  pushInstance(far, x, y, z, sx, sy, sz, rotX, rotY, colorHex);
   lod.pos[lod.n * 2] = x;
   lod.pos[lod.n * 2 + 1] = z;
   lod.n++;
 }
 
 function lodSeal(lod) {
-  lod.src = lod.far.mesh.instanceMatrix.array.slice(0, lod.n * 16);
-  lod.srcColor = lod.far.mesh.instanceColor.array.slice(0, lod.n * 3);
+  const far = lod.sets[0].far.mesh;
+  lod.src = far.instanceMatrix.array.slice(0, lod.n * 16);
+  lod.srcColor = far.instanceColor.array.slice(0, lod.n * 3);
 }
 
-/** ライダー(x, z)のまわり treeNearR の内側の木を作り込んだ形のプールへ、残りを軽い形のプールへ写す。 */
+/**
+ * ライダー(x, z)のまわり treeNearR の内側の木を作り込んだ形のプールへ、残りを軽い形のプールへ分け直す。
+ * 分け直しは裏の組へ TREE_BUDGET_MS ずつ進め、終わったら表と入れ替える。最初・描画品質を変えたとき
+ * (force、または treeNearR が変わったとき)は一度に終える。
+ */
 function updateTreeLod(st, x, z, force = false) {
   const lods = st.treeLods;
   if (!lods) return;
   const r = st.treeNearR ?? 0;
   const at = st.treeLodAt;
-  if (!force && at && at.r === r && (at.x - x) ** 2 + (at.z - z) ** 2 < TREE_LOD_STEP_M ** 2) return;
-  st.treeLodAt = { x, z, r };
+  const sync = force || !at || at.r !== r;
+  if (st.treeJob && (sync || st.treeJob.r !== r)) st.treeJob = null;
+  if (!st.treeJob) {
+    if (!sync && (at.x - x) ** 2 + (at.z - z) ** 2 < TREE_LOD_STEP_M ** 2) return;
+    st.treeJob = { x, z, r, steps: splitTrees(lods, x, z, r) };
+  }
+  const job = st.treeJob;
+  const until = sync ? Infinity : performance.now() + TREE_BUDGET_MS;
+  let done = false;
+  while (!(done = job.steps.next().done) && performance.now() < until);
+  if (!done) return;
+  for (const lod of Object.values(lods)) {
+    const back = lod.sets[1 - lod.shown];
+    for (const p of Object.values(lod.sets[lod.shown])) p.mesh.visible = false;
+    for (const p of Object.values(back)) p.mesh.visible = true;
+    lod.shown = 1 - lod.shown;
+  }
+  st.treeLodAt = { x: job.x, z: job.z, r: job.r };
+  st.treeJob = null;
+}
+
+/** 裏の組へ近く/遠くを分けて写す(ジェネレーター。TREE_CHUNK 本ごとに区切る)。 */
+function* splitTrees(lods, x, z, r) {
   const r2 = r * r;
   for (const lod of Object.values(lods)) {
-    const { near, far, pos, src, srcColor } = lod;
+    const { near, far } = lod.sets[1 - lod.shown];
+    const { pos, src, srcColor } = lod;
     const nm = near.mesh.instanceMatrix.array;
     const nc = near.mesh.instanceColor.array;
     const fm = far.mesh.instanceMatrix.array;
@@ -572,23 +611,15 @@ function updateTreeLod(st, x, z, force = false) {
     let b = 0;
     for (let i = 0; i < lod.n; i++) {
       const isNear = a < near.max && (pos[i * 2] - x) ** 2 + (pos[i * 2 + 1] - z) ** 2 < r2;
-      const m = src.subarray(i * 16, i * 16 + 16);
-      const c = srcColor.subarray(i * 3, i * 3 + 3);
-      if (isNear) {
-        nm.set(m, a * 16);
-        nc.set(c, a * 3);
-        a++;
-      } else {
-        fm.set(m, b * 16);
-        fc.set(c, b * 3);
-        b++;
-      }
+      const m = isNear ? nm : fm;
+      const c = isNear ? nc : fc;
+      const k = isNear ? a++ : b++;
+      for (let j = 0; j < 16; j++) m[k * 16 + j] = src[i * 16 + j];
+      for (let j = 0; j < 3; j++) c[k * 3 + j] = srcColor[i * 3 + j];
+      if (i % TREE_CHUNK === TREE_CHUNK - 1) yield;
     }
-    for (const [pool, n] of [[near, a], [far, b]]) {
-      pool.mesh.count = n;
-      pool.mesh.instanceMatrix.needsUpdate = true;
-      pool.mesh.instanceColor.needsUpdate = true;
-    }
+    uploadInstances(near.mesh, a);
+    uploadInstances(far.mesh, b);
   }
 }
 

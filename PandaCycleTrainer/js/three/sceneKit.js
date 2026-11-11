@@ -653,12 +653,23 @@ export function commitPool(pool) {
       out[i * 3 + 1] = Math.hypot(m[o + 4], m[o + 5], m[o + 6]);
       out[i * 3 + 2] = Math.hypot(m[o + 8], m[o + 9], m[o + 10]);
     }
-    pool.facadeScale.needsUpdate = true;
   }
-  pool.mesh.count = pool.n;
-  pool.mesh.instanceMatrix.needsUpdate = true;
-  if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
+  uploadInstances(pool.mesh, pool.n, pool.facadeScale);
   pool.n = 0;
+}
+
+/**
+ * InstancedMesh の先頭 n 個を描くことにし、その分だけ GPU へ送る(extra は同じ並びの
+ * InstancedBufferAttribute)。何もしないと max 個ぶん全部を毎回送り直す(木のプールは 1 万個を超える)。
+ */
+export function uploadInstances(mesh, n, ...extra) {
+  mesh.count = n;
+  for (const attr of [mesh.instanceMatrix, mesh.instanceColor, ...extra]) {
+    if (!attr) continue;
+    attr.clearUpdateRanges();
+    if (n > 0) attr.addUpdateRange(0, n * attr.itemSize);
+    attr.needsUpdate = n > 0;
+  }
 }
 
 // ---- 描画品質の自動調整 ----
@@ -828,6 +839,11 @@ export function adaptQuality(s) {
   }
   if (median > VERY_SLOW_FRAME_MS && s.qualityIndex < lowest) {
     applyQuality(s, lowest);
+  } else if (median > SLOW_FRAME_MS && s.qualityIndex === 0 && s.renderer.getPixelRatio() > 1.01) {
+    // 高のまま(影・光のにじみは残して)まず画面の細かさだけ下げる。高精細の画面の端末では、
+    // 画素の数が重さの大半なので、これで足りることが多い(それでも遅ければ次から中へ)
+    s.renderer.setPixelRatio(Math.max(1, s.renderer.getPixelRatio() * 0.75));
+    resizeScene(s);
   } else if (median > SLOW_FRAME_MS && s.qualityIndex < lowest) {
     applyQuality(s, s.qualityIndex + 1);
   }
