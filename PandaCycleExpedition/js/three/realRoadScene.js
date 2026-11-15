@@ -30,6 +30,7 @@ import { surfaceOf } from '../physics/surfaces.js';
 import { createRoadside } from './roadsideParts.js';
 import { createTreeChunks } from './treeChunks.js';
 import { parseOffParam } from './debugOff.js';
+import { selectTunnelCut } from './tunnelCut.js';
 import { broadleafLook, coniferColor, evergreenShare, photoTint, snowCover, vegetationColor, withSnow } from './seasonLook.js';
 import { VIEW_RIGS, normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg } from './cameraViews.js';
 
@@ -66,6 +67,7 @@ const TUN_HALF_W = 5.85;
 const TUN_TOP_M = 5.9;
 const TUN_EXT_MAX_M = 60;
 const TUN_CUT_R = 900;
+const TUB_MAX = 8; // シェーダーに渡すトンネルの数(トンネルごとの箱、tunnelCut.js)
 const FP_LOOK_M = 20;
 const TREE_REBUILD_M = 40;
 // 木の置き直しは数十 ms かかる(高・最高で木が数万本)ので、1フレームにこの時間ずつ分けて裏の組で作り、
@@ -213,25 +215,36 @@ function groundColor(h, ny, roadD, built, r, season) {
  * keep は「描く」なら true のノード、count は使う筒の数の uniform。
  */
 function tunnelMaskGpu(W, u) {
-  const { Fn, uniformArray, uniform, positionWorld, Loop, If, bool, clamp, dot, max, mix, length } = W.TSL;
+  const { Fn, uniformArray, uniform, positionWorld, Loop, If, Break, bool, int, clamp, dot, max, mix, length } = W.TSL;
   const tun = uniformArray(u.uTun.value, 'vec4');
   const tunY = uniformArray(u.uTunY.value, 'vec2');
-  const count = uniform(0, 'int');
+  const tubBox = uniformArray(u.uTubBox.value, 'vec4');
+  const tubR = uniformArray(u.uTubR.value, 'vec4');
+  const count = uniform(0, 'int'); // トンネルの数
   const keep = Fn(() => {
     const ok = bool(true).toVar();
     const p = positionWorld;
-    Loop(TUN_MAX, ({ i }) => {
-      const t = tun.element(i);
-      const a = t.xy;
-      const ab = t.zw.sub(a);
-      const f = clamp(dot(p.xz.sub(a), ab).div(max(dot(ab, ab), 1e-3)), 0, 1);
-      const yy = tunY.element(i);
-      const ry = mix(yy.x, yy.y, f);
-      If(i.lessThan(count)
-        .and(length(p.xz.sub(a).sub(ab.mul(f))).lessThan(TUN_HALF_W))
-        .and(p.y.greaterThan(ry.sub(1)))
-        .and(p.y.lessThan(ry.add(TUN_TOP_M))), () => {
-        ok.assign(false);
+    Loop({ start: int(0), end: count, type: 'int', condition: '<', name: 't' }, ({ t }) => {
+      const b = tubBox.element(t);
+      const r = tubR.element(t);
+      // トンネルの箱(平面の範囲と路面の高さの範囲)に入った画素だけ、そのトンネルの切れ端を調べる
+      If(p.x.greaterThanEqual(b.x).and(p.x.lessThanEqual(b.z)).and(p.z.greaterThanEqual(b.y)).and(p.z.lessThanEqual(b.w))
+        .and(p.y.greaterThanEqual(r.z)).and(p.y.lessThanEqual(r.w)), () => {
+        const s0 = int(r.x);
+        Loop({ start: s0, end: s0.add(int(r.y)), type: 'int', condition: '<', name: 'k' }, ({ k }) => {
+          const tk = tun.element(k);
+          const a = tk.xy;
+          const ab = tk.zw.sub(a);
+          const f = clamp(dot(p.xz.sub(a), ab).div(max(dot(ab, ab), 1e-3)), 0, 1);
+          const yy = tunY.element(k);
+          const ry = mix(yy.x, yy.y, f);
+          If(length(p.xz.sub(a).sub(ab.mul(f))).lessThan(TUN_HALF_W)
+            .and(p.y.greaterThan(ry.sub(1)))
+            .and(p.y.lessThan(ry.add(TUN_TOP_M))), () => {
+            ok.assign(false);
+            Break();
+          });
+        });
       });
     });
     return ok;
@@ -270,7 +283,7 @@ export function createRealRoadScene(canvas, segment, sc, {
 
   // ---- トンネル(坑口の外で道より高い地面が残る所まで筒を延ばす) ----
   const tubes = [];
-  const tunPieces = []; // [x1, y1, x2, y2, z1, z2](区間の平面座標と路面の高さ)
+  const tunPieces = []; // [x1, y1, x2, y2, z1, z2, トンネルの番号](区間の平面座標と路面の高さ)
   {
     const p = {};
     const blocked = (m) => {
@@ -292,7 +305,7 @@ export function createRealRoadScene(canvas, segment, sc, {
       for (let m = tb.fromM; m < tb.toM; m += TUN_PIECE_M) {
         routeAt(m, a);
         routeAt(Math.min(m + TUN_PIECE_M, tb.toM), b);
-        tunPieces.push([a.x, a.y, b.x, b.y, a.z, b.z]);
+        tunPieces.push([a.x, a.y, b.x, b.y, a.z, b.z, tubes.indexOf(tb)]);
       }
     }
   }
@@ -301,7 +314,10 @@ export function createRealRoadScene(canvas, segment, sc, {
   const tunUniforms = {
     uTun: { value: Array.from({ length: TUN_MAX }, () => new THREE.Vector4()) },
     uTunY: { value: Array.from({ length: TUN_MAX }, () => new THREE.Vector2()) },
-    uTunN: { value: 0 },
+    // トンネルごとの箱: uTubBox = (x の最小, z の最小, x の最大, z の最大)、uTubR = (切れ端の始まり, 本数, 高さの最小, 最大)
+    uTubBox: { value: Array.from({ length: TUB_MAX }, () => new THREE.Vector4()) },
+    uTubR: { value: Array.from({ length: TUB_MAX }, () => new THREE.Vector4()) },
+    uTubN: { value: 0 },
   };
   // WebGPU では同じ判定を TSL で書き、maskNode(false の所を描かない)にする
   const tunGpu = W ? tunnelMaskGpu(W, tunUniforms) : null;
@@ -321,15 +337,25 @@ export function createRealRoadScene(canvas, segment, sc, {
 varying vec3 vTunW;
 uniform vec4 uTun[${TUN_MAX}];
 uniform vec2 uTunY[${TUN_MAX}];
-uniform int uTunN;`)
+uniform vec4 uTubBox[${TUB_MAX}];
+uniform vec4 uTubR[${TUB_MAX}];
+uniform int uTubN;`)
         .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
-for (int i = 0; i < ${TUN_MAX}; i++) {
-  if (i >= uTunN) break;
-  vec2 a = uTun[i].xy;
-  vec2 ab = uTun[i].zw - a;
-  float f = clamp(dot(vTunW.xz - a, ab) / max(dot(ab, ab), 1e-3), 0.0, 1.0);
-  float ry = mix(uTunY[i].x, uTunY[i].y, f);
-  if (length(vTunW.xz - a - ab * f) < ${TUN_HALF_W.toFixed(2)} && vTunW.y > ry - 1.0 && vTunW.y < ry + ${TUN_TOP_M.toFixed(2)}) discard;
+// トンネルの箱(平面の範囲と路面の高さの範囲)に入った画素だけ、そのトンネルの切れ端を調べる(tunnelCut.js)
+for (int t = 0; t < ${TUB_MAX}; t++) {
+  if (t >= uTubN) break;
+  vec4 bx = uTubBox[t];
+  vec4 br = uTubR[t];
+  if (vTunW.x < bx.x || vTunW.x > bx.z || vTunW.z < bx.y || vTunW.z > bx.w || vTunW.y < br.z || vTunW.y > br.w) continue;
+  int s0 = int(br.x);
+  int s1 = s0 + int(br.y);
+  for (int i = s0; i < s1; i++) {
+    vec2 a = uTun[i].xy;
+    vec2 ab = uTun[i].zw - a;
+    float f = clamp(dot(vTunW.xz - a, ab) / max(dot(ab, ab), 1e-3), 0.0, 1.0);
+    float ry = mix(uTunY[i].x, uTunY[i].y, f);
+    if (length(vTunW.xz - a - ab * f) < ${TUN_HALF_W.toFixed(2)} && vTunW.y > ry - 1.0 && vTunW.y < ry + ${TUN_TOP_M.toFixed(2)}) discard;
+  }
 }`);
     };
     mat.customProgramCacheKey = () => 'tunnel-cut';
@@ -339,18 +365,20 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   function updateTunnelCut(ox, oy) {
     if (!tunPieces.length || (tunAt && Math.hypot(ox - tunAt[0], oy - tunAt[1]) < 20)) return;
     tunAt = [ox, oy];
-    const near = tunPieces
-      .map((pc) => [Math.hypot((pc[0] + pc[2]) / 2 - ox, (pc[1] + pc[3]) / 2 - oy), pc])
-      .filter(([d]) => d < TUN_CUT_R)
-      .sort((p1, p2) => p1[0] - p2[0])
-      .slice(0, TUN_MAX);
+    const cut = selectTunnelCut(tunPieces, ox, oy, {
+      radius: TUN_CUT_R, maxPieces: TUN_MAX, maxTubes: TUB_MAX, halfW: TUN_HALF_W, below: 1, top: TUN_TOP_M,
+    });
     // シェーダーは世界の座標(東 = +X、北 = -Z)
-    near.forEach(([, pc], i) => {
+    cut.pieces.forEach((pc, i) => {
       tunUniforms.uTun.value[i].set(pc[0], -pc[1], pc[2], -pc[3]);
       tunUniforms.uTunY.value[i].set(pc[4], pc[5]);
     });
-    tunUniforms.uTunN.value = near.length;
-    if (tunGpu) tunGpu.count.value = near.length;
+    cut.tubes.forEach((tb, i) => {
+      tunUniforms.uTubBox.value[i].set(tb.minX, -tb.maxY, tb.maxX, -tb.minY);
+      tunUniforms.uTubR.value[i].set(tb.start, tb.count, tb.minZ, tb.maxZ);
+    });
+    tunUniforms.uTubN.value = cut.tubes.length;
+    if (tunGpu) tunGpu.count.value = cut.tubes.length;
   }
 
   // ---- 地形(近景のタイル + 遠景の1枚) ----
