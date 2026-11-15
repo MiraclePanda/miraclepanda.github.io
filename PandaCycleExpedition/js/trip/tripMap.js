@@ -70,12 +70,22 @@ export function pathBetween(trip, fromTotalM, toTotalM) {
 
 /** 地図に描くもの一式: すべての区間(まだ走っていない道も)、電車・船、走った道、今いる場所、泊まった場所、町。 */
 export function buildTripMap(trip) {
-  const roads = Object.values(SEGMENTS).map((s) => s.map ?? []).filter((l) => l.length >= 2);
   const here = locateTotalM(trip, trip.position.totalM);
   const nights = trip.log
     .map((d) => ({ day: d.day, at: locateTotalM(trip, d.endTotalM, { arrived: true }) }))
     .filter((x) => x.at)
     .map((x) => ({ day: x.day, lonLat: lonLatAt(x.at.segment, x.at.m) }));
+  return {
+    ...baseMap(),
+    traveled: pathBetween(trip, 0, trip.position.totalM),
+    here: here ? lonLatAt(here.segment, here.m) : null,
+    nights,
+  };
+}
+
+/** どの旅でも同じ部分: すべての区間の道・電車/船・町。 */
+function baseMap() {
+  const roads = Object.values(SEGMENTS).map((s) => s.map ?? []).filter((l) => l.length >= 2);
   const towns = [];
   for (const s of Object.values(SEGMENTS)) {
     for (const [id, m] of [[s.from, 0], [s.to, s.lengthM]]) {
@@ -84,14 +94,22 @@ export function buildTripMap(trip) {
   }
   const at = (id) => towns.find((t) => t.id === id)?.lonLat;
   const transfers = TRANSFERS.filter((t) => at(t.a) && at(t.b)).map((t) => ({ kind: t.kind, line: [at(t.a), at(t.b)] }));
-  return {
-    roads,
-    transfers,
-    traveled: pathBetween(trip, 0, trip.position.totalM),
-    here: here ? lonLatAt(here.segment, here.m) : null,
-    nights,
-    towns,
-  };
+  return { roads, transfers, towns };
+}
+
+/**
+ * 旅人の手帳の地図: すべての旅で走った道を重ね、それぞれの旅の今いる場所に点を打つ(泊まった場所は描かない)。
+ * @param {object[]} trips
+ */
+export function buildJourneyMap(trips) {
+  const traveled = [];
+  const heres = [];
+  for (const t of trips) {
+    traveled.push(...pathBetween(t, 0, t.position.totalM));
+    const at = locateTotalM(t, t.position.totalM);
+    if (at) heres.push(lonLatAt(at.segment, at.m));
+  }
+  return { ...baseMap(), traveled, here: null, heres, nights: [] };
 }
 
 /**

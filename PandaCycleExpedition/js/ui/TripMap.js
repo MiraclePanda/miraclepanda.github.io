@@ -2,12 +2,13 @@
 // 地図タイルは使わない(外部の画像に頼らず、区間データの経緯度だけで描く)。
 
 import { h, useEffect, useRef } from './h.js';
-import { buildTripMap, pathBetween, fitProjection } from '../trip/tripMap.js';
+import { buildTripMap, buildJourneyMap, pathBetween, fitProjection } from '../trip/tripMap.js';
 
 /**
- * @param {{trip:object, highlightDay?:number|null}} props highlightDay の日に走った道を強調する
+ * @param {{trip?:object, trips?:object[], highlightDay?:number|null}} props highlightDay の日に走った道を強調する。
+ *   trips を渡すと、すべての旅で走った道と、それぞれの旅の今いる場所を描く(旅人の手帳)
  */
-export function TripMap({ trip, highlightDay = null }) {
+export function TripMap({ trip, trips = null, highlightDay = null }) {
   const ref = useRef(null);
   useEffect(() => {
     const cv = ref.current;
@@ -20,7 +21,7 @@ export function TripMap({ trip, highlightDay = null }) {
     const g = cv.getContext('2d');
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, hgt);
-    const m = buildTripMap(trip);
+    const m = trips ? buildJourneyMap(trips) : buildTripMap(trip);
     const proj = fitProjection(m.roads.flat(), w, hgt, 28);
     const line = (pts, color, width) => {
       g.strokeStyle = color;
@@ -41,7 +42,7 @@ export function TripMap({ trip, highlightDay = null }) {
     g.setLineDash([]);
     for (const r of m.roads) line(r, muted, 2);
     for (const r of m.traveled) line(r, accent, 4);
-    if (highlightDay !== null) {
+    if (trip && highlightDay !== null) {
       const d = trip.log.find((x) => x.day === highlightDay);
       if (d) for (const r of pathBetween(trip, d.endTotalM - d.distanceM, d.endTotalM)) line(r, warn, 6);
     }
@@ -57,6 +58,13 @@ export function TripMap({ trip, highlightDay = null }) {
       g.fillStyle = warn;
       g.fillRect(x - 3, y - 3, 6, 6);
     }
+    for (const p of m.heres ?? []) {
+      const [x, y] = proj(p);
+      g.fillStyle = accent;
+      g.strokeStyle = '#fff';
+      g.lineWidth = 1.5;
+      g.beginPath(); g.arc(x, y, 5, 0, Math.PI * 2); g.fill(); g.stroke();
+    }
     if (m.here) {
       const [x, y] = proj(m.here);
       g.fillStyle = accent;
@@ -64,6 +72,6 @@ export function TripMap({ trip, highlightDay = null }) {
       g.lineWidth = 2;
       g.beginPath(); g.arc(x, y, 7, 0, Math.PI * 2); g.fill(); g.stroke();
     }
-  }, [trip, highlightDay]);
+  }, [trip, trips, highlightDay]);
   return h('canvas', { ref, className: 'trip-map', 'aria-label': '旅の地図' });
 }

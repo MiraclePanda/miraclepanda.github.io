@@ -399,3 +399,13 @@ button.link:hover:not(:disabled) { box-shadow: none; color: var(--ink); }
 .pane > h3:first-child { margin-top: 0; font-family: var(--serif); }
 @media (max-width: 480px) { .course-panel { padding-left: 12px; } }
 .course-list .course-stat { white-space: normal; }
+
+/* ---- 旅人の手帳・写真帳・デモの印 ---- */
+.demo-tag { padding: 0 6px; border: 1px dashed var(--muted); border-radius: 999px; color: var(--muted); font-size: 0.75rem; }
+.here-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 0.92rem; }
+.course-panel label.check { display: flex; gap: 6px; align-items: baseline; font-size: 0.92rem; }
+.photo-strip { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0; }
+.photo-strip figure { margin: 0; flex: 0 0 auto; width: 160px; }
+.photo-strip img { display: block; width: 160px; height: 90px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.photo-strip figcaption { font-size: 0.75rem; color: var(--muted); }
+.journal details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }

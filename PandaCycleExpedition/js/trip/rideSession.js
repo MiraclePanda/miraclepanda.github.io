@@ -6,6 +6,10 @@
 // 画面の描画が遅い端末や、タブが裏に回って描画が止まっている間も、旅は実時間どおりに進む
 // (画面は描画のタイミングと、裏にいる間のタイマーの両方から呼ぶ)。
 //
+// 旅の時計: 走っている間は早回しの倍率で進む。休憩中は実際の時間どおり(倍率なし)にゆっくり進み、分かれ道で道を選んで
+// いる間と、トレーナーの接続が切れている間は止まる(急かされずに休んだり迷ったりできるように)。
+// 日の入りは景色と同じ季節・場所の日の入りで、その前に道連れか土地の人が声をかけ、暗くなってから野宿になる(body.js の DUSK)。
+//
 // 走行中の旅 this.trip は作業用の複製で、その場で書き換える(毎フレーム新しい旅を作らないため)。
 // 保存(TripStore#save)はその時点の中身を JSON で複製するので、保存済みのものは後から変わらない。
 // 体力・満腹度は表示と旅の判断だけ。トレーナーへの指示は trainerGradePercent() / ergTargetWatts()。
@@ -19,13 +23,15 @@ import {
 import { routesFrom, cameFromSegmentId } from './network.js';
 import { soaked } from './gear.js';
 import { visitSight, stampFood } from './stamps.js';
-import { stepBody, checkFailure, BODY } from './body.js';
+import { stepBody, checkFailure, BODY, DUSK, STAMINA_WARN, SUNSET_MINUTES } from './body.js';
 import {
   forecastDay, weatherAt, WEATHER_LABELS, planEncounters, applyEncounter, eatMeal, eatSnack, failDay, MEAL_MINUTES, SNACK,
+  helpWork, HELP_WORK,
 } from './dayEvents.js';
 import { planCompanion, CompanionTalk, talkCeilingW, recordCompanion, recordCompanionMet } from './companion.js';
 import { seasonOfDay, recentTaleIds } from './encounters.js';
-import { seasonDayOfYear } from './season.js';
+import { seasonDayOfYear, sunsetMinutesAt } from './season.js';
+import { fmtClock } from '../storage/tripState.js';
 
 /** 1回に進める最大の時間(秒)。これより長い経過は刻んで進める。 */
 export const MAX_STEP_SEC = 0.1;
@@ -65,6 +71,9 @@ export class RideSession {
     this.trip = structuredClone(startRide(trip, nowMs));
     const t = this.trip;
     const ride = t.ride;
+    // デモの走行も旅に残す(日誌とコースの印には「デモ」と出す)。デモで走った距離をその日と区間ごとに数える
+    if (demo) ride.demo = true;
+    this.leg = t.legs?.[t.legs.length - 1] ?? null;
     this.route = createSegmentRoute(segment, t.position.segmentM - ride.distanceM);
     this.physics = new PhysicsEngine({
       riderWeightKg: t.rider.weightKg, bikeWeightKg: t.bike.weightKg, packWeightKg: packWeightKg(t.bike.pack), route: this.route,
@@ -74,7 +83,9 @@ export class RideSession {
     this.rideSeconds = ride.rideSeconds;
     this.forecast = forecastDay(t.tripId, t.day);
     // 道ばたの出会いは、その日の季節(景色と同じ季節の設定)と最近の日誌に出た話も見て選ぶ
-    this.season = seasonOfDay(seasonDayOfYear(t.settings.season));
+    this.season = seasonOfDay(seasonDayOfYear(t.settings.season, new Date(nowMs)));
+    // 日の入り(景色の季節と同じ日付で、区間の出発点の経緯度から)
+    this.sunsetMin = sunsetMinutesAt(segment.map?.[0], t.settings.season, new Date(nowMs)) ?? SUNSET_MINUTES;
     this.encounters = planEncounters(segment, t.tripId, t.day, { season: this.season, recentIds: recentTaleIds(t) });
     this.encIdx = firstIndex(this.encounters, (e) => e.atM > t.position.segmentM);
     this.places = (segment.places ?? []).filter((p) => p.kind !== 'encounter');
@@ -82,13 +93,17 @@ export class RideSession {
     // 道連れ: しばらく並走して話してくれる(会話できる楽なペースの目安。表示だけ)
     const plan = planCompanion(segment, t, t.position.segmentM);
     this.talk = plan ? new CompanionTalk({ plan, trip: t }) : null;
-    this.running = true; // false = 休憩中(旅の時間は進み、体力が少し戻る)
+    this.running = true; // false = 休憩中(旅の時間は実際の時間どおりに進み、体力が少し戻る)
     this.ended = false; // その日を終えた・次の区間へ移った後は何も進めない
     this.junction = null; // 区間の終点で選べる道(選ぶまでは休憩と同じ)
     this.prompt = null; // 出している店・宿・見どころの案内
     this.trainerOffline = false; // トレーナーとの接続が切れている(つなぎ直すまで走り出せない)
     this.lastWeather = null;
     this.warnedHungry = t.rider.satiety < BODY.HUNGRY_BELOW;
+    this.warnedEmpty = (t.rider.zeroSatietyMinutes ?? 0) > 0;
+    // 日暮れ・体力の声かけ(続きから走るときに、もう過ぎた分はくり返さない)
+    this.duskWarned = new Set(DUSK.WARN_BEFORE_MIN.filter((w) => t.clockMinutes >= this.sunsetMin - w));
+    this.staminaWarned = new Set(STAMINA_WARN.filter((w) => t.rider.stamina < w));
     this.inTunnel = null;
     this.lastSurface = null;
     this.powerW = 0; // 直近のパワー(補正後。デモは demoPower)
@@ -169,9 +184,18 @@ export class RideSession {
     this._emit({ type: 'toast', text });
   }
 
+  /** 旅の時計が止まっているか(分かれ道で選んでいる間・トレーナーの接続が切れている間)。 */
+  get clockStopped() {
+    return !!this.junction || (this.trainerOffline && !this.demo);
+  }
+
   _step(dt, nowMs) {
     const t = this.trip;
-    const tripMinutes = (dt * t.settings.timeScale) / 60;
+    if (this.clockStopped) {
+      this.powerW = 0;
+      return;
+    }
+    const tripMinutes = (dt * (this.running ? t.settings.timeScale : 1)) / 60;
     const w = weatherAt(this.forecast, t.clockMinutes);
     this.weather = w;
     const physics = this.physics;
@@ -183,14 +207,20 @@ export class RideSession {
       if (this.demo && this.talk?.phase === 'together') power = Math.min(power, talkCeilingW(t.rider.stamina, t.rider.ftpW));
       physics.setCurrentPower(power);
       physics.setConditions(w);
+      const before = physics.distanceM;
       const snap = physics.step(dt);
       this.rideSeconds += dt;
+      if (this.demo) {
+        const moved = Math.max(0, snap.distanceM - before);
+        t.ride.demoM = (t.ride.demoM ?? 0) + moved;
+        if (this.leg) this.leg.demoM = (this.leg.demoM ?? 0) + moved;
+      }
       applyRideProgress(t, { distanceM: snap.distanceM, rideSeconds: this.rideSeconds, elevationGainM: snap.elevationGainM }, nowMs);
       // 走行記録(TCX 用、5 走行秒ごと)。デモのパワーは作り物なので残さない
       if (!this.demo) pushRideSample(t, { powerW: power, cadenceRpm: this.cadenceRpm(nowMs) });
       t.rider = stepBody(t.rider, { tripMinutes, powerW: power, ftpW: t.rider.ftpW, soaked: soaked(t, w.kind) });
     } else {
-      // 休憩: 旅の時間は進み、体力が少し戻る
+      // 休憩: 旅の時間は実際の時間どおりに進み、体力が少し戻る
       applyTripTime(t, tripMinutes, nowMs);
       t.rider = stepBody(t.rider, { tripMinutes, powerW: 0, ftpW: t.rider.ftpW, resting: true });
     }
@@ -254,11 +284,57 @@ export class RideSession {
       this.warnedHungry = true;
       this._toast('お腹がすいてきた。補給食か、店で何か食べよう。');
     }
+    if (!this.warnedEmpty && (t.rider.zeroSatietyMinutes ?? 0) > 0) {
+      this.warnedEmpty = true;
+      this._toast(`お腹が空っぽで力が入らない。何か食べないと、${BODY.KNOCK_AFTER_MIN} 分ほどで動けなくなる(ハンガーノック)。`);
+    }
+    this._checkDusk(segM);
+    for (const w of STAMINA_WARN) {
+      if (this.staminaWarned.has(w) || t.rider.stamina >= w) continue;
+      this.staminaWarned.add(w);
+      this._toast(w === STAMINA_WARN[0]
+        ? this._voice('脚が重くなってきましたね。ペースを落とすか、補給食を食べて、今日の宿も考えておきましょう。', '脚が重くなってきた。ペースを落とすか、補給食を食べよう。今日の宿も考えておこう。')
+        : this._voice('かなり疲れていますよ。無理せず、今日はこのあたりで宿を探しませんか。', `体力が残りわずか。0 になると動けなくなって救護を呼ぶことになる。${this._lodgingHint(segM)}「今日はここまで」で近くの宿を探せる。`));
+    }
+  }
+
+  /** 日の入りの前に「そろそろ宿を」と声をかける(道連れと並走中なら道連れが、いなければ土地の人が)。 */
+  _checkDusk(segM) {
+    const t = this.trip;
+    const left = this.sunsetMin - t.clockMinutes;
+    // 食事・手伝いで一度にいくつも過ぎたときは、いちばん新しい知らせだけ出す
+    const due = DUSK.WARN_BEFORE_MIN.filter((w) => !this.duskWarned.has(w) && left <= w);
+    for (const w of due) this.duskWarned.add(w);
+    const w = due.length ? Math.min(...due) : null;
+    if (w !== null) {
+      const hint = this._lodgingHint(segM);
+      if (w === 0) {
+        this._toast(`日が沈んだ(${fmtClock(this.sunsetMin)})。あと ${DUSK.DARK_AFTER_MIN} 分ほどで暗くなる。${hint}暗くなるまでに宿を決めないと野宿になる。`);
+      } else {
+        this._toast(this._voice(
+          `そろそろ日が傾いてきましたね。今日の日の入りは ${fmtClock(this.sunsetMin)} ごろ。宿を考えておきましょう。${hint}`,
+          `通りがかりの人「日の入りは ${fmtClock(this.sunsetMin)} ごろだよ。暗くなる前に宿を決めときな」${hint}`));
+      }
+    }
+  }
+
+  /** 道連れと並走中なら道連れのことば、いなければ ownText。 */
+  _voice(companionText, ownText) {
+    const c = this.talk?.phase === 'together' ? this.talk.companion : null;
+    return c ? `${c.name}「${companionText}」` : ownText;
+  }
+
+  /** この先の宿の案内(例: 「この先 2.3 km に下田の宿。」)。区間の中に無ければ終点の町。 */
+  _lodgingHint(segM) {
+    const lodge = nextPlace(this.segment, segM + 1, ['lodging']);
+    if (lodge) return `この先 ${((lodge.atM - segM) / 1000).toFixed(1)} km に${lodge.name}。`;
+    const remain = this.route.remainingM(this.physics.distanceM);
+    return remain > 0 ? `この区間の終点まで ${(remain / 1000).toFixed(1)} km。` : '';
   }
 
   _checkEnd() {
     const t = this.trip;
-    const failure = checkFailure(t.rider, t.clockMinutes);
+    const failure = checkFailure(t.rider, t.clockMinutes, this.sunsetMin);
     if (failure) {
       this.ended = true;
       this.running = false;
@@ -311,6 +387,18 @@ export class RideSession {
     this._toast(`${place.name}に立ち寄って写真を撮った(旅の時間 ${minutes} 分)${r.added ? '。スタンプ帳に記録' : ''}`);
     this._setPrompt(null);
     this._emit({ type: 'save', kind: 'event' });
+  }
+
+  /** 店・宿を手伝ってお金をもらう(dayEvents.js の helpWork)。手伝えたら true。 */
+  help(place) {
+    const r = helpWork(this.trip, place);
+    if (!r) return false;
+    this.trip = r.trip;
+    this.physics.speedMps = 0;
+    this._toast(`${r.text}(${r.yen.toLocaleString()} 円もらった、旅の時間 ${HELP_WORK.minutes} 分)`);
+    this._setPrompt(null);
+    this._emit({ type: 'save', kind: 'event' });
+    return true;
   }
 
   /** 荷物の補給食を食べる。食べられたら true。 */
@@ -379,6 +467,7 @@ export class RideSession {
       todayKm: this.physics.distanceM / 1000,
       remainKm: this.route.remainingM(this.physics.distanceM) / 1000,
       clock: t.clockMinutes,
+      sunset: this.sunsetMin,
       weatherKind: this.weather.kind,
       weather: WEATHER_LABELS[this.weather.kind],
       stamina: t.rider.stamina,

@@ -9,7 +9,7 @@ import { RideSession } from '../trip/rideSession.js';
 import { segmentSummary, nodeName, loadSegment } from '../trip/network.js';
 import { SIGHT_VISIT_MINUTES } from '../trip/stamps.js';
 import { sustainableWatts, satietyLabel } from '../trip/body.js';
-import { canAfford, SNACK } from '../trip/dayEvents.js';
+import { canAfford, canHelp, SNACK, HELP_WORK } from '../trip/dayEvents.js';
 import { createSeaRoadScene } from '../three/seaRoadScene.js';
 import { createRealRoadScene } from '../three/realRoadScene.js';
 import { sceneCanvas, sharedWebGPURenderer } from '../three/gpuBackend.js';
@@ -23,6 +23,7 @@ import {
   loadCameraView, saveCameraView, loadSoundOn, saveSoundOn, loadAutoQuality, saveAutoQuality,
 } from '../storage/prefs.js';
 import { AutoSaver } from '../storage/autosave.js';
+import { sharedPhotoStore, captureThumbnail } from '../storage/photoStore.js';
 import { fmtClock } from '../storage/tripState.js';
 import { soundMix } from '../utils/soundMix.js';
 import { createSoundscape } from '../utils/soundscape.js';
@@ -185,11 +186,27 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       onEnd(t, reason);
     }
 
+    // 見どころで撮る写真: 次に景色を描いた直後に canvas から撮る(描いたあとに消える canvas のため)
+    let photoPending = null;
+    function takePhoto() {
+      const p = photoPending;
+      photoPending = null;
+      const dataUrl = captureThumbnail(canvasRef.current);
+      if (!dataUrl) return;
+      sharedPhotoStore().put({ tripId: session.trip.tripId, placeId: p.id, name: p.name, day: session.trip.day, dataUrl })
+        .then(() => toast(`写真帳に「${p.name}」の写真を残した。`)).catch(() => {});
+    }
+
     // 走行中の操作(ボタン)から使う
     ctxRef.current = {
       finish,
       eat(place, item) { session.eat(place, item); handle(session.drainEvents()); },
-      visit(place) { session.visit(place, SIGHT_VISIT_MINUTES); handle(session.drainEvents()); },
+      visit(place) {
+        session.visit(place, SIGHT_VISIT_MINUTES);
+        if (scene) photoPending = place;
+        handle(session.drainEvents());
+      },
+      help(place) { session.help(place); handle(session.drainEvents()); },
       snack() { session.snack(); handle(session.drainEvents()); },
       dismissPrompt() { session.dismissPrompt(); handle(session.drainEvents()); },
       /** 分かれ道で次の区間を選ぶ: 走行の記録はそのまま、新しい区間で走行画面を作り直す。 */
@@ -254,6 +271,7 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
         segmentM: v.segM, speedKmh: v.speedKmh, gradePercent: v.grade,
         weatherKind: v.weatherKind, clockMinutes: v.clock, cadenceRpm: v.cadence,
       });
+      if (photoPending && scene) takePhoto();
       if (sound && now - lastSound > 100) {
         lastSound = now;
         const speedKmh = session.running ? v.speedKmh : 0;
@@ -352,11 +370,11 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     h('div', { className: 'ride-stage', ref: stageRef },
     h('div', { className: 'toasts' },
       offline && !demo && h('div', { className: 'toast warn' },
-        'トレーナーとの接続が切れました。止まって休憩しています(ここまでの旅は保存されています)。 ',
+        'トレーナーとの接続が切れました。止まって休憩しています(旅の時計も止まっています。ここまでの旅は保存されています)。 ',
         h('button', { onClick: () => ctx?.reconnect(), disabled: reconnecting }, reconnecting ? '接続中...' : 'つなぎ直す')),
       warning && h('div', { className: 'toast' }, warning),
       saveError && h('div', { className: 'toast warn' }, `旅を保存できていません(${saveError})。ホームの「設定と記録」から書き出しておいてください。`),
-      paused && !warning && !offline && !junction && h('div', { className: 'toast' }, '休憩中(旅の時間は進み、体力が少しずつ戻ります)'),
+      paused && !warning && !offline && !junction && h('div', { className: 'toast' }, '休憩中(旅の時間は早回しなしで実際の時間どおりに進み、体力が少しずつ戻ります)'),
       scenery === undefined && h('div', { className: 'toast' }, '景色を読み込み中…'),
       toasts.map((x) => h('div', { key: x.id, className: 'toast' }, x.text))),
     showMap && h(RideMap, { segment, scenery: scenery ?? null, apiRef: mapApiRef }),
@@ -373,6 +391,7 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       place: prompt, trip: t,
       onEat: (item) => ctx.eat(prompt, item),
       onVisit: () => ctx.visit(prompt),
+      onHelp: () => ctx.help(prompt),
       onStay: () => { ctx.dismissPrompt(); ctx.finish('stop'); },
       onClose: () => ctx.dismissPrompt(),
     })),
@@ -428,7 +447,7 @@ function Hud({ hud, ftpW, demo, day, title, onToggle }) {
     cell('勾配', `${hud.grade.toFixed(1)}%`, h('span', null, ` 体感 ${hud.trainerGrade.toFixed(1)}%`), true),
     cell('路面', hud.surface),
     cell('今日', `${hud.todayKm.toFixed(2)} km`, h('span', null, ` 残り ${hud.remainKm.toFixed(1)} km`), 'wide'),
-    cell('旅の時刻', fmtClock(hud.clock), h('span', null, ` ${hud.weather}`)),
+    cell('旅の時刻', fmtClock(hud.clock), h('span', null, ` ${hud.weather}・日の入り ${fmtClock(hud.sunset)}`)),
     cell('体力', `${Math.round(hud.stamina)}`, meter(hud.stamina), true),
     cell('満腹度', `${Math.round(hud.satiety)}`, h('div', null, meter(hud.satiety), h('span', null, satietyLabel(hud.satiety)))),
     cell('所持金', `${hud.yen.toLocaleString()} 円`, h('span', null, ` 食料 ${hud.food.toFixed(2)}kg`)),
@@ -456,13 +475,14 @@ export function routeLabel(r) {
 function JunctionPrompt({ here, routes, onChoose, onStay }) {
   return h('div', { className: 'prompt' },
     h('b', null, `${here}に着いた。分かれ道`),
-    h('div', { className: 'muted' }, 'この先どちらへ行く?(選ぶまでは休憩しています)'),
+    h('div', { className: 'muted' }, 'この先どちらへ行く?(選ぶまでは休憩していて、旅の時計も止まっています)'),
     routes.map((r) => h('div', { key: r.segmentId, className: 'row' },
       h('button', { className: r.back ? '' : 'primary', onClick: () => onChoose(r.segmentId) }, routeLabel(r)))),
     h('div', { className: 'row' }, h('button', { onClick: onStay }, `${here}で今日の宿を探す`)));
 }
 
-function PlacePrompt({ place, trip, onEat, onVisit, onStay, onClose }) {
+function PlacePrompt({ place, trip, onEat, onVisit, onHelp, onStay, onClose }) {
+  const work = HELP_WORK.kinds[place.kind];
   const stamped = (trip.stamps ?? []).some((s) => s.id === place.id);
   return h('div', { className: 'prompt' },
     h('b', null, place.name), place.text && h('div', { className: 'muted' }, place.text),
@@ -474,5 +494,7 @@ function PlacePrompt({ place, trip, onEat, onVisit, onStay, onClose }) {
       place.kind === 'lodging' && h('button', { className: 'primary', onClick: onStay }, 'ここで今日の宿を探す'),
       place.kind === 'sight' && h('button', { className: 'primary', onClick: onVisit },
         `立ち寄る(写真を撮る・${SIGHT_VISIT_MINUTES} 分)${stamped ? '・スタンプ済み' : ''}`),
+      work && canHelp(trip, place) && h('button', { onClick: onHelp, title: `体力 -${HELP_WORK.stamina}・満腹度 -${HELP_WORK.satiety}` },
+        `手伝う(${HELP_WORK.minutes} 分・お礼 ${work.yen.toLocaleString()} 円)`),
       h('button', { onClick: onClose }, '通り過ぎる')));
 }
