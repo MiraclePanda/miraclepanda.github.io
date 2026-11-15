@@ -4,6 +4,7 @@
 
 import THREE from './three.js';
 import { threeWebGPU } from './gpuBackend.js';
+import { initialQualityState, nextQualityState } from './qualityPolicy.js';
 
 // 左側通行: ライダーは左車線の中央付近を走る。
 export const RIDER_X_M = -2.0;
@@ -101,62 +102,104 @@ const SKY_RADIUS_M = 700;
  * @param {{zenith:string, horizon:string, ground:string, sunColor:string, sunDir:THREE.Vector3,
  *   cloudCover?:number, cloud?:string, sunGlow?:number, night?:number, underwater?:boolean}} colors
  */
-export function bakeSky(renderer, { zenith, horizon, ground, sunColor, sunDir, cloudCover = 0, cloud = '#ffffff', sunGlow = 1, night = 0, underwater = false }) {
+export function bakeSky(renderer, colors) {
+  const steps = bakeSkySteps(renderer, colors);
+  let r;
+  while (!(r = steps.next()).done);
+  return r.value;
+}
+
+/**
+ * bakeSky を数フレームに分けて進めるジェネレーター(走行中に空を焼き直すとき、1フレームに詰めて止まらないように)。
+ * yield ごとに次のフレームへ進め、最後に bakeSky と同じ物を返す。途中でやめる(return())と作りかけを捨てる。
+ * withEnv なら、環境マップ(PMREM)も別のフレームで作っておく。
+ */
+export function* bakeSkySteps(renderer, {
+  zenith, horizon, ground, sunColor, sunDir, cloudCover = 0, cloud = '#ffffff', sunGlow = 1, night = 0, underwater = false,
+}, { withEnv = false } = {}) {
   // WebGPU で描くときも、空のシェーダー(GLSL)はそのまま使う: 画面に出さない小さな WebGL で焼き、
   // 6 面の画素を読み出して WebGPU 用のキューブマップにする(焼くのは 30 分ごとなので読み出しの手間は小さい)
   const gpu = renderer.isWebGPURenderer;
   const bakeRenderer = gpu ? skyBakeRenderer() : renderer;
   const backgroundTarget = new THREE.WebGLCubeRenderTarget(256, { type: gpu ? THREE.FloatType : THREE.HalfFloatType });
-  const cubeCamera = new THREE.CubeCamera(0.1, SKY_RADIUS_M * 2, backgroundTarget);
-  const weather = cloudCover !== 0 || sunGlow !== 1 || night !== 0;
-  const uniforms = {
-    uZenith: { value: new THREE.Color(zenith) },
-    uHorizon: { value: new THREE.Color(horizon) },
-    uGround: { value: new THREE.Color(ground) },
-    uSunColor: { value: new THREE.Color(sunColor) },
-    uSunDir: { value: sunDir.clone() },
-  };
-  if (weather) {
-    uniforms.uSunColor.value.multiplyScalar(sunGlow);
-    uniforms.uCloud = { value: new THREE.Color(cloud) };
-    uniforms.uCover = { value: cloudCover };
-    uniforms.uNight = { value: night };
-  }
-  const material = new THREE.ShaderMaterial({
-    vertexShader: SKY_VERTEX,
-    fragmentShader: SKY_FRAGMENT,
-    defines: { ...(weather ? { SKY_WEATHER: '' } : {}), ...(underwater ? { SKY_UNDERWATER: '' } : {}) },
-    uniforms,
-    side: THREE.BackSide,
-    depthWrite: false,
-    fog: false,
-  });
-  const skyMesh = new THREE.Mesh(new THREE.SphereGeometry(SKY_RADIUS_M, 32, 16), material);
-  skyMesh.frustumCulled = false;
-  const skyScene = new THREE.Scene();
-  skyScene.add(skyMesh);
-  cubeCamera.update(bakeRenderer, skyScene);
-  skyMesh.geometry.dispose();
-  material.dispose();
-  if (gpu) return gpuSky(renderer, bakeRenderer, backgroundTarget);
-
-  let envTarget = null;
-  return {
-    background: backgroundTarget.texture,
-    /** 焼き込み済みのキューブマップ背景からPMREM環境マップを作る(初回呼び出し時のみ)。 */
-    getEnvironment() {
-      if (!envTarget) {
-        const pmrem = new THREE.PMREMGenerator(renderer);
-        envTarget = pmrem.fromCubemap(backgroundTarget.texture);
-        pmrem.dispose();
+  let sky = null;
+  let finished = false;
+  try {
+    const cubeCamera = new THREE.CubeCamera(0.1, SKY_RADIUS_M * 2, backgroundTarget);
+    const weather = cloudCover !== 0 || sunGlow !== 1 || night !== 0;
+    const uniforms = {
+      uZenith: { value: new THREE.Color(zenith) },
+      uHorizon: { value: new THREE.Color(horizon) },
+      uGround: { value: new THREE.Color(ground) },
+      uSunColor: { value: new THREE.Color(sunColor) },
+      uSunDir: { value: sunDir.clone() },
+    };
+    if (weather) {
+      uniforms.uSunColor.value.multiplyScalar(sunGlow);
+      uniforms.uCloud = { value: new THREE.Color(cloud) };
+      uniforms.uCover = { value: cloudCover };
+      uniforms.uNight = { value: night };
+    }
+    const material = new THREE.ShaderMaterial({
+      vertexShader: SKY_VERTEX,
+      fragmentShader: SKY_FRAGMENT,
+      defines: { ...(weather ? { SKY_WEATHER: '' } : {}), ...(underwater ? { SKY_UNDERWATER: '' } : {}) },
+      uniforms,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+    });
+    const skyMesh = new THREE.Mesh(new THREE.SphereGeometry(SKY_RADIUS_M, 32, 16), material);
+    skyMesh.frustumCulled = false;
+    const skyScene = new THREE.Scene();
+    skyScene.add(skyMesh);
+    cubeCamera.update(bakeRenderer, skyScene);
+    skyMesh.geometry.dispose();
+    material.dispose();
+    if (gpu) {
+      // 6 面の読み出しは GPU の描き終わりを待つので、1フレームに1面ずつ
+      const faces = [];
+      const size = backgroundTarget.width;
+      for (let f = 0; f < 6; f++) {
+        yield;
+        const data = new Float32Array(size * size * 4);
+        bakeRenderer.readRenderTargetPixels(backgroundTarget, 0, 0, size, size, data, f);
+        faces.push(new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType));
       }
-      return envTarget.texture;
-    },
-    dispose() {
       backgroundTarget.dispose();
-      envTarget?.dispose();
-    },
-  };
+      sky = gpuSky(renderer, faces);
+    } else {
+      let envTarget = null;
+      sky = {
+        background: backgroundTarget.texture,
+        /** 焼き込み済みのキューブマップ背景からPMREM環境マップを作る(初回呼び出し時のみ)。 */
+        getEnvironment() {
+          if (!envTarget) {
+            const pmrem = new THREE.PMREMGenerator(renderer);
+            envTarget = pmrem.fromCubemap(backgroundTarget.texture);
+            pmrem.dispose();
+          }
+          return envTarget.texture;
+        },
+        dispose() {
+          backgroundTarget.dispose();
+          envTarget?.dispose();
+        },
+      };
+    }
+    if (withEnv) {
+      yield;
+      sky.getEnvironment();
+    }
+    finished = true;
+    return sky;
+  } finally {
+    // 途中でやめたとき(焼き直しの取り消し・景色の破棄)は作りかけを捨てる
+    if (!finished) {
+      if (sky) sky.dispose();
+      else backgroundTarget.dispose();
+    }
+  }
 }
 
 let bakeGl = null;
@@ -166,17 +209,8 @@ function skyBakeRenderer() {
   return bakeGl;
 }
 
-/** WebGL で焼いた空のキューブマップを読み出し、WebGPU 用のキューブマップ(と環境マップ)にする。 */
-function gpuSky(renderer, gl, target) {
-  const size = target.width;
-  const faces = [];
-  for (let f = 0; f < 6; f++) {
-    const data = new Float32Array(size * size * 4);
-    gl.readRenderTargetPixels(target, 0, 0, size, size, data, f);
-    const face = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
-    faces.push(face);
-  }
-  target.dispose();
+/** WebGL で焼いて読み出した空の 6 面を、WebGPU 用のキューブマップ(と環境マップ)にする。 */
+function gpuSky(renderer, faces) {
   const cube = new THREE.CubeTexture(faces);
   cube.format = THREE.RGBAFormat;
   cube.type = THREE.FloatType;
@@ -448,7 +482,7 @@ export function commitPool(pool) {
 
 // 描画品質の段階。トレーナー横に置くタブレット等の非力な端末でフレームレートが
 // 落ちると物理演算のdt上限(PhysicsEngine: 0.25s)を超えて走行が実時間より遅れて
-// しまうため、実測のフレーム間隔が遅ければ自動で1段ずつ品質を下げる(上げ直しはしない)。
+// しまうため、実測のフレーム間隔が遅ければ自動で1段ずつ品質を下げ、速さに余裕が戻れば上げ直す(qualityPolicy.js)。
 /**
  * 画面の明暗と色の出し方(全段階共通)。トーンマッピングで日なたの白飛びを抑えて写真らしい階調にし、
  * そのぶん暗く見えないよう露出を少し上げる。
@@ -474,8 +508,8 @@ export const QUALITY_TIERS = [
 // 自動調整では選ばれず、ユーザーが選んだときだけ使う。
 export const QUALITY_MODES = ['auto', 'ultra', 'high', 'medium', 'low'];
 const QUALITY_SAMPLE_FRAMES = 10;
-const SLOW_FRAME_MS = 45; // 約22fps未満が続いたら品質を下げる
-const VERY_SLOW_FRAME_MS = 180; // 桁違いに遅い(ソフトウェアGL等)なら最低品質へ直行する
+// 遅い・速いの判定のしきい値と上げ下げの決め方は qualityPolicy.js
+const SLOW_FRAME_MS = 45; // 最高(実験)を高へ下げる目安(qualityPolicy.js の SLOW_FRAME_MS と同じ)
 
 /**
  * シーン状態sに品質段階を適用する。sは { renderer, scene, sunLight, sky, canvas, camera } を持つこと。
@@ -585,7 +619,32 @@ export function setQualityMode(s, mode) {
   s.frameIntervals = [];
   s.lastDrawAt = null;
   s.canvas.dataset.qualityMode = index < 0 ? 'auto' : mode;
-  applyQuality(s, index < 0 ? initialQualityIndex(s.renderer) : index);
+  if (index >= 0) {
+    applyQuality(s, index);
+    return;
+  }
+  // 自動: この端末で前に落ち着いた段階(s.autoStart)から始める。ソフトウェアで描く端末は最低から
+  const lowest = QUALITY_TIERS.length - 1;
+  const start = s.autoStart;
+  const i0 = Math.min(lowest, Math.max(initialQualityIndex(s.renderer), Number.isInteger(start?.index) ? start.index : 0));
+  const pr = Math.min(maxRatioOf(i0), Number.isFinite(start?.pixelRatio) && start.pixelRatio > 0 ? start.pixelRatio : Infinity);
+  s.qualityState = initialQualityState(i0, pr);
+  applyQuality(s, i0);
+  applyAutoState(s, s.qualityState);
+}
+
+/** 段階 index の画素の倍率の上限(端末の倍率で頭打ち)。 */
+function maxRatioOf(index) {
+  return Math.min(globalThis.devicePixelRatio || 1, QUALITY_TIERS[index].maxPixelRatio);
+}
+
+/** 自動調整の状態(段階・画素の倍率)をシーンに当てる。 */
+function applyAutoState(s, st) {
+  if (st.index !== s.qualityIndex) applyQuality(s, st.index);
+  if (Math.abs(s.renderer.getPixelRatio() - st.pixelRatio) > 1e-3) {
+    s.renderer.setPixelRatio(st.pixelRatio);
+    resizeScene(s);
+  }
 }
 
 export function adaptQuality(s) {
@@ -603,25 +662,23 @@ export function adaptQuality(s) {
   const sorted = s.frameIntervals.slice().sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
   s.frameIntervals.length = 0;
-  const lowest = QUALITY_TIERS.length - 1;
   if (s.ultra) {
     if (median > SLOW_FRAME_MS) {
       s.ultra = false;
       s.autoQuality = true;
       applyQuality(s, 0);
+      s.qualityState = initialQualityState(0, s.renderer.getPixelRatio());
     }
     return;
   }
-  if (median > VERY_SLOW_FRAME_MS && s.qualityIndex < lowest) {
-    applyQuality(s, lowest);
-  } else if (median > SLOW_FRAME_MS && s.qualityIndex === 0 && s.renderer.getPixelRatio() > 1.01) {
-    // 高のまま(影・光のにじみは残して)まず画面の細かさだけ下げる。高精細の画面の端末では、
-    // 画素の数が重さの大半なので、これで足りることが多い
-    s.renderer.setPixelRatio(Math.max(1, s.renderer.getPixelRatio() * 0.75));
-    resizeScene(s);
-  } else if (median > SLOW_FRAME_MS && s.qualityIndex < lowest) {
-    applyQuality(s, s.qualityIndex + 1);
-  }
+  s.qualityState ??= initialQualityState(s.qualityIndex, s.renderer.getPixelRatio());
+  const prev = s.qualityState;
+  const next = nextQualityState(prev, median, { lowest: QUALITY_TIERS.length - 1, maxRatio: maxRatioOf });
+  s.qualityState = next;
+  if (next.index === prev.index && next.pixelRatio === prev.pixelRatio) return;
+  applyAutoState(s, next);
+  // 落ち着いた段階をこの端末で覚えて、次の区間・次の走行はそこから始める
+  s.onAutoSettle?.({ index: next.index, pixelRatio: next.pixelRatio });
 }
 
 // ---- 走行開始の準備 ----
@@ -650,6 +707,42 @@ export function reportReadyAfterDraw(s) {
   });
 }
 
+// ---- 描画の重さの計測(走行画面の ?perf=1) ----
+
+/** 1フレームの描画の始め: フレームの間隔を測り、描画命令・三角形の数え直しを始める。 */
+export function frameStatsBegin(s) {
+  const now = performance.now();
+  if (s.statLast != null) {
+    const dt = now - s.statLast;
+    if (dt < 1000) s.statFrameMs = s.statFrameMs == null ? dt : s.statFrameMs * 0.9 + dt * 0.1;
+  }
+  s.statLast = now;
+  s.statT0 = now;
+  // 1フレームに何回も render する(遠景・景色・仕上げ)ので、自動では数え直さず、ここで1フレームぶんに区切る
+  s.renderer.info.autoReset = false;
+  s.renderer.info.reset();
+}
+
+/** 1フレームの描画の終わり(描画の処理にかかった CPU の時間を測る。GPU の時間は測れない)。 */
+export function frameStatsEnd(s) {
+  const dt = performance.now() - s.statT0;
+  s.statDrawMs = s.statDrawMs == null ? dt : s.statDrawMs * 0.9 + dt * 0.1;
+}
+
+/** 直近の描画の重さ(走行画面の計測の表示に使う)。 */
+export function sceneStats(s) {
+  const r = s.renderer.info.render;
+  return {
+    frameMs: s.statFrameMs ?? NaN,
+    drawMs: s.statDrawMs ?? NaN,
+    calls: r.drawCalls ?? r.calls,
+    triangles: r.triangles,
+    tier: s.canvas.dataset.quality,
+    pixelRatio: s.renderer.getPixelRatio(),
+    backend: s.renderer.isWebGPURenderer ? (s.renderer.backend?.isWebGPUBackend ? 'WebGPU' : 'WebGPU(WebGL2)') : 'WebGL',
+  };
+}
+
 // ---- リサイズ・破棄 ----
 
 export function resizeScene(s) {
@@ -659,6 +752,27 @@ export function resizeScene(s) {
   s.renderer.setSize(width, height, false);
   s.camera.aspect = width / height;
   s.camera.updateProjectionMatrix();
+}
+
+const glRenderers = new WeakMap();
+/**
+ * canvas ごとに1つの WebGLRenderer を使い回す(gpuBackend.js の sceneCanvas と組で使う)。
+ * 走行画面を作り直すたびに WebGL の文脈を作り直さないように。文脈を失ったら次の呼び出しで作り直す。
+ * 使い回すので、使う側は s.sharedRenderer = true にして disposeScene で捨てないようにする。
+ */
+export function sharedWebGLRenderer(canvas) {
+  let r = glRenderers.get(canvas);
+  if (!r || r.getContext().isContextLost()) {
+    r = new THREE.WebGLRenderer({ canvas, antialias: true });
+    glRenderers.set(canvas, r);
+  }
+  // 前の景色が変えた設定を戻す
+  r.setRenderTarget(null);
+  r.autoClear = true;
+  r.shadowMap.enabled = false;
+  r.info.autoReset = true;
+  applyRenderLook(r);
+  return r;
 }
 
 /** シーン内の全ジオメトリ・マテリアル・テクスチャ・空・影マップ・レンダラーを解放する。 */
@@ -677,5 +791,6 @@ export function disposeScene(s) {
   s.scene.traverse((obj) => {
     if (obj.isLight && obj.shadow && obj.shadow.map) obj.shadow.map.dispose();
   });
-  s.renderer.dispose();
+  // 使い回すレンダラー(sharedWebGLRenderer・sharedWebGPURenderer)は捨てない
+  if (!s.sharedRenderer) s.renderer.dispose();
 }

@@ -12,13 +12,31 @@ export function sceneryUrl(segment) {
   return new URL(`../data/scenery/${id}.json`, import.meta.url).href;
 }
 
+// 読んだ景色データ(JSON のまま)を、最近の SCENERY_CACHE_N 区間ぶん覚えておく。走行画面は分かれ道・休憩のたびに
+// 作り直すので、同じ区間(と逆向き。景色のファイルは同じ)に戻るたびに数 MB を読み直さないように。
+// 組み立て後の物(decodeScenery の戻り値)は走行のシーンが書き足す(メッシュなど)ので覚えず、毎回 JSON から戻す。
+const SCENERY_CACHE_N = 2;
+const sceneryCache = new Map(); // URL → Promise<object|null>
+
 /** 景色データを読む。無い・読めないときは null(走行画面は簡易の景色で続ける)。 */
 export async function loadScenery(segment, fetchFn = globalThis.fetch) {
+  const url = sceneryUrl(segment);
+  let p = sceneryCache.get(url);
+  if (p) {
+    sceneryCache.delete(url); // 使った物を新しい側へ
+  } else {
+    p = (async () => {
+      const res = await fetchFn(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })();
+  }
+  sceneryCache.set(url, p);
+  while (sceneryCache.size > SCENERY_CACHE_N) sceneryCache.delete(sceneryCache.keys().next().value);
   try {
-    const res = await fetchFn(sceneryUrl(segment));
-    if (!res.ok) return null;
-    return decodeScenery(await res.json());
+    return decodeScenery(await p);
   } catch {
+    if (sceneryCache.get(url) === p) sceneryCache.delete(url); // 読めなかった物は覚えない(次は読み直す)
     return null;
   }
 }

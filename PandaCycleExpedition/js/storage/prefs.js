@@ -81,3 +81,29 @@ export function saveSoundOn(on, storage = globalThis.localStorage) {
     // 保存できない環境では、その回だけの選択になる
   }
 }
+
+const AUTO_QUALITY_KEY = 'pce_auto_quality_v1';
+const AUTO_QUALITY_MAX_INDEX = 2; // js/three/sceneKit.js の QUALITY_TIERS の最後の番号
+
+/**
+ * 描画品質「自動」が前に落ち着いた段階 { index, pixelRatio }(この端末で次の走行をそこから始める)。無ければ null。
+ */
+export function loadAutoQuality(storage = globalThis.localStorage) {
+  try {
+    const v = JSON.parse(storage?.getItem(AUTO_QUALITY_KEY) ?? 'null');
+    if (!v || !Number.isInteger(v.index) || v.index < 0 || v.index > AUTO_QUALITY_MAX_INDEX) return null;
+    if (!Number.isFinite(v.pixelRatio) || v.pixelRatio <= 0 || v.pixelRatio > 4) return null;
+    return { index: v.index, pixelRatio: v.pixelRatio };
+  } catch {
+    return null;
+  }
+}
+
+export function saveAutoQuality(value, storage = globalThis.localStorage) {
+  if (!value || !Number.isInteger(value.index) || !Number.isFinite(value.pixelRatio)) return;
+  try {
+    storage?.setItem(AUTO_QUALITY_KEY, JSON.stringify({ index: value.index, pixelRatio: value.pixelRatio }));
+  } catch {
+    // 保存できない環境では、次の走行は高から測り直す
+  }
+}

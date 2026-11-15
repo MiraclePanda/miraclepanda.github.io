@@ -8,7 +8,8 @@
 import THREE from './three.js';
 import {
   RIDER_X_M, bakeSky, createAvatar, updateRiderAvatar, makePool, pushInstance, pushInstanceYawPitch, commitPool,
-  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, applyRenderLook,
+  setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, sharedWebGLRenderer,
+  frameStatsBegin, frameStatsEnd, sceneStats,
 } from './sceneKit.js';
 import { createPostFx } from './postFx.js';
 import { gradeAtM, tunnelAtM } from '../physics/segmentRoute.js';
@@ -69,9 +70,9 @@ function cellRand(i, salt) {
  * @param {{qualityMode?:string, onQualityChange?:(tier:string)=>void}} [opts]
  *   qualityMode: 'auto' | 'ultra' | 'high' | 'medium' | 'low'。onQualityChange には実際に使っている段階が届く。
  */
-export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQualityChange } = {}) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  applyRenderLook(renderer);
+export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQualityChange, autoStart = null, onAutoSettle } = {}) {
+  // canvas ごとに使い回す WebGL(描画の設定は sharedWebGLRenderer が初期値に戻す)
+  const renderer = sharedWebGLRenderer(canvas);
   const postFx = createPostFx(renderer);
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   const scene = new THREE.Scene();
@@ -183,7 +184,7 @@ export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQu
 
   const s = {
     renderer, scene, camera, canvas, sunLight, textures: [], sky: null, clock: new THREE.Clock(),
-    skyKey: null, disposed: false, onQualityChange,
+    skyKey: null, disposed: false, onQualityChange, sharedRenderer: true, autoStart, onAutoSettle,
     // 最高: 影の範囲を広げ(遠くの電柱・建物まで影が落ちる)、画面の解像度を端末いっぱいまで上げる。
     // 影マップを 4096 にするのは sceneKit の applyQuality がする。
     onUltraChange(on) {
@@ -230,6 +231,7 @@ export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQu
    */
   function draw({ segmentM, speedKmh, gradePercent, weatherKind, clockMinutes }) {
     if (s.disposed) return;
+    frameStatsBegin(s);
     rebakeSky(weatherKind, clockMinutes);
     const m0 = segmentM;
     const e0 = absElev(m0);
@@ -344,6 +346,7 @@ export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQu
     postFx.begin(s.postOn);
     renderer.render(scene, camera);
     postFx.end();
+    frameStatsEnd(s);
   }
 
   return {
@@ -351,6 +354,8 @@ export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQu
     resize: () => resizeScene(s),
     /** 走行中に描画品質を切り替える。 */
     setQualityMode: (mode) => setQualityMode(s, mode),
+    /** 描画の重さ(?perf=1 の表示用)。 */
+    stats: () => sceneStats(s),
     dispose() {
       s.disposed = true;
       postFx.dispose();

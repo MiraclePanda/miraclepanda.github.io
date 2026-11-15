@@ -25,8 +25,11 @@ function mercatorPx(lon, lat, z) {
  *   anisotropy: 斜めから見た地面の写真をぼかさないための異方性フィルタ(端末の上限)。loadImage はテスト用。
  *   patchMaterial: 写真の地面の material に元の地面と同じ加工(トンネルの中を描かない)をする関数
  *   color: 写真に掛ける色(季節で緑・黄みに寄せる。seasonLook.js の photoTint)
+ *   initTexture: テクスチャを先に GPU へ送る関数(renderer.initTexture)。送ったフレームの次のフレームで地面に貼る
  */
-export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMaterial = (m) => m, color = 0xa4ad94 } = {}) {
+export function createAerialPhotos(sc, {
+  anisotropy = 4, loadImage, patchMaterial = (m) => m, color = 0xa4ad94, initTexture = null,
+} = {}) {
   const tiles = [...sc.near.values()].filter((t) => t.mesh);
   const N = sc.n;
   let cfg = null;
@@ -34,7 +37,8 @@ export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMateria
   let last = null;
   const queue = [];
   let inFlight = 0;
-  // 読み終えたタイルの写真は 1 フレームに 1 枚ずつ貼る(何枚もまとめて GPU へ送るとそのフレームが詰まる)
+  // 読み終えたタイルの写真は 1 フレームに 1 枚ずつ貼る(何枚もまとめて GPU へ送るとそのフレームが詰まる)。
+  // 1枚ごとに、GPU へ送るフレームと地面に貼るフレームを分ける
   const ready = [];
 
   const load = loadImage ?? ((url) => new Promise((resolve, reject) => {
@@ -103,10 +107,28 @@ export function createAerialPhotos(sc, { anisotropy = 4, loadImage, patchMateria
       map.colorSpace = THREE.SRGBColorSpace;
       map.channel = 1;
       map.anisotropy = anisotropy;
+      // GPU へ送り終えたら canvas の画素は要らないので、小さくして手放す(1 枚で数 MB ある)
+      map.onUpdate = () => {
+        cv.width = 1;
+        cv.height = 1;
+        map.onUpdate = null;
+      };
       // 写真には影も写っているので、日の光で明るくなりすぎないよう少し暗い緑がかった色を掛ける
       photo.material = patchMaterial(new THREE.MeshStandardMaterial({ map, color, roughness: 0.95 }));
       t.baseMaterial ??= t.mesh.material;
-      t.mesh.material = photo.material;
+      const swap = () => {
+        if (!photo.cancelled && gen === generation && t.photo === photo) t.mesh.material = photo.material;
+      };
+      if (!initTexture) {
+        swap();
+        return;
+      }
+      try {
+        initTexture(map);
+      } catch {
+        // 先に送れなければ、貼ったフレームで送られる
+      }
+      ready.unshift(swap); // 次のフレームで貼る
     };
     for (let x = tx0; x <= tx1; x++) {
       for (let y = ty0; y <= ty1; y++) {

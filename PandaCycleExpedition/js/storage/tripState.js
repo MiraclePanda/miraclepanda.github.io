@@ -44,7 +44,6 @@ export function createTrip({
     rider: { weightKg: riderWeightKg, ftpW, stamina: 100, satiety: 80 },
     bike: { weightKg: bikeWeightKg, tire: 'gravel', pack: { ...pack } },
     wallet: { yen },
-    weather: { kind: 'sunny', wet: false },
     ride: null, // 走行中の1日の記録(終わると log に移る)。途中で落ちてもここから再開できる
     log: [],
   };
@@ -87,14 +86,31 @@ export const RIDE_SAMPLES_MAX = 8640;
  * (毎フレーム呼んでよい)。点は [走行秒, その日の距離 m, パワー W, ケイデンス rpm] の整数の配列
  * (自動保存のスナップショットを小さく保つため)。GPS 座標は持たない。
  */
-export function addRideSample(trip, { powerW, cadenceRpm }) {
+export function addRideSample(trip, sample) {
   const r = trip.ride;
-  if (!r) return trip;
+  if (!r || !sampleDue(r)) return trip;
+  const t = { ...trip, ride: { ...r, samples: [...(r.samples ?? [])] } };
+  pushRideSample(t, sample);
+  return t;
+}
+
+/**
+ * addRideSample の、旅をその場で書き換える版(走行中の作業用の旅 = js/trip/rideSession.js だけが使う)。
+ * 毎回配列を複製すると1日で数千万回の要素の写しになるので、走行中はこちらを使う。
+ * @returns {boolean} 点を足したか
+ */
+export function pushRideSample(trip, { powerW, cadenceRpm }) {
+  const r = trip.ride;
+  if (!r || !sampleDue(r)) return false;
+  r.samples ??= [];
+  r.samples.push([Math.round(r.rideSeconds), Math.round(r.distanceM), Math.round(finite(powerW, 0)), Math.round(finite(cadenceRpm, 0))]);
+  return true;
+}
+
+function sampleDue(r) {
   const samples = r.samples ?? [];
   const last = samples[samples.length - 1];
-  if ((last && r.rideSeconds - last[0] < RIDE_SAMPLE_SEC) || samples.length >= RIDE_SAMPLES_MAX) return trip;
-  const pt = [Math.round(r.rideSeconds), Math.round(r.distanceM), Math.round(finite(powerW, 0)), Math.round(finite(cadenceRpm, 0))];
-  return { ...trip, ride: { ...r, samples: [...samples, pt] } };
+  return !(last && r.rideSeconds - last[0] < RIDE_SAMPLE_SEC) && samples.length < RIDE_SAMPLES_MAX;
 }
 
 /**
@@ -103,35 +119,42 @@ export function addRideSample(trip, { powerW, cadenceRpm }) {
  * @param {object} trip
  * @param {{distanceM:number, rideSeconds:number, elevationGainM:number}} p その日のライド開始からの積算
  */
-export function updateRide(trip, { distanceM, rideSeconds, elevationGainM }, now = Date.now()) {
+export function updateRide(trip, p, now = Date.now()) {
+  if (!trip.ride) return trip;
+  return applyRideProgress({ ...trip, position: { ...trip.position }, ride: { ...trip.ride } }, p, now);
+}
+
+/** updateRide の、旅をその場で書き換える版(走行中の作業用の旅だけに使う。毎フレーム新しい旅を作らないため)。 */
+export function applyRideProgress(trip, { distanceM, rideSeconds, elevationGainM }, now = Date.now()) {
   const r = trip.ride;
   if (!r) return trip;
   const d = Math.max(0, finite(distanceM, r.distanceM));
   const s = Math.max(0, finite(rideSeconds, r.rideSeconds));
   const gainM = Math.max(0, finite(elevationGainM, r.elevationGainM));
   const deltaM = d - r.distanceM;
-  return {
-    ...trip,
-    updatedAt: now,
-    position: {
-      ...trip.position,
-      segmentM: trip.position.segmentM + deltaM,
-      totalM: r.startTotalM + d,
-    },
-    clockMinutes: r.startClockMinutes + (r.extraMinutes ?? 0) + (s * trip.settings.timeScale) / 60,
-    ride: { ...r, distanceM: d, rideSeconds: s, elevationGainM: gainM },
-  };
+  trip.updatedAt = now;
+  trip.position.segmentM += deltaM;
+  trip.position.totalM = r.startTotalM + d;
+  trip.clockMinutes = r.startClockMinutes + (r.extraMinutes ?? 0) + (s * trip.settings.timeScale) / 60;
+  r.distanceM = d;
+  r.rideSeconds = s;
+  r.elevationGainM = gainM;
+  return trip;
 }
 
 /** 走らずに旅の時間を進める(一時停止中の休憩、食事など)。minutes は旅の時間。 */
 export function passTripTime(trip, minutes, now = Date.now()) {
   if (!trip.ride || !(minutes > 0)) return trip;
-  return {
-    ...trip,
-    updatedAt: now,
-    clockMinutes: trip.clockMinutes + minutes,
-    ride: { ...trip.ride, extraMinutes: (trip.ride.extraMinutes ?? 0) + minutes },
-  };
+  return applyTripTime({ ...trip, ride: { ...trip.ride } }, minutes, now);
+}
+
+/** passTripTime の、旅をその場で書き換える版(走行中の作業用の旅だけに使う)。 */
+export function applyTripTime(trip, minutes, now = Date.now()) {
+  if (!trip.ride || !(minutes > 0)) return trip;
+  trip.updatedAt = now;
+  trip.clockMinutes += minutes;
+  trip.ride.extraMinutes = (trip.ride.extraMinutes ?? 0) + minutes;
+  return trip;
 }
 
 /**
@@ -260,13 +283,25 @@ function checkTrip(t) {
   }
   if (!t.settings || !TIME_SCALES.includes(t.settings.timeScale)) return '早回し倍率が不正です。';
   if (t.settings.season !== undefined && !SEASON_MODES.includes(t.settings.season)) return '景色の季節が不正です。';
-  if (!t.rider || !Number.isFinite(t.rider.weightKg)) return '体重が不正です。';
-  if (!t.bike || !Number.isFinite(t.bike.weightKg) || typeof t.bike.pack !== 'object') return '自転車・荷物が不正です。';
+  if (t.settings.powerScale !== undefined && !(Number.isFinite(t.settings.powerScale) && t.settings.powerScale > 0)) return 'パワー補正の倍率が不正です。';
+  const r = t.rider;
+  if (!r || !(r.weightKg > 0) || !(r.ftpW > 0)) return '体重・FTP が不正です。';
+  if (!inRange(r.stamina, 0, 100) || !inRange(r.satiety, 0, 100)) return '体力・満腹度が不正です。';
+  if (!t.bike || !(t.bike.weightKg > 0) || !t.bike.pack || typeof t.bike.pack !== 'object') return '自転車・荷物が不正です。';
+  if (Object.values(t.bike.pack).some((kg) => !(Number.isFinite(kg) && kg >= 0))) return '荷物の重さが不正です。';
   if (!t.wallet || !Number.isFinite(t.wallet.yen)) return '所持金が不正です。';
-  if (!Array.isArray(t.log)) return '日誌が不正です。';
-  if (!Array.isArray(t.legs) || t.legs.length === 0) return '走ってきた区間の記録が不正です。';
-  if (t.ride !== null && (typeof t.ride !== 'object' || !Number.isFinite(t.ride.distanceM))) return '走行中の記録が不正です。';
+  if (!Array.isArray(t.log) || t.log.some((d) => !d || typeof d !== 'object' || !Number.isInteger(d.day))) return '日誌が不正です。';
+  if (!Array.isArray(t.legs) || t.legs.length === 0
+    || t.legs.some((l) => !l || typeof l.segmentId !== 'string' || !Number.isFinite(l.startTotalM))) return '走ってきた区間の記録が不正です。';
+  if (t.ride !== null && (typeof t.ride !== 'object' || !Number.isFinite(t.ride.distanceM) || !Number.isFinite(t.ride.rideSeconds))) {
+    return '走行中の記録が不正です。';
+  }
+  if (t.stamps !== undefined && !Array.isArray(t.stamps)) return 'スタンプ帳が不正です。';
   return null;
+}
+
+function inRange(x, lo, hi) {
+  return Number.isFinite(x) && x >= lo && x <= hi;
 }
 
 function finite(x, fallback) {

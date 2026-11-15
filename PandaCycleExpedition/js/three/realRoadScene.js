@@ -9,8 +9,9 @@
 
 import THREE from './three.js';
 import {
-  RIDER_X_M, bakeSky, createAvatar, updateRiderAvatar, makePool, pushInstance, pushInstanceYawPitch, commitPool,
+  RIDER_X_M, bakeSkySteps, createAvatar, updateRiderAvatar, makePool, pushInstance, pushInstanceYawPitch, commitPool,
   setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, setCameraFov, setAvatarVisible, applyRenderLook,
+  sharedWebGLRenderer, frameStatsBegin, frameStatsEnd, sceneStats,
 } from './sceneKit.js';
 import { createPostFx } from './postFx.js';
 import { createPostFxGpu } from './postFxGpu.js';
@@ -27,6 +28,7 @@ import { planRoadside, isYellowAt } from './roadsideLayout.js';
 import { surfaceAtM } from '../physics/segmentRoute.js';
 import { surfaceOf } from '../physics/surfaces.js';
 import { createRoadside } from './roadsideParts.js';
+import { createTreeChunks } from './treeChunks.js';
 import { broadleafLook, coniferColor, evergreenShare, photoTint, snowCover, vegetationColor, withSnow } from './seasonLook.js';
 import { VIEW_RIGS, normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg } from './cameraViews.js';
 
@@ -49,6 +51,11 @@ const TIER_SCENERY = {
 };
 const TREE_MAX = 22000;
 const TREE_NEAR_MAX = 4000;
+// 木は区画ごとに別のメッシュにして、画面と影の範囲の外の区画は描かない(1つのメッシュにまとめるとライダーのまわり
+// 全部を毎回描くことになり、木の 6〜7 割は画面の外だった)。区画は遠くの木で木を置く半径の 1/3(120 m 以上)、
+// 影を落とす近くの木で 90 m(影の範囲はライダーのまわり 80〜160 m 四方)。細かくするほど描画命令が増える
+const treeChunkM = (treeR) => Math.max(120, treeR / 3);
+const TREE_NEAR_CHUNK_M = 90;
 // トンネルの坑口: 地形の格子(25 m)では山肌を坑口でぴったり切れないので、トンネルの筒の中の地面は
 // シェーダーで描かない(TUN_HALF_W より内側・路面 -1 m 〜 TUN_TOP_M)。坑口の外で道より高い地面が残る所は、
 // 筒と坑口の壁をその先(最大 TUN_EXT_MAX_M)まで延ばす(覆道のように見える)。
@@ -63,6 +70,9 @@ const TREE_REBUILD_M = 40;
 // 木の置き直しは数十 ms かかる(高・最高で木が数万本)ので、1フレームにこの時間ずつ分けて裏の組で作り、
 // できたら表の組と入れ替える(作っている間は前の木をそのまま描く)
 const TREE_BUDGET_MS = 3;
+// 中央線・ガードレール・トンネルの筒は、ライダーがこれだけ進むごとに並べ直す(毎フレームは並べない)。
+// 並べ直すまでに進む分だけ、前後の範囲を広くとる
+const POOL_REBUILD_M = 20;
 const ROAD_CHUNK = 50; // 道のメッシュ1つあたりの点の数(10 m ごと)
 // 道の断面: [中心からの距離(m), 路面からの高さ, 色]。同じ色の列を2本並べて白線の縁をくっきりさせる
 const ROAD_COLS = [
@@ -194,7 +204,9 @@ function groundColor(h, ny, roadD, built, r, season) {
  * @param {{qualityMode?:string, onQualityChange?:(tier:string)=>void, panorama?:object|null}} [opts]
  *   panorama: 遠景の標高(loadPanorama の戻り値)。無ければ遠景なし
  *   season: 景色の季節(js/trip/season.js の createSeason)。無ければ夏の景色・6時〜18時の太陽
- *   renderer: 初期化済みの WebGPURenderer(gpuBackend.js の createWebGPURenderer)。無ければ WebGL で描く
+ *   renderer: 初期化済みの WebGPURenderer(gpuBackend.js の sharedWebGPURenderer)。無ければ WebGL で描く
+ *   startM: 走り始める区間の距離(prepare で、そこの木を置いてシェーダーを組み立てておく)
+ *   autoStart / onAutoSettle: 描画品質「自動」の始める段階と、落ち着いた段階の知らせ(sceneKit.js の setQualityMode)
  */
 /**
  * トンネルの筒の中の地面を描かない判定(WebGPU 用、cutTunnels の GLSL と同じ式)。
@@ -229,10 +241,13 @@ function tunnelMaskGpu(W, u) {
 
 export function createRealRoadScene(canvas, segment, sc, {
   qualityMode = 'auto', onQualityChange, panorama = null, cameraView = 'chase', season = null, renderer: gpuRenderer = null,
+  startM = 0, autoStart = null, onAutoSettle,
 } = {}) {
   const W = gpuRenderer ? threeWebGPU() : null; // WebGPU で描くときの three.js(ノードと TSL)
-  const renderer = gpuRenderer ?? new THREE.WebGLRenderer({ canvas, antialias: true });
+  // 描画の土台は走行画面をまたいで使い回す(WebGL は canvas ごと、WebGPU は gpuBackend.js の sharedWebGPURenderer)
+  const renderer = gpuRenderer ?? sharedWebGLRenderer(canvas);
   applyRenderLook(renderer);
+  renderer.setRenderTarget(null);
   const postFx = W ? createPostFxGpu(renderer, W) : createPostFx(renderer);
   renderer.autoClear = false; // 遠景 → 近くの景色の順に重ねて描く
   const pano = panorama ? createPanorama(panorama, sc, season) : null;
@@ -635,11 +650,11 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...extra });
   const pools = {
     // 路面(polygonOffset -2)より手前に描く(遠くで中央線が路面に埋もれないように)
-    dash: makePool(box, std(0xf2f2f2, { polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }), 120, { cast: false }),
+    dash: makePool(box, std(0xf2f2f2, { polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }), 160, { cast: false }),
     rail: makePool(box, std(0xd8d8d0, { metalness: 0.4 }), 600),
     // ガードレールの視線誘導標(橙の反射板)
     reflector: makePool(box, std(0xff8a1e, { emissive: 0xff6a00, emissiveIntensity: 0.35 }), 120, { cast: false }),
-    tunnel: makePool(box, std(0x77746c), 400, { cast: false }),
+    tunnel: makePool(box, std(0x77746c), 520, { cast: false }),
     lamp: makePool(box, std(0xffd27a, { emissive: 0xffb43a, emissiveIntensity: 1.5 }), 80, { cast: false }),
   };
   // 木は近く(作り込んだ形)と遠く(軽い形)で別のプール。形は treeModels.js、色は頂点色 × インスタンス色
@@ -647,20 +662,24 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   const coneMat = std(0xffffff, { roughness: 0.92, vertexColors: true, side: THREE.DoubleSide });
   const barkMat = std(0x5b4632, { roughness: 0.95, vertexColors: true });
   // 遠くの木(treeNearR より外)は影の範囲(ライダーのまわり 40〜80 m)に入らないので影を落とさない
-  // (落とす設定だと、影を描く段でも数万本を描き直していた)
-  const makeTrees = () => ({
-    trunk: makePool(trunkFarGeometry(), barkMat, TREE_MAX, { cast: false }),
-    trunkNear: makePool(trunkNearGeometry(), barkMat, TREE_NEAR_MAX),
-    cone: makePool(coniferFarGeometry(), coneMat, TREE_MAX, { cast: false }),
-    coneNear: makePool(coniferNearGeometry(), coneMat, TREE_NEAR_MAX),
-    ball: makePool(broadleafFarGeometry(), leafMat, TREE_MAX, { cast: false }),
-    ballNear: makePool(broadleafNearGeometry(), leafMat, TREE_NEAR_MAX),
-    disc: makePool(pinePadGeometry(), leafMat, TREE_MAX),
-  });
-  // 表(描いている組)と裏(置き直し中の組)
-  const treeSets = [makeTrees(), makeTrees()];
-  let trees = treeSets[1];
-  for (const p of [...Object.values(pools), ...treeSets.flatMap((t) => Object.values(t))]) scene.add(p.mesh);
+  // (落とす設定だと、影を描く段でも数万本を描き直していた)。影を落とす近くの木も、区画に分けたので
+  // 影の範囲にかかる区画だけが影の段で描かれる
+  const TREE_KINDS = [
+    { name: 'trunk', geo: trunkFarGeometry(), mat: barkMat, cast: false, max: TREE_MAX },
+    { name: 'trunkNear', near: true, geo: trunkNearGeometry(), mat: barkMat, cast: true, max: TREE_NEAR_MAX },
+    { name: 'cone', geo: coniferFarGeometry(), mat: coneMat, cast: false, max: TREE_MAX },
+    { name: 'coneNear', near: true, geo: coniferNearGeometry(), mat: coneMat, cast: true, max: TREE_NEAR_MAX },
+    { name: 'ball', geo: broadleafFarGeometry(), mat: leafMat, cast: false, max: TREE_MAX },
+    { name: 'ballNear', near: true, geo: broadleafNearGeometry(), mat: leafMat, cast: true, max: TREE_NEAR_MAX },
+    { name: 'disc', geo: pinePadGeometry(), mat: leafMat, cast: true, max: TREE_MAX },
+  ];
+  const TK = Object.fromEntries(TREE_KINDS.map((k, i) => [k.name, i]));
+  for (const k of TREE_KINDS) {
+    k.geo.computeBoundingSphere();
+    k.reach = k.geo.boundingSphere.center.length() + k.geo.boundingSphere.radius; // 大きさ 1 のときの原点からの届く距離
+  }
+  const trees = createTreeChunks(scene, TREE_KINDS);
+  for (const p of Object.values(pools)) scene.add(p.mesh);
   // 電柱と電線・カーブミラー・標識(配置は roadsideLayout.js)
   const roadPlan = planRoadside({
     lengthM: segment.lengthM, at: routeAt, groundAt: (x, y) => heightAt(sc, x, y), inTunnel: (m) => !!tubeAt(m),
@@ -698,11 +717,12 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   // 地面の航空写真(最高・高のとき、まわりのタイルだけ)
   const photos = createAerialPhotos(sc, {
     anisotropy: Math.min(16, W ? renderer.getMaxAnisotropy() : renderer.capabilities.getMaxAnisotropy()), patchMaterial: cutTunnels,
+    initTexture: (t) => renderer.initTexture(t),
     ...(season ? { color: photoTint(season.plants(0)) } : {}),
   });
   const s = {
     renderer, scene, camera, canvas, sunLight, textures, sky: null, clock: new THREE.Clock(),
-    skyKey: null, disposed: false,
+    skyKey: null, disposed: false, sharedRenderer: true, autoStart, onAutoSettle,
     onQualityChange(name) {
       tier = TIER_SCENERY[name] ?? TIER_SCENERY.high;
       camera.far = tier.far;
@@ -713,7 +733,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       seaMat.needsUpdate = true;
       treeAt = null; // 木を置き直す
       treeJob = null;
-      s.skyKey = null; // 霧の濃さを掛け直す
+      applyFog(); // 霧の濃さを掛け直す
       onQualityChange?.(name);
     },
     // 最高: 影の範囲を広げ(遠くの建物・木まで影が落ちる)、画面の解像度を端末いっぱいまで上げる
@@ -747,15 +767,37 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     return { dir, sinE: Math.max(Math.sin((elevDeg * Math.PI) / 180), 0) };
   }
 
-  function rebakeSky(kind, clockMinutes) {
+  // 空の焼き直し: 天気・時刻(30 分ごと)が変わったら、数フレームに分けて焼き(sceneKit.js の bakeSkySteps)、
+  // できあがったフレームで背景・環境マップ・霧・光をまとめて入れ替える
+  let skyJob = null; // { key, steps, apply }
+  let fogBase = SKY_BY_WEATHER.sunny.fog;
+  function applyFog() {
+    scene.fog.density = tier.pano && pano ? fogBase : Math.max(fogBase, 3.5 / tier.far);
+    pano?.setAtmosphere({
+      fogColor: scene.fog.color, fogDensity: scene.fog.density, sunDir, sunIntensity: sunLight.intensity, hemiIntensity: hemi.intensity,
+      seaColor: seaMat.color.getHex(),
+    });
+  }
+  /** now: 1フレームで焼き上げる(最初の描画。景色が出たとたんに空が変わらないように)。 */
+  function rebakeSky(kind, clockMinutes, now = false) {
     // 空を焼き直すのは 30 分ごと(日の出前・日の入り後は変わらないのでまとめる)
     const c = Math.min(Math.max(clockMinutes, SUN_RISE - 30), SUN_SET + 90);
     const key = `${kind}:${Math.floor(c / 30)}`;
-    if (key === s.skyKey) return;
-    s.skyKey = key;
+    if (key !== s.skyKey && key !== skyJob?.key) {
+      skyJob?.steps.return(); // 焼きかけの前の空は捨てる
+      skyJob = planSky(kind, c, key);
+    }
+    if (!skyJob) return;
+    let r;
+    do r = skyJob.steps.next(); while (now && !r.done);
+    if (!r.done) return;
+    skyJob.apply(r.value);
+    s.skyKey = skyJob.key;
+    skyJob = null;
+  }
+  function planSky(kind, c, key) {
     const w = SKY_BY_WEATHER[kind] ?? SKY_BY_WEATHER.sunny;
     const sun = sunAt(c);
-    sunDir = sun.dir;
     // 日の入りの 1 時間半前から夕焼けに
     const evening = Math.max(0, (c - (SUN_SET - 150)) / 90);
     const fair = kind === 'sunny' || kind === 'cloudy';
@@ -763,35 +805,36 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     const zenith = new THREE.Color(w.zenith).lerp(new THREE.Color('#2a62b5'), fair ? mood.clear * 0.3 : 0);
     const horizon = new THREE.Color(w.horizon).lerp(new THREE.Color('#e4eaee'), fair ? mood.humid * 0.25 : 0)
       .lerp(new THREE.Color('#f2a35e'), Math.min(evening, 1) * (kind === 'sunny' ? 0.8 : 0.3));
-    const old = s.sky;
-    s.sky = bakeSky(renderer, {
-      zenith: `#${zenith.getHexString()}`, horizon: `#${horizon.getHexString()}`, ground: w.ground, sunColor: '#fff2d2', sunDir,
+    const steps = bakeSkySteps(renderer, {
+      zenith: `#${zenith.getHexString()}`, horizon: `#${horizon.getHexString()}`, ground: w.ground, sunColor: '#fff2d2', sunDir: sun.dir,
       cloudCover: Math.min(w.cloudCover + (kind === 'sunny' ? mood.humid * 0.1 : 0), 1), sunGlow: w.sunGlow ?? 1,
       night: Math.max(0, Math.min(1, (c - NIGHT_FROM) / 60)),
-    });
-    (pano ? pano.scene : scene).background = s.sky.background;
-    if (scene.environment) scene.environment = s.sky.getEnvironment();
-    old?.dispose();
-    scene.fog.color.copy(horizon);
-    // 霞: 冬は 60 km 先の富士山がくっきり、春・夏は霞んで見えにくい(雨・スコールの霧はそのまま)
-    const fog = w.fog * (fair ? mood.haze : 1);
-    scene.fog.density = tier.pano && pano ? fog : Math.max(fog, 3.5 / tier.far);
-    sunLight.intensity = 1.8 * (w.sunGlow ?? 1) * (season ? Math.min(Math.max(sun.sinE * 1.6, 0.15), 1) : Math.max(0.15, sun.sinE));
-    hemi.intensity = 0.55 + 0.45 * (w.sunGlow ?? 1);
-    const seaColor = kind === 'sunny' ? 0x1d5a7a : 0x2c4e5e;
-    seaMat.color.setHex(seaColor);
-    pano?.setAtmosphere({
-      fogColor: horizon, fogDensity: scene.fog.density, sunDir, sunIntensity: sunLight.intensity, hemiIntensity: hemi.intensity, seaColor,
-    });
-    rain.visible = kind === 'rain' || kind === 'squall';
+    }, { withEnv: !!scene.environment });
+    const apply = (sky) => {
+      sunDir = sun.dir;
+      const old = s.sky;
+      s.sky = sky;
+      (pano ? pano.scene : scene).background = sky.background;
+      if (scene.environment) scene.environment = sky.getEnvironment();
+      old?.dispose();
+      scene.fog.color.copy(horizon);
+      // 霞: 冬は 60 km 先の富士山がくっきり、春・夏は霞んで見えにくい(雨・スコールの霧はそのまま)
+      fogBase = w.fog * (fair ? mood.haze : 1);
+      sunLight.intensity = 1.8 * (w.sunGlow ?? 1) * (season ? Math.min(Math.max(sun.sinE * 1.6, 0.15), 1) : Math.max(0.15, sun.sinE));
+      hemi.intensity = 0.55 + 0.45 * (w.sunGlow ?? 1);
+      seaMat.color.setHex(kind === 'sunny' ? 0x1d5a7a : 0x2c4e5e);
+      applyFog();
+      rain.visible = kind === 'rain' || kind === 'squall';
+    };
+    return { key, steps, apply };
   }
 
-  rebakeSky('sunny', 7 * 60);
+  rebakeSky('sunny', 7 * 60, true);
   setupQuality(s, qualityMode);
 
   /**
-   * ライダーのまわりに森の木を置き直す(同じ場所はいつも同じ木)。裏の組 trees に置き、1行ごとに区切る
-   * (ジェネレーター。最後まで進めると裏の組ができあがる)。
+   * ライダーのまわりに森の木を置き直す(同じ場所はいつも同じ木)。trees(treeChunks.js)の CPU 側に置き、1行ごとに区切る
+   * (ジェネレーター。最後まで進めたら trees.commit で入れ替える)。
    */
   function* placeTrees(ox, oy) {
     const { treeR, treeCell, treeNearR } = tier;
@@ -821,10 +864,10 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
           const px = x - ox;
           const pz = -(y - oy);
           const lean = (hash2(i, j, 17) - 0.5) * 0.5;
-          pushInstance(near ? trees.trunkNear : trees.trunk, px, h - 0.3, pz, 1.3, hgt * 0.8, 1.3, lean, r * 6);
+          trees.push(near ? TK.trunkNear : TK.trunk, x, y, px, h - 0.3, pz, 1.3, hgt * 0.8, 1.3, lean, r * 6);
           for (let d = 0; d < 2; d++) {
             const w = hgt * (0.38 - d * 0.11);
-            pushInstance(trees.disc, px, h + hgt * (0.62 + d * 0.15), pz + Math.sin(lean) * hgt * (0.62 + d * 0.15),
+            trees.push(TK.disc, x, y, px, h + hgt * (0.62 + d * 0.15), pz + Math.sin(lean) * hgt * (0.62 + d * 0.15),
               w, 1.2, w * 0.8, 0, r * 6 + d, d === 0 ? 0x24401f : 0x2c4d26);
           }
           continue;
@@ -836,11 +879,11 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
         const conifer = hash2(i, j, 15) < 0.35 + Math.min(h / 600, 0.4);
         const px = x - ox;
         const pz = -(y - oy);
-        pushInstance(near && !conifer ? trees.trunkNear : trees.trunk, px, h - 0.3, pz, 1, hgt * 0.45, 1, 0, r * 6);
+        trees.push(near && !conifer ? TK.trunkNear : TK.trunk, x, y, px, h - 0.3, pz, 1, hgt * 0.45, 1, 0, r * 6);
         const plants = season?.plants(h);
         if (conifer) {
           const base = r < 0.5 ? 0x264a26 : 0x2f5a2c;
-          pushInstance(near ? trees.coneNear : trees.cone, px, h + hgt * 0.22, pz, hgt * 0.24, hgt * 0.8, hgt * 0.24, 0, r * 6,
+          trees.push(near ? TK.coneNear : TK.cone, x, y, px, h + hgt * 0.22, pz, hgt * 0.24, hgt * 0.8, hgt * 0.24, 0, r * 6,
             plants ? coniferColor(base, plants) : base);
         } else {
           let w = hgt * (0.3 + hash2(i, j, 16) * 0.15);
@@ -854,7 +897,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
             color = look.color;
             w *= look.scale;
           }
-          pushInstance(near ? trees.ballNear : trees.ball, px, h + hgt * 0.35, pz, w, hgt * 0.32, w, 0, r * 6, color);
+          trees.push(near ? TK.ballNear : TK.ball, x, y, px, h + hgt * 0.35, pz, w, hgt * 0.32, w, 0, r * 6, color);
         }
       }
       yield;
@@ -864,7 +907,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   /** 木の置き直しを進める。budgetMs まで進めて、できあがったら表と裏を入れ替える。 */
   function stepTrees(ox, oy) {
     if (!treeJob && (!treeAt || Math.hypot(ox - treeAt[0], oy - treeAt[1]) > TREE_REBUILD_M)) {
-      for (const p of Object.values(trees)) p.n = 0;
+      trees.begin(treeChunkM(tier.treeR), TREE_NEAR_CHUNK_M);
       treeJob = { at: [ox, oy], steps: placeTrees(ox, oy) };
     }
     if (!treeJob) return;
@@ -874,47 +917,20 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     while (!(done = treeJob.steps.next().done) && performance.now() < until);
     if (!done) return;
     const [x, y] = treeJob.at;
-    const shown = trees === treeSets[0] ? treeSets[1] : treeSets[0];
-    for (const p of Object.values(trees)) {
-      commitPool(p);
-      p.mesh.position.set(x, 0, -y);
-      p.mesh.visible = true;
-    }
-    for (const p of Object.values(shown)) p.mesh.visible = false;
-    trees = shown;
+    trees.commit(x, y);
     treeAt = treeJob.at;
     treeJob = null;
   }
 
-  const P0 = {};
-  const PA = {};
-  const PB = {};
-  const PC = {};
-  const camPos = new THREE.Vector3();
-  let camInit = false;
-  let view = normalizeCameraView(cameraView);
-  const fpCam = {};
-
+  let poolAt = null;
   /**
-   * 1フレーム描く。
-   * @param {{segmentM:number, speedKmh:number, gradePercent:number, weatherKind:string, clockMinutes:number, cadenceRpm?:number}} f
+   * 中央線・トンネルの筒と坑口・照明・ガードレールを、区間の距離 m0(平面の座標 ox, oy)を原点に並べ直す。
+   * 次に並べ直すまで(POOL_REBUILD_M 進むまで)見える範囲を、前後とも広めにとる。
    */
-  function draw({ segmentM, speedKmh, gradePercent, weatherKind, clockMinutes, cadenceRpm }) {
-    if (s.disposed) return;
-    rebakeSky(weatherKind, clockMinutes);
-    const m0 = segmentM;
-    routeAt(m0, P0);
-    const ox = P0.x;
-    const oy = P0.y;
-    // ライダーの位置を原点にした座標(世界の座標は大きいので、毎フレームの置き物はこの原点からの相対で置く)
-    const local = (p, off, dz = 0) => [p.x - p.hy * off - ox, p.z + dz, -(p.y + p.hx * off - oy)];
-    const yawOf = (p) => Math.atan2(p.hx, -p.hy);
-
-    stepTrees(ox, oy);
-
+  function placeRoadPools(m0, ox, oy, local, yawOf) {
     // 中央線(10m ごとに 5m の白い破線。カーブの続く所とトンネルは黄色の実線 = はみ出し禁止。
     // 絶対位置にそろえるので走ると流れる)
-    for (let mm = Math.ceil((m0 - 30) / 10) * 10; mm < m0 + 220; mm += 10) {
+    for (let mm = Math.ceil((m0 - 30 - POOL_REBUILD_M) / 10) * 10; mm < m0 + 220 + POOL_REBUILD_M; mm += 10) {
       if (unpavedAt(mm + 5)) continue; // 砂利道には中央線が無い
       if (isYellowAt(roadPlan, mm + 5)) {
         // カーブでも折れ目が目立たないよう 2.5 m ずつ
@@ -930,7 +946,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
       pushInstance(pools.dash, x, y, z, 0.14, 0.02, 5, 0, yawOf(PA));
     }
     // トンネル・ガードレール(道の脇が 2.5 m 以上落ち込む側 = 崖・海・橋)
-    for (let mm = Math.ceil((m0 - 30) / 4) * 4; mm < m0 + 420; mm += 4) {
+    for (let mm = Math.ceil((m0 - 30 - POOL_REBUILD_M) / 4) * 4; mm < m0 + 420 + POOL_REBUILD_M; mm += 4) {
       routeAt(mm, PA);
       routeAt(mm + 4, PB);
       const yaw = yawOf(PA);
@@ -963,7 +979,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
         }
         continue;
       }
-      if (mm - m0 > 280) continue;
+      if (mm - m0 > 280 + POOL_REBUILD_M) continue;
       for (const side of [-1, 1]) {
         const gh = heightAt(sc, PA.x - PA.hy * side * 9, PA.y + PA.hx * side * 9);
         if (PA.z - gh > 2.5) {
@@ -984,6 +1000,40 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     for (const p of Object.values(pools)) {
       commitPool(p);
       p.mesh.position.set(ox, 0, -oy);
+    }
+  }
+
+  const P0 = {};
+  const PA = {};
+  const PB = {};
+  const PC = {};
+  const camPos = new THREE.Vector3();
+  let camInit = false;
+  let view = normalizeCameraView(cameraView);
+  const fpCam = {};
+
+  /**
+   * 1フレーム描く。
+   * @param {{segmentM:number, speedKmh:number, gradePercent:number, weatherKind:string, clockMinutes:number, cadenceRpm?:number}} f
+   */
+  function draw({ segmentM, speedKmh, gradePercent, weatherKind, clockMinutes, cadenceRpm }) {
+    if (s.disposed) return;
+    frameStatsBegin(s);
+    rebakeSky(weatherKind, clockMinutes, !s.drawnOnce);
+    s.drawnOnce = true;
+    const m0 = segmentM;
+    routeAt(m0, P0);
+    const ox = P0.x;
+    const oy = P0.y;
+    // ライダーの位置を原点にした座標(世界の座標は大きいので、毎フレームの置き物はこの原点からの相対で置く)
+    const local = (p, off, dz = 0) => [p.x - p.hy * off - ox, p.z + dz, -(p.y + p.hx * off - oy)];
+    const yawOf = (p) => Math.atan2(p.hx, -p.hy);
+
+    stepTrees(ox, oy);
+
+    if (poolAt === null || Math.abs(m0 - poolAt) >= POOL_REBUILD_M) {
+      poolAt = m0;
+      placeRoadPools(m0, ox, oy, local, yawOf);
     }
     roadside.update(m0, ox, oy);
 
@@ -1056,10 +1106,35 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     }
     renderer.render(scene, camera);
     postFx.end();
+    frameStatsEnd(s);
+  }
+
+  /**
+   * 走り出す前の準備: 走り始める所の木を置き、景色のシェーダーを先に組み立てておく(compileAsync。
+   * 対応するブラウザでは裏で組み立てるので、最初のフレームや木が見えてきたときに止まらない)。
+   * 失敗しても描画はできる(最初のフレームで組み立てる)。
+   */
+  async function prepare() {
+    try {
+      routeAt(startM, P0);
+      stepTrees(P0.x, P0.y);
+      routeAt(startM, P0);
+      camera.position.set(P0.x, P0.z + 3, -P0.y);
+      camera.lookAt(P0.x + P0.hx * 20, P0.z + 1, -(P0.y + P0.hy * 20));
+      if (renderer.compileAsync) {
+        await renderer.compileAsync(scene, camera);
+        if (pano && !s.disposed) await renderer.compileAsync(pano.scene, pano.camera);
+      }
+    } catch {
+      // 組み立てられなかった分は最初の描画で組み立てる
+    }
   }
 
   return {
     draw,
+    prepare,
+    /** 描画の重さ(?perf=1 の表示用)。 */
+    stats: () => ({ ...sceneStats(s), treeMeshes: trees.meshCount() }),
     resize: () => resizeScene(s),
     setQualityMode: (mode) => setQualityMode(s, mode),
     /** 視点('chase' | 'fp' | 'high')。 */
@@ -1070,6 +1145,8 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     },
     dispose() {
       s.disposed = true;
+      skyJob?.steps.return();
+      skyJob = null;
       photos?.dispose();
       pano?.dispose();
       postFx.dispose();

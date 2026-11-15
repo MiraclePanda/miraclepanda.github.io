@@ -11,6 +11,7 @@ import { TripMap } from './TripMap.js';
 import { stampProgress } from '../trip/stamps.js';
 import { gearOptions, gearConfirmText, shipHome, buyGear, buyFood, atTown, FOOD } from '../trip/gear.js';
 import { downloadTrip, importTripFile } from '../storage/tripFile.js';
+import { requestPersistentStorage } from '../storage/tripStore.js';
 import { validateWeight, validateBikeWeight, validateFtp, validatePowerScale } from '../utils/validation.js';
 import { SEASON_MODES, SEASON_LABELS, normalizeSeasonMode } from '../trip/season.js';
 import { packWeightKg } from '../physics/surfaces.js';
@@ -23,7 +24,7 @@ import { courseProgress, courseMark, tripCourseId, tripsByCourse } from '../trip
 
 const km = (m) => (m / 1000).toFixed(1);
 
-export function HomeScreen({ trip, segment, store, persistent, notice, client, onTripChange, onRide }) {
+export function HomeScreen({ trip, segment, segmentError, store, persistent, notice, client, onTripChange, onRide }) {
   const [conn, setConn] = useState(client.isConnected ? { name: client.device?.name, mode: client.controlMode } : null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -67,8 +68,14 @@ export function HomeScreen({ trip, segment, store, persistent, notice, client, o
     const file = ev.target.files?.[0];
     ev.target.value = '';
     if (!file) return;
-    const r = await importTripFile(file, store);
-    if (r.ok) { setSel(tripCourseId(r.trip)); onTripChange(r.trip); } else setError(`読み込めませんでした: ${r.error}`);
+    // 同じコースの旅があれば置き換わるので、何日目の旅を何日目の旅で置き換えるかを見せて確かめる
+    const r = await importTripFile(file, store, (t) => {
+      const same = courseTrips.get(tripCourseId(t));
+      const now = same ? `今のこのコースの旅は ${same.day}日目です。` : 'このコースの旅はまだありません。';
+      return confirm(`「${getSegment(t.position.segmentId)?.name ?? t.position.segmentId}」の ${t.day}日目の旅を読み込みますか?\n${now}\n`
+        + '読み込んだ旅が続きになります(今の旅は「設定と記録」の「前の保存に戻す」から戻せます)。');
+    });
+    if (r.ok) { setSel(tripCourseId(r.trip)); onTripChange(r.trip); } else if (!r.cancelled) setError(`読み込めませんでした: ${r.error}`);
   }
 
   /** コースを選ぶ。そのコースの旅があれば、その旅に切り替える(次に開いたときもこの旅から)。 */
@@ -89,7 +96,12 @@ export function HomeScreen({ trip, segment, store, persistent, notice, client, o
     const t = createTrip({ ...body, segmentId: id });
     const powerScale = latestTrip(allTrips)?.settings.powerScale;
     const t2 = powerScale ? { ...t, settings: { ...t.settings, powerScale } } : t;
+    // 走り直す前の旅は、コース一覧の印のために最新の1件だけ残して古い世代を消す
+    const old = courseTrips.get(id);
     await store.save(t2, 'event');
+    if (old) await store.compactTrip(old.tripId).catch(() => {});
+    // 何ヶ月も続く旅なので、ブラウザに保存データを消さないよう頼む(断られても旅は始められる)
+    requestPersistentStorage();
     onTripChange(t2);
   }
 
@@ -111,7 +123,9 @@ export function HomeScreen({ trip, segment, store, persistent, notice, client, o
       h('p', { className: 'muted' }, 'コースごとに別々の旅です。コースを押すと、そのコースの旅の続き(日数・体力・所持金・荷物)に切り替わります。つなげていくと日本一周。'),
       h(CourseList, {
         courses, selectedId: selId, progress, courseTrips, onSelect: select,
-        renderPanel: (c) => (active
+        renderPanel: (c) => (active && !segment
+          ? h(SegmentMissingPanel, { trip, error: segmentError })
+          : active
           ? h(TripPanel, { trip, segment, store, conn, onTripChange, onRide, onRestart: (body) => startTrip(c.segmentId, body) })
           : h(StartPanel, {
             course: c, defaults: latestTrip(allTrips),
@@ -121,6 +135,18 @@ export function HomeScreen({ trip, segment, store, persistent, notice, client, o
       h(CourseLegend, { progress })),
     active && h(TripTabs, { trip, segment, store, onTripChange, courseName: courses.find((c) => c.segmentId === selId)?.name, onImport: () => fileRef.current.click() }),
     importInput);
+}
+
+/** 旅の今いる区間のデータを読めないとき: 走れないことと、できること(再読み込み・書き出し・ほかのコース)を出す。 */
+function SegmentMissingPanel({ trip, error }) {
+  const known = !!getSegment(trip.position.segmentId);
+  return h('div', { className: 'course-panel' },
+    h('div', { className: 'panel-title' }, `${trip.day}日目の旅`),
+    h('p', { className: 'err' }, known
+      ? `道のデータを読めませんでした(${error?.message ?? '通信できません'})。通信できる所でもう一度読み込んでください。`
+      : `この旅の区間(${trip.position.segmentId})は、このアプリにはありません。アプリを更新してください。`),
+    h('p', { className: 'muted' }, 'ほかのコースは上の一覧から選べます。この旅は下の「設定と記録」から書き出せます。'),
+    known && error?.retry && h('div', { className: 'row' }, h('button', { onClick: error.retry }, 'もう一度読み込む')));
 }
 
 /** いちばん新しく更新した旅(新しい旅の体重・自転車・設定の初期値に使う)。 */
@@ -203,7 +229,9 @@ function TripTabs({ trip, segment, store, onTripChange, courseName, onImport }) 
   }
   const morningOnly = h('p', { className: 'muted' }, '走行の途中です。荷物の見直しや電車・船は、その日を終えた翌朝からできます。');
   let body;
-  if (tab === 'gear') body = midRide ? morningOnly : h(GearCard, { trip, segment, store, onTripChange });
+  const noSegment = h('p', { className: 'muted' }, '道のデータを読めないので、荷物の見直しや電車・船は使えません。');
+  if (!segment && (tab === 'gear' || tab === 'transfer')) body = noSegment;
+  else if (tab === 'gear') body = midRide ? morningOnly : h(GearCard, { trip, segment, store, onTripChange });
   else if (tab === 'transfer') {
     const node = currentNode(trip, segment);
     body = midRide ? morningOnly
@@ -233,7 +261,8 @@ function TripTabs({ trip, segment, store, onTripChange, courseName, onImport }) 
       h('p', { className: 'muted' }, '旅は走行中30秒ごとに自動で保存されます。ブラウザのデータは消えることがあるので、ときどき書き出しておくと安心です。書き出すのは、このコースの旅です。'),
       h('div', { className: 'row' },
         h('button', { onClick: () => downloadTrip(trip) }, '旅を書き出す'),
-        h('button', { onClick: onImport }, '旅を読み込む')));
+        h('button', { onClick: onImport }, '旅を読み込む')),
+      h(RestoreSnapshots, { trip, store, onTripChange }));
   }
   return h('div', { className: 'card' },
     h('h2', null, `「${courseName ?? ''}」の旅の手帳`),
@@ -242,6 +271,37 @@ function TripTabs({ trip, segment, store, onTripChange, courseName, onImport }) 
         key: k, type: 'button', role: 'tab', 'aria-selected': tab === k, className: `tab${tab === k ? ' on' : ''}`, onClick: () => setTab(k),
       }, label))),
     h('div', { className: 'tab-body' }, body));
+}
+
+const SNAPSHOT_KINDS = { auto: '走行中の自動保存', event: '出来事の後', rideEnd: '走行の終わり', dayEnd: '日の終わり', import: '読み込み' };
+
+/** 前の保存に戻す: この旅の残っている世代(直近と、最近の日の終わり)から選んで、その時点を続きにする。 */
+function RestoreSnapshots({ trip, store, onTripChange }) {
+  const [list, setList] = useState(null);
+  const [msg, setMsg] = useState(null);
+  async function open() {
+    setMsg(null);
+    setList((await store.listSnapshots(trip.tripId).catch(() => [])).slice(1)); // いちばん新しいのは今の状態
+  }
+  async function restore(m) {
+    const when = new Date(m.savedAt).toLocaleString('ja-JP');
+    if (!confirm(`${when} の保存(${m.day}日目・${SNAPSHOT_KINDS[m.kind] ?? m.kind})に戻しますか?\n今の状態も保存に残るので、あとでまた戻せます。`)) return;
+    const r = await store.readSnapshot(m.id);
+    if (!r.ok) { setMsg(`この保存は読めませんでした: ${r.error}`); return; }
+    const t = { ...r.trip, updatedAt: Date.now() };
+    await store.save(t, 'import');
+    setList(null);
+    onTripChange(t);
+  }
+  return h('div', null,
+    h('h3', null, '前の保存に戻す'),
+    list === null
+      ? h('button', { className: 'link', onClick: open }, '残っている保存を見る')
+      : list.length === 0 ? h('p', { className: 'muted' }, '戻せる保存はまだありません。')
+      : list.map((m) => h('div', { key: m.id, className: 'row', style: { margin: '4px 0' } },
+        h('button', { onClick: () => restore(m) },
+          `${new Date(m.savedAt).toLocaleString('ja-JP')}・${m.day}日目・${SNAPSHOT_KINDS[m.kind] ?? m.kind}`))),
+    msg && h('p', { className: 'err' }, msg));
 }
 
 /** 旅の地図と日誌。日誌の日をタップすると、その日に走った道が地図で光る。 */

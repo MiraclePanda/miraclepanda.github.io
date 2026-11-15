@@ -13,8 +13,8 @@ import { routesFrom, segmentSummary } from './network.js';
 import { SURFACES } from '../physics/surfaces.js';
 import { talesFor, pickTale } from './encounters.js';
 import { PhysicsConstants } from '../physics/physicsConstants.js';
-import { nearestPlace } from '../physics/segmentRoute.js';
 import { addRideEvent, endDay, passTripTime } from '../storage/tripState.js';
+import { nearestPlace } from '../physics/segmentRoute.js';
 import { clamp100 } from './body.js';
 
 // ---- seed ----
@@ -278,9 +278,15 @@ export function failDay(trip, segment, failure) {
   if (failure === 'sunset') {
     return stayAt(t, hasTent(t) ? { kind: 'park', name: '近くの公園', yen: 0 } : { kind: 'bivouac', name: '近くの公園で野宿', yen: 0 });
   }
+  // 救護所へは一番近い町へ運ばれる。運ばれた分は走った距離に数えない(旅の累積距離 totalM はそのまま。
+  // 区間の中の位置だけ動かし、legs に「ここから入り直した」印 startM を残す。地図では運ばれた所に線を引かない)
   const town = nearestPlace(segment, t.position.segmentM, ['town']);
-  const moved = town
-    ? { ...t, position: { ...t.position, segmentM: town.atM, totalM: t.position.totalM + (town.atM - t.position.segmentM) } }
+  const moved = town && town.atM !== t.position.segmentM
+    ? {
+      ...t,
+      position: { ...t.position, segmentM: town.atM },
+      legs: [...(t.legs ?? []), { segmentId: t.position.segmentId, startTotalM: t.position.totalM, startM: town.atM, rescue: true }],
+    }
     : t;
   return stayAt(moved, { kind: 'rescue', name: `${town?.name ?? '近くの町'}の救護所`, yen: f.yen });
 }

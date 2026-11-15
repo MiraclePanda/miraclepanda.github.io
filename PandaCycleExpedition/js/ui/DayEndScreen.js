@@ -9,7 +9,6 @@ import { trackForDay, downloadTrackTcx } from '../storage/tcx.js';
 
 export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRide }) {
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
   const failed = !!FAILURES[reason];
 
   // 失敗(救護・野宿)はもう1日が終わっている。日誌の最後の日を見せる
@@ -35,9 +34,8 @@ export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRid
       await store.save(t, 'dayEnd');
       onDone(t);
     } catch (e) {
-      setError(`保存できませんでした: ${e.message}。旅を書き出しておいてください。`);
-      setSaving(false);
-      onDone(t);
+      // 画面はすぐホームに変わるので、知らせはホームに出してもらう
+      onDone(t, `宿に泊まった記録を保存できませんでした(${e.message})。ホームの「設定と記録」から旅を書き出しておいてください。`);
     }
   }
   return h('div', { className: 'page' },
@@ -45,7 +43,6 @@ export function DayEndScreen({ trip, segment, store, reason, onDone, onBackToRid
       h('p', { className: 'hero-kicker' }, `${trip.day}日目・旅日誌`),
       h('h1', null, reason === 'arrived' ? `${segment.goalName ?? '終点'}に着いた!` : `${trip.day}日目、ここまで`)),
     h('p', { className: 'sub' }, `旅の時刻 ${fmtClock(trip.clockMinutes)}・今日 ${(trip.ride.distanceM / 1000).toFixed(1)} km・所持金 ${trip.wallet.yen.toLocaleString()} 円`),
-    error && h('p', { className: 'err' }, error),
     h(TcxButton, { track: trackForDay(trip, trip.day) }),
     h('p', { className: 'muted' }, `明日(${trip.day + 1}日目)の天気予報: ${forecastText(forecastDay(trip.tripId, trip.day + 1))}`),
     h('div', { className: 'card' },

@@ -39,6 +39,12 @@ export class WakeLockManager {
     }
   }
 
+  /** 走行画面を閉じるとき: ロックを外し、表示の切り替えの見張りもやめる(走行のたびに見張りが増えないように)。 */
+  destroy() {
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    return this.disable();
+  }
+
   async _onVisibilityChange() {
     if (this._wanted && document.visibilityState === 'visible' && !this._sentinel) {
       await this.enable();
