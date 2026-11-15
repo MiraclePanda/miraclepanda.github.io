@@ -1,7 +1,8 @@
-import { h, useRef, useEffect, useState } from './h.js';
+import { useSceneHost } from './sceneHost.js';
 import THREE from '../three/three.js';
-import { startSceneRenderer } from '../three/gpuBackend.js';
-import { trunkNearGeometry } from '../three/treeModels.js';
+import { snapShadowCenter, shadowTexelM } from '../three/shadowSnap.js';
+import { trunkNearGeometry, trunkFarGeometry, canopyBlobFarGeometry } from '../three/treeModels.js';
+import { splitStaticPools } from '../three/staticCells.js';
 import { mulberry32, FLOOR_HEIGHT_M } from '../three/cityLayout.js';
 import { createCityTextures, createFacadeMaterial, createFacadeGeometry, FACADE_TILE } from '../three/cityMaterials.js';
 import { createWaterNormalTexture, createRetainingWallTexture, createTerrainDetailTexture } from '../three/landscapeMaterials.js';
@@ -11,19 +12,18 @@ import {
 } from '../three/pondLayout.js';
 import {
   bakeSky, mergeGeometries, buildCanopyGeometry, buildSwanBoat, createAvatar, updateRiderAvatar,
-  makePool, pushInstance, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
-  setCameraFov, setAvatarVisible,
-  reportReadyAfterDraw, renderScene, maxAnisotropy,
+  makePool, pushInstance, commitPool, setCameraFov, setAvatarVisible,
+  renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
 import {
-  normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+  estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
   AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
 import { seasonalTree, seasonalGround, mixHex } from '../three/seasonLook.js';
 import { createOcean } from '../three/oceanWater.js';
 
-const { forwardRef, useImperativeHandle } = React;
+const { forwardRef } = React;
 
 // 秋晴れの東京。遠景のビル群やスカイツリーが霞む程度の大気
 const ATMO = {
@@ -73,111 +73,30 @@ const world = (x, y, hgt = 0) => new THREE.Vector3(x, hgt, -y);
  * スカイツリー)は1周1.2kmの小さな世界なので、初期化時に1度だけ組み立てて固定し、
  * 毎フレームはボート・カメラ・影の範囲・他のスワンボートだけを動かす。
  */
-export const PondScene = forwardRef(function PondScene({ courseEngine, vehicle = 'swan', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
-  const canvasRef = useRef(null);
-  const sceneRef = useRef(null);
-  const [renderError, setRenderError] = useState(null);
-  const onQualityChangeRef = useRef(onQualityChange);
-  onQualityChangeRef.current = onQualityChange;
-  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
-  const onReadyRef = useRef(onReady);
-  onReadyRef.current = onReady;
-  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
-  useEffect(() => {
-    if (renderError) onReadyRef.current?.();
-  }, [renderError]);
-
-  useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh, cadenceRpm }) {
-      const s = sceneRef.current;
-      if (!s) return;
-      try {
-        adaptQuality(s);
-        drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm);
-        reportReadyAfterDraw(s);
-      } catch (err) {
-        // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
-        console.error('3D の描画に失敗しました:', err);
-        setRenderError(String(err));
-      }
-    },
-    /** フルスクリーン切替などでキャンバスの表示サイズが変わった時に呼ぶ。 */
-    resize() {
-      if (sceneRef.current) resizeScene(sceneRef.current);
-    },
-  }));
-
-  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
-  const live = useRef({});
-  live.current = { qualityMode, environment, cameraView };
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
-    return startSceneRenderer(canvas, (renderer) => {
-      let scene3d;
-      try {
-        scene3d = initScene(canvas, vehicle, season, renderer);
-        sceneRef.current = scene3d;
-        scene3d.onReady = () => onReadyRef.current?.();
-      } catch (err) {
-        setRenderError(String(err));
-        return;
-      }
-
+export const PondScene = forwardRef(function PondScene(props, ref) {
+  const { vehicle = 'swan', season = null } = props;
+  const { shell } = useSceneHost(ref, props, {
+    // 池は chase / aerial / fp のみ(cine は chase 扱い)
+    allowCine: false,
+    build(canvas, renderer) {
+      const scene3d = initScene(canvas, vehicle, season, renderer);
       // 走行環境は時間帯のみ(天候は晴れ固定)。昼なら何もしない(従来の見た目のまま)。
       scene3d.env = createEnvironmentController(scene3d, {
         base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
         headlightParent: scene3d.rider.group, weather: false, season,
       });
-      scene3d.env.set(live.current.environment, { immediate: true });
-      // 池は chase / aerial / fp のみ(cine は chase 扱い)
-      scene3d.cam.view = normalizeCameraView(live.current.cameraView, false);
-
-      const resize = () => resizeScene(scene3d);
       // 描画品質「最高(実験)」: 池の水面にボート・木々・空が映り込む
       scene3d.onUltraChange = (on) => scene3d.ocean.setEnabled(on);
-      scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-      scene3d.appliedQualityMode = live.current.qualityMode;
-      setupQuality(scene3d, live.current.qualityMode);
-      window.addEventListener('resize', resize);
-
-      return () => {
-        window.removeEventListener('resize', resize);
-        scene3d.ocean.dispose();
-        disposeScene(scene3d);
-        sceneRef.current = null;
-      };
-    }, (err) => setRenderError(String(err)));
-  }, []);
-
-  // 走行中に描画品質のモードが変更されたら適用する(初回はsetupQualityで適用済み)。
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s || s.appliedQualityMode === qualityMode) return;
-    s.appliedQualityMode = qualityMode;
-    setQualityMode(s, qualityMode);
-  }, [qualityMode]);
-
-  // 走行中に時間帯が変わったら、空を焼き直し、光・霧などを約1.5秒かけて切り替える。
-  useEffect(() => {
-    sceneRef.current?.env.set(environment);
-  }, [environment?.time]);
-
-  // 視点の切り替え(即時)。池は chase / aerial / fp のみ(cine は chase 扱い)。
-  useEffect(() => {
-    if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView, false);
-  }, [cameraView]);
-
-  return h(
-    'div', { className: 'city-scene-wrap' },
-    h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': 'ueno', 'data-vehicle': vehicle }),
-    renderError &&
-      h(
-        'div', { className: 'city-scene-fallback' },
-        '3D表示を利用できません(WebGL非対応の可能性があります)。走行データはダッシュボードでご確認ください。'
-      )
-  );
+      return scene3d;
+    },
+    draw(s, { distanceKm, speedKmh, cadenceRpm }) {
+      drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm);
+    },
+    dispose(s) {
+      s.ocean.dispose();
+    },
+  });
+  return shell({ 'data-scenery': 'ueno', 'data-vehicle': vehicle });
 });
 
 // ---- シーン初期化 ----
@@ -233,6 +152,15 @@ function initScene(canvas, vehicle, season, renderer) {
   const objects = collectPondObjects();
   const pools = buildPools(scene, city);
   placeStatic(pools, objects, season);
+  // 区画ごとのメッシュに分け、画面の外・影の範囲の外の区画を描かない。木は遠い区画を遠くの形に(staticCells.js)
+  const tree = { cellM: 150 };
+  const other = { cellM: 600 };
+  const statics = splitStaticPools(scene, pools, {
+    trunks: { ...tree, far: trunkFarGeometry() },
+    canopies: { ...tree, far: canopyBlobFarGeometry() },
+    willows: tree, cones: tree, lamps: other, lotus: other, lotusBuds: other, roofs: other,
+    bld_stucco: other, bld_concrete: other, bld_glass: other, bld_brick: other,
+  });
 
   // 弁天堂・ボート乗り場・スカイツリー
   scene.add(buildBentendo(objects.bentendo));
@@ -260,7 +188,7 @@ function initScene(canvas, vehicle, season, renderer) {
   return {
     canvas, renderer, scene, camera, sky, hemiLight, sunLight, textures, waterNormal,
     ocean: createOcean(water),
-    moored, others, rider,
+    moored, others, rider, statics,
     // 視点: view = 'chase' | 'aerial' | 'fp'、crankRad = 目線の揺れ用のクランク角
     cam: { view: 'chase', crankRad: 0 },
     clock: new THREE.Clock(),
@@ -560,6 +488,9 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm) {
   const dist = distanceKm * 1000;
   const here = routeWorld(dist);
 
+  // 木: ボートから描画品質の treeNearR より遠い区画は遠くの形(表示の切り替えだけ)
+  st.statics.update(here.pos.x, here.pos.z, st.treeNearR ?? Infinity);
+
   // スワンボート(ライダー)
   st.rider.group.position.copy(here.pos);
   st.rider.group.rotation.y = yawFromHeading(here.heading);
@@ -591,9 +522,11 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm) {
   }
 
   // 影はボートの周りだけ描けばよいので、影カメラごとボートに付いていく
-  st.sunLight.target.position.copy(here.pos);
+  // 中心は影の1画素の刻みに丸める(走行中に影の縁がちらつかないように。shadowSnap.js)
+  const c = snapShadowCenter(here.pos.x, here.pos.y, here.pos.z, st.env.sunDir, shadowTexelM(st.sunLight));
+  st.sunLight.target.position.set(c[0], c[1], c[2]);
   // 太陽の向きは走行環境の時間帯で変わる(昼は ATMO.sunDir と同じ値)
-  st.sunLight.position.copy(here.pos).addScaledVector(st.env.sunDir, 180);
+  st.sunLight.position.set(c[0], c[1], c[2]).addScaledVector(st.env.sunDir, 180);
 
   // 他のスワンボート(ゆっくり反時計回り)と、係留中のボートの揺れ
   const t = (performance.now() - st.startedAt) / 1000;

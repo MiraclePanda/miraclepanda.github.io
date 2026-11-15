@@ -123,6 +123,29 @@ export function saveRenderQuality(value) {
   }
 }
 
+// 描画の方式(設定画面で選ぶ): 'webgl'(標準)/ 'webgpu'(試験的。使えない端末では WebGL で描く)。
+// 端末ごとに覚える(PandaCycleExpedition と同じ)。URL の ?gpu= はこの選択より優先する(gpuBackend.js)。
+const GPU_BACKEND_KEY = 'pct_gpu_backend_v1';
+export const GPU_BACKEND_VALUES = ['webgl', 'webgpu'];
+
+export function loadGpuBackend(storage = globalThis.localStorage) {
+  try {
+    const value = storage?.getItem(GPU_BACKEND_KEY);
+    return GPU_BACKEND_VALUES.includes(value) ? value : 'webgl';
+  } catch (e) {
+    return 'webgl';
+  }
+}
+
+export function saveGpuBackend(value, storage = globalThis.localStorage) {
+  if (!GPU_BACKEND_VALUES.includes(value)) return;
+  try {
+    storage?.setItem(GPU_BACKEND_KEY, value);
+  } catch (e) {
+    // 保存できない環境では、その回だけの選択になる
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 走行画面の環境(時間帯・天候)。PR2+3 仕様 §2。
 // 値の一覧は three/environmentPresets.js の TIMES / WEATHERS のキーと一致させること

@@ -1173,3 +1173,16 @@ p { line-height: 1.6; }
   animation: scene-loading-spin 0.9s linear infinite;
 }
 @keyframes scene-loading-spin { to { transform: rotate(360deg); } }
+
+/* 画面全体の Error Boundary(ErrorBoundary.js) */
+.error-screen .error-detail {
+  white-space: pre-wrap; word-break: break-word; font-size: 0.8rem;
+  background: rgba(0, 0, 0, 0.06); padding: 8px 12px; border-radius: 6px;
+}
+
+/* ?perf=1 の描画の重さ(走行画面の左下。PandaCycleExpedition と同じ) */
+.perf-panel {
+  position: absolute; left: 8px; bottom: 18px; z-index: 5; padding: 4px 8px; border-radius: 6px; pointer-events: none;
+  background: rgba(0, 0, 0, 0.6); color: #e8f4ea; font: 0.72rem/1.4 ui-monospace, monospace;
+}
+.scene-rebuilding { background: rgba(0, 0, 0, 0.55); }

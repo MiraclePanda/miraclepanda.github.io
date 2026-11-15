@@ -1,6 +1,5 @@
-import { h, useRef, useEffect, useState } from './h.js';
+import { useSceneHost } from './sceneHost.js';
 import THREE from '../three/three.js';
-import { startSceneRenderer } from '../three/gpuBackend.js';
 import { trunkNearGeometry } from '../three/treeModels.js';
 import {
   collectSceneObjects, mulberry32,
@@ -12,12 +11,11 @@ import { buildRouteFrame, toLocalInto, clampInsideOffset, curvatureAtM } from '.
 import { createCityTextures, createFacadeMaterial, createFacadeGeometry, FACADE_TILE } from '../three/cityMaterials.js';
 import {
   RIDER_X_M, bakeSky, mergeGeometries, buildCanopyGeometry, createAvatar, updateRiderAvatar,
-  makePool, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
-  setCameraFov, setAvatarVisible,
-  reportReadyAfterDraw, renderScene, maxAnisotropy,
+  makePool, pushInstanceYawPitch, commitPool, setCameraFov, setAvatarVisible,
+  renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
 import {
-  createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+  createCineDirector, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
   AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_SIDE_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
@@ -26,7 +24,7 @@ import { createOtherRiders } from '../three/otherRiders.js';
 import { createRoadsideActors } from '../three/roadsideActors.js';
 import { clearZones, inClearZone } from '../three/roadsideLayout.js';
 
-const { forwardRef, useImperativeHandle } = React;
+const { forwardRef } = React;
 
 // 描画ウィンドウ(現在位置から前後何mを描画するか)。遠方は大気遠近(フォグ)で溶かす。
 const BEHIND_M = 20;
@@ -118,61 +116,13 @@ const ASPHALT_TILE_M = 8;
  * ref経由のdraw()呼び出しで直接Three.jsシーンを更新・描画する
  * (Dashboardと同じ設計方針)。
  */
-export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
-  const canvasRef = useRef(null);
-  const sceneRef = useRef(null);
-  const [renderError, setRenderError] = useState(null);
-  // 品質段階の変化(自動調整による段階変更を含む)を親へ通知する。最新のコールバックを参照するためrefで持つ。
-  const onQualityChangeRef = useRef(onQualityChange);
-  onQualityChangeRef.current = onQualityChange;
-  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
-  const onReadyRef = useRef(onReady);
-  onReadyRef.current = onReady;
-  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
-  useEffect(() => {
-    if (renderError) onReadyRef.current?.();
-  }, [renderError]);
-
-  useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
-      const s = sceneRef.current;
-      if (!s || !courseEngine) return;
-      try {
-        adaptQuality(s);
-        drawFrame(s, courseEngine, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
-        reportReadyAfterDraw(s);
-      } catch (err) {
-        // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を
-        // 巻き込んでクラッシュさせない。
-        console.error('3D の描画に失敗しました:', err);
-        setRenderError(String(err));
-      }
-    },
-    /** フルスクリーン切替などでキャンバスの表示サイズが変わった時に呼ぶ。 */
-    resize() {
-      if (sceneRef.current) resizeScene(sceneRef.current);
-    },
-  }));
-
-  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
-  const live = useRef({});
-  live.current = { qualityMode, environment, cameraView };
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
-    return startSceneRenderer(canvas, (renderer) => {
-      let scene3d;
-      try {
-        scene3d = initScene(canvas, vehicle, renderer);
-        scene3d.season = season;
-        sceneRef.current = scene3d;
-        scene3d.onReady = () => onReadyRef.current?.();
-      } catch (err) {
-        setRenderError(String(err));
-        return;
-      }
-
+export const CityScene = forwardRef(function CityScene(props, ref) {
+  const { courseEngine, vehicle = 'bike', season = null } = props;
+  const { shell } = useSceneHost(ref, props, {
+    enabled: !!courseEngine,
+    build(canvas, renderer) {
+      const scene3d = initScene(canvas, vehicle, renderer);
+      scene3d.season = season;
       // 走行環境(時間帯・天候)。昼・晴れなら何もしない(従来の見た目のまま)。
       scene3d.env = createEnvironmentController(scene3d, {
         base: BASE_ATMO, hemiLight: scene3d.hemiLight, sunLight: scene3d.sunLight,
@@ -180,50 +130,13 @@ export const CityScene = forwardRef(function CityScene({ courseEngine, vehicle =
         headlightParent: scene3d.rider.group,
         season,
       });
-      scene3d.env.set(live.current.environment, { immediate: true });
-      scene3d.cam.view = normalizeCameraView(live.current.cameraView);
-
-      const resize = () => resizeScene(scene3d);
-      scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-      scene3d.appliedQualityMode = live.current.qualityMode;
-      setupQuality(scene3d, live.current.qualityMode);
-      window.addEventListener('resize', resize);
-
-      return () => {
-        window.removeEventListener('resize', resize);
-        disposeScene(scene3d);
-        sceneRef.current = null;
-      };
-    }, (err) => setRenderError(String(err)));
-  }, []);
-
-  // 走行中に描画品質のモードが変更されたら適用する(初回はsetupQualityで適用済み)。
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s || s.appliedQualityMode === qualityMode) return;
-    s.appliedQualityMode = qualityMode;
-    setQualityMode(s, qualityMode);
-  }, [qualityMode]);
-
-  // 走行中に時間帯・天候が変わったら、空を焼き直し、光・霧などを約1.5秒かけて切り替える。
-  useEffect(() => {
-    sceneRef.current?.env.set(environment);
-  }, [environment?.time, environment?.weather]);
-
-  // 視点の切り替え(即時)。次の draw() から反映される。
-  useEffect(() => {
-    if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView);
-  }, [cameraView]);
-
-  return h(
-    'div', { className: 'city-scene-wrap' },
-    h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-vehicle': vehicle }),
-    renderError &&
-      h(
-        'div', { className: 'city-scene-fallback' },
-        '3D表示を利用できません(WebGL非対応の可能性があります)。走行データはダッシュボードでご確認ください。'
-      )
-  );
+      return scene3d;
+    },
+    draw(s, { distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
+      drawFrame(s, courseEngine, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
+    },
+  });
+  return shell({ 'data-vehicle': vehicle });
 });
 
 // ---- シーン初期化 ----

@@ -1,9 +1,11 @@
 // 描画の方式(WebGPU / WebGL)を選ぶ。
 //
-// WebGPU を使える端末(多くのパソコン、Android 12 以上の一部)では WebGPU で描き、使えなければ今まで通り
-// WebGL で描く。WebGPU は描く物が多い場面(実在の街の建物・木、森)で CPU の負担が軽い。
+// どちらで描くかは設定画面の「描画の方式」で選ぶ(prefs.js の loadGpuBackend。既定は WebGL。端末ごとに覚える)。
+// 前は WebGPU を使える端末では WebGPU で描いていたが、three.js の WebGPU 用の描き方は1つの物を描くたびの
+// CPU の手間が大きく、PandaCycleExpedition の確認では Intel N100 のパソコンで WebGL のほうが約 1.5 倍速かった
+// (2026-11-15、ユーザーの実機)。WebGPU を選んでも使えない端末では WebGL で描く。
 // ソフトウェアで動く代替の GPU(isFallbackAdapter)は遅いので選ばない。
-// 判定はアプリの起動時に一度だけ(prepareGpuBackend)。景色は startSceneRenderer でレンダラーを受け取る。
+// 判定は起動時と、方式を選び直したとき(prepareGpuBackend)。景色は startSceneRenderer でレンダラーを受け取る。
 //
 // WebGPU では GLSL の差し替え(onBeforeCompile)や ShaderMaterial が使えないので、独自の描き方
 // (建物の窓・ゴースト・水面の映り込み・海底の光と昆布・遠景の実在の地形・仕上げのエフェクト)は
@@ -11,13 +13,14 @@
 // (WebGL のレンダラーは *Node の設定を無視し、WebGPU のレンダラーは onBeforeCompile を無視するので、両方持たせてよい)。
 // 空(sceneKit.js の bakeSky)だけは GLSL のまま、画面に出さない WebGL で焼いて WebGPU に渡す。
 //
-// URL の ?gpu=webgpu / ?gpu=webgl で固定できる(確認用)。?gpu=webgpu-gl は WebGPU 用の描き方(ノード・TSL)を
+// URL の ?gpu=webgpu / ?gpu=webgl は設定画面の選択より優先する(確認用)。?gpu=webgpu-gl は WebGPU 用の描き方(ノード・TSL)を
 // WebGL2 の上で動かす確認用(ヘッドレスのブラウザでは WebGPU の画面が出ないため)。
 import THREE, { loadThreeWebGPU } from './three.js';
 
 let decided = null; // 'webgpu' | 'webgpu-gl' | 'webgl'(決まるまで null)
 let pending = null;
 let gpuModule = null;
+let wanted = null; // いま決めている(決めた)方式の希望('webgpu' | 'webgpu-gl' | 'webgl')
 
 /** 読み込んだ WebGPU 版の three.js(WebGPU で描くと決まった後だけ。WebGL なら null)。 */
 export function threeWebGPU() {
@@ -47,42 +50,63 @@ function forcedBackend() {
   }
 }
 
-async function detect() {
+/** want('webgpu' | 'webgpu-gl')で描けるかを確かめ、使う方式と(WebGPU なら)three.js の WebGPU 版を返す。 */
+async function detect(want) {
   const forced = forcedBackend();
-  if (forced === 'webgl') return 'webgl';
   try {
-    if (forced !== 'webgpu-gl') {
-      if (!navigator.gpu) return 'webgl';
+    if (want !== 'webgpu-gl') {
+      if (!navigator.gpu) return { mode: 'webgl', module: null };
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-      if (!adapter) return 'webgl';
+      if (!adapter) return { mode: 'webgl', module: null };
       const fallback = adapter.info?.isFallbackAdapter ?? adapter.isFallbackAdapter;
-      if (fallback && forced !== 'webgpu') return 'webgl';
+      if (fallback && forced !== 'webgpu') return { mode: 'webgl', module: null };
     }
-    gpuModule = await loadThreeWebGPU();
-    return forced === 'webgpu-gl' ? 'webgpu-gl' : 'webgpu';
+    return { mode: want, module: await loadThreeWebGPU() };
   } catch (err) {
     console.warn('WebGPU を使えないので WebGL で描きます:', err);
-    gpuModule = null;
-    return 'webgl';
+    return { mode: 'webgl', module: null };
   }
 }
 
-/** 描画の方式を決める(何度呼んでもよい。アプリの起動時に呼んでおく)。 */
-export function prepareGpuBackend() {
-  if (decided) return Promise.resolve(decided);
-  if (!pending) {
-    // WebGPU の無いブラウザでは待たずに決める(景色をすぐ組み立てられるように)
-    const forced = forcedBackend();
-    if (forced === 'webgl' || (!forced && typeof navigator !== 'undefined' && !navigator.gpu)) {
-      decided = 'webgl';
-      return Promise.resolve(decided);
-    }
-    pending = detect().then((mode) => {
-      decided = mode;
-      return mode;
-    });
+/** 走行画面で WebGPU を試すか。URL の ?gpu= があればそれ、無ければ設定画面で選んだ方式 choice('webgl' | 'webgpu')。 */
+export function wantsWebGPU(choice) {
+  const forced = forcedBackend();
+  if (forced) return forced !== 'webgl';
+  return choice === 'webgpu';
+}
+
+/** この端末のブラウザに WebGPU があるか(設定画面の選択欄の表示用。実際に使えるかは作ってみるまで分からない)。 */
+export function hasWebGPU() {
+  return typeof navigator !== 'undefined' && !!navigator.gpu;
+}
+
+/**
+ * 描画の方式を決める。choice は設定画面の「描画の方式」('webgl' | 'webgpu')。URL の ?gpu= があればそちらを使う。
+ * 起動時と、方式を選び直したときに呼ぶ(同じ希望なら何度呼んでもよい)。次に組み立てる景色から使われる。
+ */
+export function prepareGpuBackend(choice = 'webgl') {
+  const forced = forcedBackend();
+  const want = forced ?? (choice === 'webgpu' ? 'webgpu' : 'webgl');
+  if (want === wanted && (decided || pending)) return decided ? Promise.resolve(decided) : pending;
+  wanted = want;
+  decided = null;
+  gpuModule = null;
+  pending = null;
+  // WebGL、または WebGPU の無いブラウザでは待たずに決める(景色をすぐ組み立てられるように)
+  if (want === 'webgl' || (want === 'webgpu' && !hasWebGPU())) {
+    decided = 'webgl';
+    return Promise.resolve(decided);
   }
-  return pending;
+  const p = detect(want).then(({ mode, module }) => {
+    // 待つ間に選び直されたら、新しい方の結果だけを使う
+    if (pending !== p) return decided ?? mode;
+    pending = null;
+    decided = mode;
+    gpuModule = module;
+    return mode;
+  });
+  pending = p;
+  return p;
 }
 
 function createWebGL(canvas) {
@@ -95,9 +119,12 @@ function createWebGL(canvas) {
  * @param {HTMLCanvasElement} canvas
  * @param {(renderer: object) => (void|(() => void))} mount
  * @param {(err: unknown) => void} onError レンダラーを作れなかったとき
+ * @param {() => void} [onRetry] WebGPU の初期化に失敗したとき。一度 WebGPU に使った canvas では WebGL を作れない
+ *   ことがあるので、渡されていれば新しい canvas で組み直してもらう(以後は WebGL。レビュー Q13)。
+ *   渡されていなければ同じ canvas で WebGL を試す
  * @returns {() => void}
  */
-export function startSceneRenderer(canvas, mount, onError) {
+export function startSceneRenderer(canvas, mount, onError, onRetry) {
   let alive = true;
   let cleanup = null;
   let renderer = null;
@@ -140,6 +167,10 @@ export function startSceneRenderer(canvas, mount, onError) {
       // 以後の景色も WebGL で描く
       decided = 'webgl';
       gpuModule = null;
+      if (onRetry) {
+        onRetry();
+        return;
+      }
       try {
         renderer = createWebGL(canvas);
       } catch (e) {
@@ -150,7 +181,7 @@ export function startSceneRenderer(canvas, mount, onError) {
     });
   };
   if (decided) start();
-  else prepareGpuBackend().then(start);
+  else (pending ?? prepareGpuBackend()).then(start);
   return () => {
     alive = false;
     cleanup?.();

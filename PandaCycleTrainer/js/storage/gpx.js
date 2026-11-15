@@ -51,6 +51,18 @@ function readPoints(text, tag) {
 }
 
 /**
+ * 読み込む GPX ファイルの大きさの上限(バイト)。数時間分の記録でも数 MB なので、これを超えるものは
+ * 間違ったファイルとして断る(丸ごと文字列にして正規表現で読むので、巨大なファイルで画面が固まらないように)。
+ */
+export const GPX_MAX_BYTES = 30 * 1024 * 1024;
+
+/** ファイルの大きさを確かめる。上限を超えていれば画面表示用のメッセージ、問題なければ null。 */
+export function gpxSizeError(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= GPX_MAX_BYTES) return null;
+  return `ファイルが大きすぎます(${(bytes / 1024 / 1024).toFixed(0)} MB。${GPX_MAX_BYTES / 1024 / 1024} MB まで)。`;
+}
+
+/**
  * GPX テキストを解析する。
  * トラック(trkpt、全セグメントを順に連結)を優先し、無ければルート(rtept)を使う。
  * @param {string} text GPX ファイルの中身

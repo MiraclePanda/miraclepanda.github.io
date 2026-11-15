@@ -17,7 +17,6 @@
 // 距離・記録には影響しない(js/three/routeLayout.js で道路の平面形状に変換する)。
 // 上野は PondScene が独自の周回ルートを持つため指定しない。熱海は実在の道の方位の表(GPX と同じ形)。
 // 観光地コース(tag: '観光地')は専用の景色を使い、次の項目を持つ:
-//   backdrop: 遠景('fuji' = 作り物の富士山。LandscapeScene が空と一緒に回る遠景として描く。現在は未使用)
 //   landmarks: [{ km, kind, side, lateralM, yaw?, viewM? }] 1周ごとに置く名所(js/three/happeningsLayout.js)。
 //     kind は大鳥居・五重塔・三重塔・三門・楼門・大仏殿・清水の舞台・浮見堂・竜宮門・竜宮城・乙姫の舞台・
 //     玉手箱(LANDMARK_KINDS)。
@@ -186,7 +185,7 @@ export const COURSE_PROFILES = [
     scenery: 'kawaguchiko',
     description: `河口湖大橋のたもとから、河口湖の北岸を西へ。湖の向こうに本物の富士山を眺めながら、河口の集落・大石公園を通ってもみじ回廊の近くまで行き、同じ道を戻る実在の道(1周${(FUJI_TOWN_DATA.loopLengthM / 1000).toFixed(1)}km)。地形・湖・道路・建物の形は国土地理院のデータから(この辺りは PLATEAU が無いため、建物の高さは推定)。`,
     // 実在の道(js/physics/realTowns/fuji.js、tools/real-towns/build.py が生成): 1周 = 往復 + Uターン2回。
-    // 富士山は遠景の地形(国土地理院の標高)そのものなので、作り物の遠景(backdrop)は使わない
+    // 富士山は遠景の地形(国土地理院の標高)そのもの
     ...townCourse(FUJI_TOWN_DATA),
     landmarks: townLandmarks(FUJI_TOWN_DATA, ['chureito', 'torii']),
     guide: townGuide(FUJI_TOWN_DATA, [

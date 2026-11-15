@@ -9,7 +9,7 @@ GitHub Pages (`https://miraclepanda.github.io/`) の公開リポジトリ。**ma
 
 | パス | 内容 | 構成 |
 |---|---|---|
-| `PandaCycleTrainer/` | **PandaCycleTrainer**。上流 `MiraclePanda/PandaCycleTrainer` のミラー | React 18 UMD(unpkg) + ES モジュール + Three.js r186(ESM, jsDelivr) / IndexedDB |
+| `PandaCycleTrainer/` | **PandaCycleTrainer**。上流 `MiraclePanda/PandaCycleTrainer` のミラー | React 18 UMD + ES モジュール + Three.js r186(ESM)。ライブラリは `PandaCycleTrainer/vendor/` に同梱(CDN なし・CSP で同じ配信元に限定) / IndexedDB |
 | `PandaCycleExpedition/` | **PandaCycleExpedition**(グラベルバイクの旅)。上流 `MiraclePanda/PandaCycleExpedition` のミラー(`index.html`・`css/`・`js/` だけを同期) | Trainer と同じ構成。Trainer とはコードを共有しない |
 | `index.html` | `PandaCycleTrainer/` への転送ページ | 静的 HTML(meta refresh + location.replace) |
 | `harness/` | エージェント用の検証ハーネス(公開対象外) | Node 22 標準機能のみ |
@@ -41,7 +41,7 @@ index.html ─ React/ReactDOM (UMD, グローバル) ─ js/main.js ─ ui/App.j
 ## 3. 絶対に守る制約
 
 1. **ビルドツールなし**。npm 依存・バンドラ・トランスパイラを導入しない。JSX 禁止 — `ui/h.js` の `h()` (= `React.createElement`) で書く。
-2. **importmap 禁止**。一部サンドボックス環境でブロックされるため。外部 CDN URL を直接 import してよいのは `js/three/three.js` だけ。
+2. **importmap 禁止**。一部サンドボックス環境でブロックされるため。three.js を import してよいのは `js/three/three.js` だけ(同梱の `vendor/three/` を相対パスで読む。外部 CDN は使わない)。
 3. **依存方向**: `ble / physics / three / storage / utils` から `ui/` を import しない。
 4. **実機依存値は `ble/deviceProfile.js` に集約**(TODO(要実機確認) 付きの暫定値)。他ファイルに実機固有の数値をハードコードしない。
 5. **物理定数は `physics/physicsConstants.js`**。ユーザー入力項目にしない。例外は上流でユーザー指示により追加された詳細設定の Crr/CdA のみ(既定値は同ファイル、入力範囲は `utils/validation.js` の `LIMITS`)。
@@ -57,6 +57,7 @@ node harness/verify.mjs --static  # 構文・import解決・依存方向・JSX/i
 python3 -m http.server 8000       # 実ブラウザ確認: http://localhost:8000/PandaCycleTrainer/
 ```
 
+- プルリクエストでは GitHub Actions(`.github/workflows/verify.yml`)が `node harness/verify.mjs` を回す。
 - スモークテストは `harness/tests/*.test.mjs`(`node:test`)。DOM/BLE/Three.js に依存しない純粋ロジック
   (physics, course, commandQueue, tcx, format, validation, cityLayout, roadElevation)を対象にする。
 - 純粋ロジックを変更・追加したら対応するテストも追加・更新する。

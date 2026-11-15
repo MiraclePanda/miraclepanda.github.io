@@ -1,6 +1,5 @@
-import { h, useRef, useEffect, useState } from './h.js';
+import { useSceneHost } from './sceneHost.js';
 import THREE from '../three/three.js';
-import { startSceneRenderer } from '../three/gpuBackend.js';
 import { mulberry32, FLOOR_HEIGHT_M } from '../three/cityLayout.js';
 import { createCityTextures, createFacadeMaterial, FACADE_TILE } from '../three/cityMaterials.js';
 import { createCountryRoadTexture, createTerrainDetailTexture, createWaterNormalTexture } from '../three/landscapeMaterials.js';
@@ -13,10 +12,9 @@ import {
 } from '../three/atamiParts.js';
 import {
   bakeSky, createAvatar,
-  makePool, pushInstance, commitPool, applyQuality, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
-  reportReadyAfterDraw, renderScene, maxAnisotropy,
+  makePool, pushInstance, commitPool, applyQuality, renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
-import { createCineDirector, normalizeCameraView } from '../three/cameraViews.js';
+import { createCineDirector } from '../three/cameraViews.js';
 import { placeOnRoad, actorLateral, groundAboveRoadM, updateRide } from './realSceneShared.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
 import { createOtherRiders } from '../three/otherRiders.js';
@@ -25,7 +23,7 @@ import { createOcean } from '../three/oceanWater.js';
 import { createRealTerrain } from '../three/realTerrain.js';
 import { REAL_TERRAIN, GSI_ATTRIBUTION } from '../three/gsiTerrain.js';
 
-const { forwardRef, useImperativeHandle } = React;
+const { forwardRef } = React;
 
 // 晴れた熱海の朝〜昼。太陽は南東(相模湾の上)、海面にきらめく。初島(約10km沖)まで見えるよう、フォグは薄め
 const ATMO = {
@@ -62,64 +60,15 @@ const MAX_PARASOLS = 140;
  * 毎フレームはライダー・カメラ・影の範囲・他のライダー・ハプニングだけを動かす。データは非同期に読むので、
  * 読み終わるまでは空だけを描く(canvas の data-atami-data = loading / ready / error)。
  */
-export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
-  const canvasRef = useRef(null);
-  const sceneRef = useRef(null);
-  const attributionRef = useRef(null);
-  const [renderError, setRenderError] = useState(null);
-  const [dataError, setDataError] = useState(false);
-  const onQualityChangeRef = useRef(onQualityChange);
-  onQualityChangeRef.current = onQualityChange;
-  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
-  const onReadyRef = useRef(onReady);
-  onReadyRef.current = onReady;
-  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
-  useEffect(() => {
-    if (renderError) onReadyRef.current?.();
-  }, [renderError]);
-
-  useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
-      const s = sceneRef.current;
-      if (!s) return;
-      try {
-        adaptQuality(s);
-        drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
-        reportReadyAfterDraw(s);
-      } catch (err) {
-        console.error('3D の描画に失敗しました:', err);
-        setRenderError(String(err));
-      }
-    },
-    resize() {
-      if (sceneRef.current) resizeScene(sceneRef.current);
-    },
-  }));
-
-  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
-  const live = useRef({});
-  live.current = { qualityMode, environment, cameraView };
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !courseEngine) return;
-    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
-    return startSceneRenderer(canvas, (renderer) => {
-      let st;
-      try {
-        st = initScene(canvas, courseEngine, vehicle, renderer);
-        st.season = season;
-        sceneRef.current = st;
-      } catch (err) {
-        setRenderError(String(err));
-        return;
-      }
-      st.attributionEl = attributionRef.current;
-      st.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-      st.onReady = () => onReadyRef.current?.();
-      st.appliedQualityMode = live.current.qualityMode;
-      st.envSetting = live.current.environment;
-      st.cam.view = normalizeCameraView(live.current.cameraView);
-      // 世界ができるまでは走行環境の切り替え(窓の夜度などを拾う)を作らない
+export const AtamiScene = forwardRef(function AtamiScene(props, ref) {
+  const { courseEngine, vehicle = 'bike', season = null } = props;
+  const { shell } = useSceneHost(ref, props, {
+    enabled: !!courseEngine,
+    build(canvas, renderer, host) {
+      const st = initScene(canvas, courseEngine, vehicle, renderer);
+      st.season = season;
+      st.attributionEl = host.attributionEl;
+      // 世界ができるまでは走行環境の切り替え(窓の夜度などを拾う)を作らない(buildWorld が st.envSetting から作る)
       canvas.dataset.atamiData = 'loading';
       loadAtamiData().then(
         (data) => {
@@ -129,61 +78,32 @@ export const AtamiScene = forwardRef(function AtamiScene({ courseEngine, vehicle
             canvas.dataset.atamiData = 'ready';
             canvas.dataset.buildings = String(st.buildingCount);
           } catch (err) {
-            setRenderError(String(err));
+            host.setRenderError(String(err));
           }
         },
         (err) => {
           if (st.disposed) return;
           console.warn('熱海の街のデータを読み込めませんでした:', err);
           canvas.dataset.atamiData = 'error';
-          setDataError(true);
+          host.setDataError(true);
           // 街のデータが無くても走行と記録は続けられるので、走行を始める
-          onReadyRef.current?.();
+          host.onReady();
         }
       );
-      const resize = () => resizeScene(st);
-      setupQuality(st, live.current.qualityMode);
-      window.addEventListener('resize', resize);
-      return () => {
-        window.removeEventListener('resize', resize);
-        st.disposed = true;
-        st.ocean?.dispose();
-        st.realTerrain?.dispose();
-        disposeScene(st);
-        sceneRef.current = null;
-      };
-    }, (err) => setRenderError(String(err)));
-  }, []);
-
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s || s.appliedQualityMode === qualityMode) return;
-    s.appliedQualityMode = qualityMode;
-    setQualityMode(s, qualityMode);
-  }, [qualityMode]);
-
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s) return;
-    s.envSetting = environment;
-    s.env?.set(environment);
-  }, [environment?.time, environment?.weather]);
-
-  useEffect(() => {
-    if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView);
-  }, [cameraView]);
-
-  return h(
-    'div', { className: 'city-scene-wrap' },
-    h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': 'atami', 'data-vehicle': vehicle }),
-    h('div', { ref: attributionRef, className: 'scene-attribution' }),
-    dataError && h('div', { className: 'city-scene-fallback' }, '熱海の街のデータを読み込めませんでした(通信を確認してください)。走行と記録は続けられます。'),
-    renderError &&
-      h(
-        'div', { className: 'city-scene-fallback' },
-        '3D表示を利用できません(WebGL非対応の可能性があります)。走行データはダッシュボードでご確認ください。'
-      )
-  );
+      return st;
+    },
+    draw(s, { distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
+      drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
+    },
+    dispose(s) {
+      s.ocean?.dispose();
+      s.realTerrain?.dispose();
+    },
+  });
+  return shell({ 'data-scenery': 'atami', 'data-vehicle': vehicle }, {
+    attribution: true,
+    dataErrorText: '熱海の街のデータを読み込めませんでした(通信を確認してください)。走行と記録は続けられます。',
+  });
 });
 
 // ---- 初期化(データを待たずに作れるもの) ----

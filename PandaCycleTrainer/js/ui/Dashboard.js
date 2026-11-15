@@ -46,7 +46,7 @@ export const Dashboard = forwardRef(function Dashboard({ controlMode }, ref) {
       setText(refs.ridingTime, v.ridingTime);
       setText(refs.kcal, v.kcal);
       setText(refs.gourmet, v.gourmet);
-      if (refs.ghostSummary.current) refs.ghostSummary.current.textContent = v.ghostSummary ?? '';
+      setText(refs.ghostSummary, v.ghostSummary ?? '');
     },
   }));
 
@@ -90,6 +90,8 @@ function tile(label, ref, unit) {
   );
 }
 
+/** 値が変わったときだけ書き換える(同じ値の書き換えでも、ブラウザは配置の計算をやり直すことがある。レビュー Q11)。 */
 function setText(ref, value) {
-  if (ref.current) ref.current.textContent = value;
+  const el = ref.current;
+  if (el && el.textContent !== value) el.textContent = value;
 }

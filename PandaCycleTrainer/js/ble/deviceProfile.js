@@ -29,6 +29,9 @@ export const DeviceProfile = {
   COMMAND_RETRY_DELAY_MS: 300,
   // indicate応答を待つタイムアウト。
   COMMAND_RESPONSE_TIMEOUT_MS: 4000,
+  // 体重の書き込み(User Data Service)を待つ上限(ms)。応答の無い機種でコマンドのキューを止めないため。
+  // TODO(要実機確認): DC1 が User Data Service を持つか、持つなら何秒で応答するか。
+  USER_WEIGHT_TIMEOUT_MS: 5000,
   // TODO(要実機確認): Start or Resume の直後や、初回の負荷設定に失敗して制御権を取り直す前に
   // 置く待ち時間(ms)。直後の Simulation Parameters を一時的に拒否する機種があるため。
   START_SETTLE_DELAY_MS: 400,
@@ -38,6 +41,17 @@ export const DeviceProfile = {
   // TODO(要実機確認): DC1 が Pause を受けたあとも接続を保ち、次の Start or Resume で
   // 負荷制御に戻るか。戻らない場合は false にする(負荷0のまま待機する)。
   END_SESSION_SEND_PAUSE: true,
+
+  // 勾配・ERG 目標の送信の最小間隔(ms)。勾配が変わり続ける区間では、応答が返るたびに次を送ると
+  // 毎秒何回もの書き込みになる(レビュー Q9 d)。間に来た値は CommandQueue#enqueueLatest で最新だけ残る。
+  // TODO(要実機確認): DC1 がこれより短い間隔の負荷変更を受け付けるか、逆に長くすべきか。
+  CONTROL_TARGET_MIN_INTERVAL_MS: 200,
+
+  // 走行中に接続が切れたとき、同じ機器へ自動でつなぎ直す回数と間隔(ms)。機器の選択画面は出さない
+  // (レビュー F2)。全部失敗したら再接続のダイアログを出す。
+  // TODO(要実機確認): DC1 が切断から何秒で再び接続を受け付けるか。
+  AUTO_RECONNECT_ATTEMPTS: 3,
+  AUTO_RECONNECT_DELAY_MS: 2000,
 
   // Indoor Bike Simulation Parametersに送る固定定数。
   // 屋内走行のため風速は常に0とする。
