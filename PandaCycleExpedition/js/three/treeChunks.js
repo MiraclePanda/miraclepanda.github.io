@@ -12,6 +12,12 @@
 // 木の位置は区画の角からの相対で持つ(ライダーの位置からの相対ではなく)。こうすると、ライダーが進んで置き直しても
 // 中身の変わらない区画(画面の大半)は前と同じ数字になるので、GPU へ送り直さずにメッシュの位置を動かすだけで済む。
 // 前は置き直すたび(約 40 m ごと)に全部の木を送り直していて、遅い端末では数秒おきにそのフレームが止まっていた。
+//
+// WebGPU で描くときは、メッシュの器を meshMinCapacity 本以上にする(呼び出し側が渡す)。three.js の WebGPURenderer は
+// インスタンスの行列が uniform buffer の上限(ふつう 64 KB = 1024 本)に収まるメッシュでは、行列を uniform の配列にして
+// その長さと番号をシェーダーに書き込むので、メッシュごとに別のシェーダーになる。区画のメッシュは走りながら作り直すので、
+// 走っている間ずっとシェーダーを組み立てていた(Trainer より fps が低かった原因)。上限より大きい器なら行列は頂点の属性になり、
+// どの区画も同じシェーダーを使う。
 
 import THREE from './three.js';
 
@@ -31,8 +37,9 @@ function sameArray(a, b, n) {
  * @param {{geo:THREE.BufferGeometry, mat:THREE.Material, cast:boolean, near?:boolean, max:number, reach:number}[]} kinds
  *   reach: 大きさ 1 の形の、原点から一番遠い点までの距離(区画を包む球の大きさに使う)。max: 1回の置き直しでの本数の上限。
  *   near: ライダーの近くだけにある作り込んだ形(影を落とす)。小さい区画に分けて、影の範囲にかかる分だけを影の段で描く
+ * @param {{meshMinCapacity?:number}} [opts] meshMinCapacity: GPU へ送るメッシュの器の最小の本数(WebGPU 用、上の説明)
  */
-export function createTreeChunks(scene, kinds) {
+export function createTreeChunks(scene, kinds, { meshMinCapacity = MIN_CAPACITY } = {}) {
   const buckets = new Map(); // 数の鍵(種類と区画) → { kind, mat, col, n, 範囲, mesh }
   const counts = new Array(kinds.length).fill(0);
   let farM = 100;
@@ -145,7 +152,7 @@ export function createTreeChunks(scene, kinds) {
         if (!b.mesh || b.mesh.instanceMatrix.count < b.n) {
           removeMesh(b);
           b.sentN = -1;
-          let cap = MIN_CAPACITY;
+          let cap = Math.max(MIN_CAPACITY, meshMinCapacity);
           while (cap < b.n) cap *= 2;
           const mesh = new THREE.InstancedMesh(kind.geo, kind.mat, cap);
           mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);

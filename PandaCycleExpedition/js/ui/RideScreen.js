@@ -427,7 +427,7 @@ function PerfPanel({ perf }) {
   const f = (x, d = 1) => (Number.isFinite(x) ? x.toFixed(d) : '-');
   return h('div', { className: 'perf-panel' },
     `${f(1000 / perf.frameMs, 0)} fps(${f(perf.frameMs)} ms)・描画の処理 ${f(perf.drawMs)} ms`,
-    h('br'), `描画命令 ${perf.calls}・三角形 ${(perf.triangles / 1e3).toFixed(0)} 千・${perf.tier}・画素 ×${f(perf.pixelRatio, 2)}・${perf.backend}`);
+    h('br'), `描画命令 ${perf.calls}・三角形 ${(perf.triangles / 1e3).toFixed(0)} 千・${perf.tier}・画素 ×${f(perf.pixelRatio, 2)}・${perf.backend}${perf.off?.length ? `・外した物 ${perf.off.join(',')}` : ''}`);
 }
 
 const VIEW_LABELS = { chase: '後ろ', fp: '目線', high: '上空' };
