@@ -188,6 +188,54 @@ export function eatSnack(trip) {
   };
 }
 
+// ---- 手伝い(お金を得る) ----
+
+/**
+ * 店・宿を手伝ってお礼をもらう(設計書4章「お金を得る」)。旅の時間を使い、少し疲れて、お腹もすく。
+ * 1日に同じ所は1回、全部で MAX_PER_DAY 回まで。お礼の額は場所の種類ごと(目安。旅の演出)。
+ */
+export const HELP_WORK = {
+  minutes: 60, stamina: 6, satiety: 8, MAX_PER_DAY: 2,
+  kinds: {
+    food: { yen: 3000, text: '皿洗いと仕込みを手伝った' },
+    shop: { yen: 2000, text: '品出しと店先の掃除を手伝った' },
+    lodging: { yen: 4000, text: '部屋の掃除と布団干しを手伝った' },
+  },
+};
+
+/** その日の手伝いの記録(走行中の記録の出会いに work として残す)。 */
+function workToday(trip) {
+  return (trip.ride?.encounters ?? []).filter((e) => e.work);
+}
+
+/** この場所で手伝えるか(走行中で、手伝える種類の場所で、今日まだ手伝っていない)。 */
+export function canHelp(trip, place) {
+  if (!trip.ride || !place || !HELP_WORK.kinds[place.kind]) return false;
+  const today = workToday(trip);
+  return today.length < HELP_WORK.MAX_PER_DAY && !today.some((e) => e.id === `work-${place.id}`);
+}
+
+/**
+ * 手伝う: 所持金が増え、旅の時間が HELP_WORK.minutes 進み、体力と満腹度が少し減る。
+ * @returns {{trip:object, yen:number, text:string} | null} 手伝えなければ null
+ */
+export function helpWork(trip, place) {
+  if (!canHelp(trip, place)) return null;
+  const k = HELP_WORK.kinds[place.kind];
+  const text = `${place.name}で${k.text}`;
+  let t = addRideEvent(trip, 'encounters', { id: `work-${place.id}`, work: true, text, yen: k.yen });
+  t = passTripTime(t, HELP_WORK.minutes);
+  return {
+    trip: {
+      ...t,
+      wallet: { yen: t.wallet.yen + k.yen },
+      rider: { ...t.rider, stamina: clamp100(t.rider.stamina - HELP_WORK.stamina), satiety: clamp100(t.rider.satiety - HELP_WORK.satiety) },
+    },
+    yen: k.yen,
+    text,
+  };
+}
+
 // ---- 宿 ----
 
 /** 宿の種類ごとの翌朝の回復。stamina は加算(hotel は全回復)、satiety は翌朝の値。 */

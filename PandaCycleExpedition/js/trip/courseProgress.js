@@ -13,7 +13,7 @@ const baseId = (id) => (id.endsWith(REVERSE_SUFFIX) ? id.slice(0, -REVERSE_SUFFI
 
 /**
  * 1つの旅で、コースごとに走った距離のいちばん長いものと完走したか。
- * @returns {Map<string, {bestM:number, done:boolean}>} キーは順方向の区間 id
+ * @returns {Map<string, {bestM:number, done:boolean, demo:boolean}>} キーは順方向の区間 id(demo: デモだけで走った)
  */
 export function tripCourseProgress(trip) {
   const out = new Map();
@@ -29,10 +29,13 @@ export function tripCourseProgress(trip) {
     const m = last ? trip.position.segmentM : (leg.startM ?? 0) + legs[i + 1].startTotalM - leg.startTotalM;
     if (!(m > 0)) continue;
     const id = baseId(leg.segmentId);
-    const prev = out.get(id) ?? { bestM: 0, done: false };
+    // デモ(トレーナーなし)だけで走った区間は印に「デモ」と添える。トレーナーで少しでも走っていれば添えない
+    const demo = (leg.demoM ?? 0) >= m - FINISH_SLACK_M;
+    const prev = out.get(id);
     out.set(id, {
-      bestM: Math.max(prev.bestM, Math.min(m, seg.lengthM)),
-      done: prev.done || m >= seg.lengthM - FINISH_SLACK_M,
+      bestM: Math.max(prev?.bestM ?? 0, Math.min(m, seg.lengthM)),
+      done: !!prev?.done || m >= seg.lengthM - FINISH_SLACK_M,
+      demo: prev ? prev.demo && demo : demo,
     });
   }
   return out;
@@ -48,7 +51,7 @@ export function courseProgress(trips) {
   for (const t of trips) {
     for (const [id, p] of tripCourseProgress(t)) {
       const prev = out.get(id);
-      out.set(id, prev ? { bestM: Math.max(prev.bestM, p.bestM), done: prev.done || p.done } : p);
+      out.set(id, prev ? { bestM: Math.max(prev.bestM, p.bestM), done: prev.done || p.done, demo: prev.demo && p.demo } : p);
     }
   }
   return out;

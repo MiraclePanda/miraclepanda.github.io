@@ -189,6 +189,8 @@ export function endDay(trip, { lodging }, now = Date.now()) {
     incidents: r.incidents,
     lodging: lodging ?? null,
   };
+  // デモ(トレーナーなし)で走った日は、日誌に「デモ」と出す(demoM = デモで走った距離)
+  if (r.demo) Object.assign(entry, { demo: true, demoM: Math.round(r.demoM ?? 0) });
   return {
     ...trip,
     updatedAt: now,

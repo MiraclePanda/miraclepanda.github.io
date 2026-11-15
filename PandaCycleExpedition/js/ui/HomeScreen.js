@@ -5,6 +5,7 @@ import { h, useState, useEffect, useRef } from './h.js';
 import { createTrip, resumeLabel, fmtClock, TIME_SCALES, chooseNextSegment, takeTransfer, migrateTrip } from '../storage/tripState.js';
 import {
   routesFrom, nodeName, currentNode, cameFromSegmentId, transfersFrom, segmentArrivingAt, getSegment, courseChoices, courseLinks,
+  REVERSE_SUFFIX,
 } from '../trip/network.js';
 import { routeLabel } from './RideScreen.js';
 import { TripMap } from './TripMap.js';
@@ -21,6 +22,8 @@ import { fmtTime } from '../utils/format.js';
 import { HeroArt } from './HeroArt.js';
 import { trackForDay, downloadTrackTcx } from '../storage/tcx.js';
 import { courseProgress, courseMark, tripCourseId, tripsByCourse } from '../trip/courseProgress.js';
+import { travelerJournal, withCompanionsFrom, inheritTrip } from '../trip/journal.js';
+import { sharedPhotoStore } from '../storage/photoStore.js';
 
 const km = (m) => (m / 1000).toFixed(1);
 
@@ -86,16 +89,20 @@ export function HomeScreen({ trip, segment, segmentError, store, persistent, not
     if (!saved || saved.tripId === trip?.tripId) return;
     const r = migrateTrip(saved);
     if (!r.ok) { setError(`この旅は読み込めませんでした: ${r.error}`); return; }
-    const t = { ...r.trip, updatedAt: Date.now() };
+    // 道連れの話は、ほかのコースの旅で聞いた続きから(旅人の手帳と同じ進み具合にそろえる)
+    const t = { ...withCompanionsFrom(r.trip, allTrips), updatedAt: Date.now() };
     await store.save(t, 'event').catch(() => {});
     onTripChange(t);
   }
 
-  /** 選んだコースで新しい旅を始める(前の旅があれば、最初から走り直し)。 */
-  async function startTrip(id, body) {
-    const t = createTrip({ ...body, segmentId: id });
+  /**
+   * 選んだコースで新しい旅を始める(前の旅があれば、最初から走り直し)。inherit を渡すと、その旅の所持金・荷物・
+   * スタンプ帳・日数を引き継ぐ。道連れの話はいつも、これまでの旅で聞いた続きから。
+   */
+  async function startTrip(id, body, inherit = null) {
+    const t = inheritTrip(createTrip({ ...body, segmentId: id }), inherit);
     const powerScale = latestTrip(allTrips)?.settings.powerScale;
-    const t2 = powerScale ? { ...t, settings: { ...t.settings, powerScale } } : t;
+    const t2 = withCompanionsFrom(powerScale ? { ...t, settings: { ...t.settings, powerScale } } : t, allTrips);
     // 走り直す前の旅は、コース一覧の印のために最新の1件だけ残して古い世代を消す
     const old = courseTrips.get(id);
     await store.save(t2, 'event');
@@ -128,11 +135,13 @@ export function HomeScreen({ trip, segment, segmentError, store, persistent, not
           : active
           ? h(TripPanel, { trip, segment, store, conn, onTripChange, onRide, onRestart: (body) => startTrip(c.segmentId, body) })
           : h(StartPanel, {
-            course: c, defaults: latestTrip(allTrips),
-            onStart: (body) => startTrip(c.segmentId, body), onImport: () => fileRef.current.click(),
+            course: c, defaults: latestTrip(allTrips), here: tripsHere(courseTrips, c.segmentId),
+            onStart: (body, inherit) => startTrip(c.segmentId, body, inherit), onImport: () => fileRef.current.click(),
+            onOpen: (courseId) => select(courseId),
           })),
       }),
       h(CourseLegend, { progress })),
+    h(JournalCard, { trips: allTrips }),
     active && h(TripTabs, { trip, segment, store, onTripChange, courseName: courses.find((c) => c.segmentId === selId)?.name, onImport: () => fileRef.current.click() }),
     importInput);
 }
@@ -171,7 +180,7 @@ function TripPanel({ trip, segment, store, conn, onTripChange, onRide, onRestart
     finished && h(NextRoutes, { trip, segment, store, onTripChange }),
     !finished && h('div', { className: 'row' },
       h('button', { className: 'primary go', disabled: !conn, onClick: () => onRide(false) }, midRide ? '続きを走る' : '出発する'),
-      h('button', { onClick: () => onRide(true) }, 'デモで走る(トレーナーなし)'),
+      h('button', { onClick: () => onRide(true), title: 'デモで走った分も旅に残り、日誌とコースの印に「デモ」と出ます' }, 'デモで走る(トレーナーなし)'),
       !conn && h('span', { className: 'muted' }, '走るには上でトレーナーに接続します。')),
     asking
       ? h('div', { className: 'inline-confirm' },
@@ -185,9 +194,10 @@ function TripPanel({ trip, segment, store, conn, onTripChange, onRide, onRestart
       : h('button', { className: 'link', onClick: () => setAsking(true) }, 'このコースを最初から走り直す'));
 }
 
-/** 旅のないコース: 体と自転車(前回の値)を確かめて旅立つ。 */
-function StartPanel({ course, defaults, onStart, onImport }) {
+/** 旅のないコース: 体と自転車(前回の値)を確かめて旅立つ。前の旅を引き継ぐこともできる。 */
+function StartPanel({ course, defaults, here = [], onStart, onImport, onOpen }) {
   const seg = getSegment(course.segmentId);
+  const [inherit, setInherit] = useState(!!defaults);
   const [f, setF] = useState({
     weight: String(defaults?.rider.weightKg ?? 70), bike: String(defaults?.bike.weightKg ?? 11),
     ftp: String(defaults?.rider.ftpW ?? 200), timeScale: defaults?.settings.timeScale ?? 4,
@@ -201,8 +211,18 @@ function StartPanel({ course, defaults, onStart, onImport }) {
     h('label', { className: 'field' }, '旅の時間の早回し',
       h('select', { value: f.timeScale, onChange: (e) => setF({ ...f, timeScale: Number(e.target.value) }) },
         TIME_SCALES.map((x) => h('option', { key: x, value: x }, `${x}倍`)))));
+  const body = () => ({ riderWeightKg: Number(f.weight), bikeWeightKg: Number(f.bike), ftpW: Number(f.ftp), timeScale: Number(f.timeScale) });
   return h('div', { className: 'course-panel' },
-    h('div', null, `このコースの旅はまだありません。1日目は${nodeName(seg.from)}を朝7時に出発し、${seg.goalName}を目指します。荷物(テント・寝袋・食料・水など)は約14 kg、所持金は3万円です。`),
+    // ほかのコースから分かれ道を通ってこのコースに来ている旅があれば、その旅を開ける
+    here.map((x) => h('div', { key: x.trip.tripId, className: 'here-note' },
+      `📍 「${getSegment(x.courseId)?.name ?? x.courseId}」の旅(${x.trip.day}日目)が、いまこのコースの ${km(x.trip.position.segmentM)} km 地点にいます。`,
+      h('button', { className: 'link', onClick: () => onOpen(x.courseId) }, 'その旅を開いて続きを走る'))),
+    h('div', null, inherit && defaults
+      ? `${nodeName(seg.from)}を朝7時に出発し、${seg.goalName}を目指します。`
+      : `このコースの旅はまだありません。1日目は${nodeName(seg.from)}を朝7時に出発し、${seg.goalName}を目指します。荷物(テント・寝袋・食料・水など)は約14 kg、所持金は3万円です。`),
+    defaults && h('label', { className: 'check' },
+      h('input', { type: 'checkbox', checked: inherit, onChange: (e) => setInherit(e.target.checked) }),
+      ` 前の旅(${getSegment(tripCourseId(defaults))?.name ?? ''}・${defaults.day}日目)を引き継ぐ: 所持金 ${defaults.wallet.yen.toLocaleString()} 円・荷物 ${packWeightKg(defaults.bike.pack).toFixed(1)} kg・スタンプ ${(defaults.stamps ?? []).length} 個、日数は ${defaults.day + (defaults.ride ? 1 : 0)}日目の朝から`),
     // 初めての旅は入力欄を開いておく。2回目からは前回の値を使い、直したいときだけ開く
     defaults
       ? h('details', null, h('summary', null, `体と自転車(前回の値: 体重 ${f.weight} kg・自転車 ${f.bike} kg・FTP ${f.ftp} W・早回し ${f.timeScale}倍)`), form)
@@ -211,8 +231,8 @@ function StartPanel({ course, defaults, onStart, onImport }) {
     h('div', { className: 'row' },
       h('button', {
         className: 'primary go', disabled: !ok,
-        onClick: () => onStart({ riderWeightKg: Number(f.weight), bikeWeightKg: Number(f.bike), ftpW: Number(f.ftp), timeScale: Number(f.timeScale) }),
-      }, 'このコースで旅立つ'),
+        onClick: () => onStart(body(), inherit ? defaults : null),
+      }, inherit && defaults ? '引き継いで旅立つ' : 'このコースで旅立つ'),
       !defaults && h('button', { className: 'link', onClick: onImport }, '書き出した旅を読み込む')));
 }
 
@@ -366,8 +386,9 @@ function GearCard({ trip, segment, store, onTripChange }) {
         `${FOOD.stepKg} kg 買い足す(${Math.round(FOOD.stepKg * FOOD.yenPerKg).toLocaleString()} 円)`)));
 }
 
-/** スタンプ帳: 立ち寄った見どころと、食べた名物。 */
+/** スタンプ帳: 立ち寄った見どころと、食べた名物。立ち寄ったときに撮った写真も並べる。 */
 function StampBook({ trip }) {
+  const photos = usePhotos(trip.tripId);
   const p = stampProgress(trip);
   const stamps = trip.stamps ?? [];
   const list = (kind) => stamps.filter((s) => s.kind === kind)
@@ -377,7 +398,54 @@ function StampBook({ trip }) {
     h('p', { className: 'stamp-count' }, '見どころ', h('b', null, p.sights.got), `/ ${p.sights.total}・名物`, h('b', null, p.foods.got), `/ ${p.foods.total}`),
     h('div', null, h('b', null, '立ち寄った見どころ: '), list('sight')),
     h('div', null, h('b', null, '食べた名物: '), list('food')),
-    h('p', { className: 'muted' }, '見どころの前で「立ち寄る」を選ぶか、店で食べるとスタンプが押されます。'));
+    h(PhotoStrip, { photos }),
+    h('p', { className: 'muted' }, '見どころの前で「立ち寄る」を選ぶか、店で食べるとスタンプが押されます。立ち寄ると、そのときの景色が写真帳に残ります(この端末だけ。旅の書き出しには入りません)。'));
+}
+
+/** 写真帳の写真(tripId を渡すとその旅の分、null ならすべて)。 */
+function usePhotos(tripId) {
+  const [photos, setPhotos] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    sharedPhotoStore().list(tripId).then((l) => { if (alive) setPhotos(l); }).catch(() => {});
+    return () => { alive = false; };
+  }, [tripId]);
+  return photos;
+}
+
+function PhotoStrip({ photos }) {
+  if (!photos.length) return null;
+  return h('div', { className: 'photo-strip' },
+    photos.map((p) => h('figure', { key: p.key },
+      h('img', { src: p.dataUrl, alt: p.name, loading: 'lazy' }),
+      h('figcaption', null, `${p.name}・${p.day}日目`))));
+}
+
+/** 旅人の手帳: コースごとの旅をまとめた累計・日本一周の地図・スタンプ・道連れの話・写真。 */
+function JournalCard({ trips }) {
+  const photos = usePhotos(null);
+  if (trips.length === 0) return null;
+  const j = travelerJournal(trips);
+  const pct = j.mainLine.totalM ? Math.round((j.mainLine.doneM / j.mainLine.totalM) * 100) : 0;
+  return h('div', { className: 'card journal' },
+    h('h2', null, '旅人の手帳'),
+    h('p', { className: 'muted' }, 'これまでのすべての旅(コースごとの旅)を合わせた記録です。'),
+    h('div', { className: 'grid' },
+      stat('走った距離', `${km(j.distanceM)} km${j.demoM > 1 ? `(うちデモ ${km(j.demoM)} km)` : ''}`),
+      stat('旅の日数', `${j.days} 日・旅 ${j.trips} 本`),
+      stat('獲得標高', `${Math.round(j.elevationGainM).toLocaleString()} m`),
+      stat('日本一周の道', `${km(j.mainLine.doneM)} / ${km(j.mainLine.totalM)} km(${pct}%)`),
+      stat('コース', `★ ${j.courses.done}・☆ ${j.courses.partial} / ${j.courses.total}`),
+      stat('スタンプ', `見どころ ${j.stamps.sights.got}/${j.stamps.sights.total}・名物 ${j.stamps.foods.got}/${j.stamps.foods.total}`)),
+    h('details', null, h('summary', null, '日本一周の地図'),
+      h(TripMap, { trips }),
+      h('p', { className: 'muted map-legend' }, '太い線 = どれかの旅で走った道、丸 = それぞれの旅の今いる場所。')),
+    j.companions.length > 0 && h('div', null, h('b', null, '道連れの話: '),
+      j.companions.map((c) => `${c.name}(${c.met} 回・${c.chapter >= c.chapters ? '話を聞き終えた' : `${c.chapter}/${c.chapters} 章`})`).join('、'),
+      h('div', { className: 'muted' }, '道連れの話は、別のコースの旅でも続きから聞けます。')),
+    j.stamps.list.length > 0 && h('div', null, h('b', null, 'スタンプ: '),
+      j.stamps.list.map((s) => s.name).join('、')),
+    h(PhotoStrip, { photos }));
 }
 
 /** 区間の終点で朝を迎えた: 今日走る道を選ぶ。 */
@@ -425,6 +493,7 @@ const MARKS = {
 function CourseList({ courses, selectedId, progress, courseTrips, onSelect, renderPanel }) {
   const list = [];
   const links = courseLinks(courses);
+  const where = tripsWhere(courseTrips);
   courses.forEach((c, i) => {
     // 前のコースの終点から、このコースの出発の町へ電車・船で渡る(地方の見出しより前に出す)
     const link = links.get(c.segmentId);
@@ -432,7 +501,10 @@ function CourseList({ courses, selectedId, progress, courseTrips, onSelect, rend
     if (i === 0 || courses[i - 1].regionName !== c.regionName) list.push(h('li', { key: `r-${c.regionName}`, className: 'course-region' }, c.regionName));
     const sel = c.segmentId === selectedId;
     const mark = courseMark(progress, c.segmentId);
+    const demo = mark && progress.get(c.segmentId)?.demo;
     const saved = courseTrips?.get(c.segmentId);
+    // 旅が今いるコース(分かれ道で先へ進んだ旅は、始めたコースではなく今いるコースに印をつける)
+    const here = where.get(c.segmentId) ?? [];
     list.push(h('li', { key: c.segmentId },
       h('button', {
         type: 'button', className: `course${sel ? ' selected' : ''}${mark ? ` ${mark}` : ''}`, 'aria-expanded': sel,
@@ -442,9 +514,12 @@ function CourseList({ courses, selectedId, progress, courseTrips, onSelect, rend
       h('span', { className: 'course-name' }, c.name,
         c.side && h('span', { className: 'course-side' }, '寄り道'),
         c.unpavedM > 0 && h('span', { className: 'course-gravel' }, `砂利道 ${km(c.unpavedM)} km`),
-        mark && h('span', { className: `course-mark ${mark}`, title: MARKS[mark].text }, `${MARKS[mark].icon} ${MARKS[mark].text}`),
-        saved && h('span', { className: 'course-trip' }, `旅 ${saved.day}日目`)),
-      h('span', { className: 'course-stat' }, `${km(c.lengthM)} km・上り ${c.climbM} m${saved ? `・${tripWhere(saved).replace(/^\d+日目・/, '')}` : ''}`)),
+        mark && h('span', { className: `course-mark ${mark}`, title: demo ? `${MARKS[mark].text}(デモで走っただけ)` : MARKS[mark].text },
+          `${MARKS[mark].icon} ${MARKS[mark].text}${demo ? '(デモ)' : ''}`),
+        saved && h('span', { className: 'course-trip' }, `旅 ${saved.day}日目`),
+        here.map((x) => h('span', { key: x.trip.tripId, className: 'course-here', title: `「${getSegment(x.courseId)?.name ?? ''}」の旅が今ここにいます` },
+          x.courseId === c.segmentId ? '📍 いまここ' : `📍 ${nodeName(getSegment(x.courseId)?.from)}からの旅がここ`))),
+      h('span', { className: 'course-stat' }, `${km(c.lengthM)} km・上り ${c.climbM} m${saved ? `・旅は今 ${tripWhere(saved).replace(/^\d+日目・/, '')}` : ''}`)),
       sel && renderPanel?.(c)));
   });
   return h('ul', { className: 'course-list' }, list);
@@ -462,7 +537,25 @@ function linkText(l) {
 function CourseLegend({ progress }) {
   if (!progress || progress.size === 0) return null;
   return h('p', { className: 'muted course-legend' },
-    `${MARKS.partial.icon} ${MARKS.partial.text} = 少しでも走ったことがあるコース、${MARKS.done.icon} ${MARKS.done.text} = 終点まで走ったコース(これまでの旅も含む)。`);
+    `${MARKS.partial.icon} ${MARKS.partial.text} = 少しでも走ったことがあるコース、${MARKS.done.icon} ${MARKS.done.text} = 終点まで走ったコース(これまでの旅も含む。デモで走っただけなら「(デモ)」)。📍 = 旅が今いるコース。`);
+}
+
+const baseCourseId = (id) => (id?.endsWith(REVERSE_SUFFIX) ? id.slice(0, -REVERSE_SUFFIX.length) : id);
+
+/** コース(順方向の区間 id)→ そこに今いる旅の一覧 [{ trip, courseId(旅を始めたコース) }]。 */
+function tripsWhere(courseTrips) {
+  const out = new Map();
+  for (const [courseId, t] of courseTrips ?? []) {
+    const at = baseCourseId(t.position.segmentId);
+    if (!out.has(at)) out.set(at, []);
+    out.get(at).push({ trip: t, courseId });
+  }
+  return out;
+}
+
+/** このコースに今いる、ほかのコースから来た旅。 */
+function tripsHere(courseTrips, segmentId) {
+  return (tripsWhere(courseTrips).get(segmentId) ?? []).filter((x) => x.courseId !== segmentId);
 }
 
 /** 旅の短い説明(例: 3日目・伊東 → 下田 12.3 km 地点)。 */
@@ -479,9 +572,11 @@ function TripLog({ trip, selectedDay, onSelect }) {
       key: d.day, className: `log-day clickable${d.day === selectedDay ? ' selected' : ''}`, onClick: () => onSelect?.(d.day),
     },
       h('b', null, `${d.day}日目`), ' ',
+      d.demo && h('span', { className: 'demo-tag', title: 'トレーナーなしのデモで走った日' }, d.demoM >= d.distanceM - 1 ? 'デモ' : `デモ ${km(d.demoM)} km を含む`), ' ',
       h('span', { className: 'muted' }, `${km(d.distanceM)} km・走行 ${fmtTime(d.rideSeconds)}・獲得標高 ${Math.round(d.elevationGainM)} m・${fmtClock(d.endClockMinutes)} 着`),
       d.meals.length > 0 && h('div', null, `食べたもの: ${d.meals.map((m) => m.name).join('、')}`),
-      d.encounters.length > 0 && h('div', null, `出会い: ${d.encounters.length} 回`),
+      d.encounters.some((e) => !e.work) && h('div', null, `出会い: ${d.encounters.filter((e) => !e.work).length} 回`),
+      d.encounters.filter((e) => e.work).map((e, i) => h('div', { key: `w${i}` }, `${e.text}(${(e.yen ?? 0).toLocaleString()} 円)`)),
       d.incidents.map((x, i) => h('div', { key: i, className: 'err' }, x.text)),
       (trip.legs ?? []).filter((l) => l.transfer?.day === d.day).map((l, i) => h('div', { key: `tr${i}` }, `移動: ${l.transfer.name}で${nodeName(l.transfer.to)}へ`)),
       d.lodging && h('div', null, `泊まった場所: ${d.lodging.name}${d.lodging.yen ? `(${d.lodging.yen.toLocaleString()} 円)` : ''}`),

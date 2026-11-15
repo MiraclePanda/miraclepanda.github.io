@@ -21,8 +21,17 @@ export const BODY = {
   KNOCK_AFTER_MIN: 15,
 };
 
-/** 1日の日没(旅の時刻、分)。最初は熱海の秋の日没に合わせて固定。 */
+/** 日の入り(旅の時刻、分)の既定値。区間の場所が分からないときだけ使う(ふつうは季節と場所から sunsetMinutes で決める)。 */
 export const SUNSET_MINUTES = 17 * 60;
+
+/**
+ * 日暮れの決まり。日の入りの WARN_BEFORE_MIN 分前(と日の入り)に道連れか土地の人が「そろそろ宿を」と声をかけ、
+ * 日の入りから DARK_AFTER_MIN 分たって暗くなってから、はじめて野宿になる(景色も日の入りの 40 分後までに暗くなる)。
+ */
+export const DUSK = { WARN_BEFORE_MIN: [60, 20, 0], DARK_AFTER_MIN: 30 };
+
+/** 体力がこの値を下回ったら声をかける(0 で動けなくなる前に、宿を探す・補給する余裕があるように)。 */
+export const STAMINA_WARN = [25, 10];
 
 /**
  * 体の状態を旅の時間 tripMinutes 分だけ進める。
@@ -46,13 +55,13 @@ export function stepBody(rider, { tripMinutes, powerW, ftpW, resting = false, so
 }
 
 /**
- * 走行中の失敗を判定する。
+ * 走行中の失敗を判定する。日没は、日の入り sunsetMinutes から DUSK.DARK_AFTER_MIN 分たって暗くなったとき。
  * @returns {'hungerKnock'|'exhausted'|'sunset'|null}
  */
-export function checkFailure(rider, clockMinutes) {
+export function checkFailure(rider, clockMinutes, sunsetMinutes = SUNSET_MINUTES) {
   if ((rider.zeroSatietyMinutes ?? 0) >= BODY.KNOCK_AFTER_MIN) return 'hungerKnock';
   if (rider.stamina <= 0) return 'exhausted';
-  if (clockMinutes >= SUNSET_MINUTES) return 'sunset';
+  if (clockMinutes >= sunsetMinutes + DUSK.DARK_AFTER_MIN) return 'sunset';
   return null;
 }
 

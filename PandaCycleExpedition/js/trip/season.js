@@ -81,6 +81,17 @@ export function snowLineM(doy, latDeg) {
   return line > 3800 ? Infinity : Math.max(line, 0);
 }
 
+/** 均時差(分): 真の太陽の南中が平均の正午からどれだけ早いか(11月初めは約 16 分早く、2月中ごろは約 14 分遅い)。 */
+export function equationOfTimeMin(doy) {
+  const b = (2 * Math.PI * (doy - 81)) / 364;
+  return 9.87 * Math.sin(2 * b) - 7.53 * Math.cos(b) - 1.5 * Math.sin(b);
+}
+
+/** その日・その経度の南中の時刻(分、日本標準時)。 */
+function solarNoon(doy, lonDeg) {
+  return 12 * 60 - (lonDeg - 135) * 4 - equationOfTimeMin(doy);
+}
+
 /**
  * 太陽の高さと方角(度)。方角は北から時計回り。時刻は日本標準時(旅の時刻)。
  * @returns {{elevDeg:number, azDeg:number}}
@@ -88,7 +99,7 @@ export function snowLineM(doy, latDeg) {
 export function sunPosition(doy, latDeg, lonDeg, clockMinutes) {
   const rad = Math.PI / 180;
   const decl = 23.44 * Math.sin(((2 * Math.PI) / 365) * (doy + 284));
-  const noon = 12 * 60 - (lonDeg - 135) * 4; // 南中の時刻(分)
+  const noon = solarNoon(doy, lonDeg); // 南中の時刻(分)
   const ha = ((clockMinutes - noon) / 60) * 15;
   const lat = latDeg * rad;
   const d = decl * rad;
@@ -107,8 +118,18 @@ export function sunTimes(doy, latDeg, lonDeg) {
   const lat = latDeg * rad;
   const cosH = (Math.sin(-0.833 * rad) - Math.sin(lat) * Math.sin(decl)) / (Math.cos(lat) * Math.cos(decl));
   const halfMin = (Math.acos(Math.min(Math.max(cosH, -1), 1)) * (180 / Math.PI)) * 4;
-  const noon = 12 * 60 - (lonDeg - 135) * 4;
+  const noon = solarNoon(doy, lonDeg);
   return { sunrise: noon - halfMin, sunset: noon + halfMin };
+}
+
+/**
+ * 旅の日の入り(分、日本標準時)。景色の季節(createSeason)と同じ日付・同じ場所で求めるので、景色の夕暮れと合う。
+ * @param {[number, number] | null | undefined} lonLat 区間の出発点の [経度, 緯度]。無ければ null
+ * @param {string} mode 景色の季節の設定(SEASON_MODES)
+ */
+export function sunsetMinutesAt(lonLat, mode, now = new Date()) {
+  if (!lonLat || !Number.isFinite(lonLat[0]) || !Number.isFinite(lonLat[1])) return null;
+  return sunTimes(seasonDayOfYear(mode, now), lonLat[1], lonLat[0]).sunset;
 }
 
 /** 季節の名前(画面の表示用)。 */
