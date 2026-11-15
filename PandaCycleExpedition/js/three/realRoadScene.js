@@ -844,13 +844,18 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     const { treeR, treeCell, treeNearR } = tier;
     const r2 = treeR * treeR;
     const near2 = treeNearR * treeNearR;
-    for (let j = Math.floor((oy - treeR) / treeCell); j <= Math.ceil((oy + treeR) / treeCell); j++) {
-      for (let i = Math.floor((ox - treeR) / treeCell); i <= Math.ceil((ox + treeR) / treeCell); i++) {
+    // 置くか・近くの形にするかは、木ごとの距離ではなく区画(treeChunks.js)の中心の距離で決める。こうすると
+    // ライダーが進んでも大半の区画は中身が前と同じになり、GPU へ送り直さずに済む(境目は霧の中か、形の切り替えだけ)
+    const farM = treeChunkM(treeR);
+    const nearM = TREE_NEAR_CHUNK_M;
+    const centerD2 = (x, y, size) => ((Math.floor(x / size) + 0.5) * size - ox) ** 2 + ((Math.floor(y / size) + 0.5) * size - oy) ** 2;
+    const reach = treeR + farM;
+    for (let j = Math.floor((oy - reach) / treeCell); j <= Math.ceil((oy + reach) / treeCell); j++) {
+      for (let i = Math.floor((ox - reach) / treeCell); i <= Math.ceil((ox + reach) / treeCell); i++) {
         const x = (i + hash2(i, j, 11)) * treeCell;
         const y = (j + hash2(i, j, 12)) * treeCell;
-        const d2 = (x - ox) ** 2 + (y - oy) ** 2;
-        if (d2 > r2) continue;
-        const near = d2 < near2;
+        if (centerD2(x, y, farM) > r2) continue;
+        const near = centerD2(x, y, nearM) < near2;
         const t = nearTileAt(sc, x, y);
         if (!t) continue;
         const k = Math.round((y - t.ty * sc.tile) / sc.cell) * (N + 1) + Math.round((x - t.tx * sc.tile) / sc.cell);
@@ -865,13 +870,11 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
           if (hash2(i, j, 18) >= (treeCell / 12) ** 2) continue;
           // 松原: 砂地に黒松の林(幹が海風で傾き、平たい枝葉が段になる)
           const hgt = 9 + hash2(i, j, 14) * 8;
-          const px = x - ox;
-          const pz = -(y - oy);
           const lean = (hash2(i, j, 17) - 0.5) * 0.5;
-          trees.push(near ? TK.trunkNear : TK.trunk, x, y, px, h - 0.3, pz, 1.3, hgt * 0.8, 1.3, lean, r * 6);
+          trees.push(near ? TK.trunkNear : TK.trunk, x, y, 0, h - 0.3, 0, 1.3, hgt * 0.8, 1.3, lean, r * 6);
           for (let d = 0; d < 2; d++) {
             const w = hgt * (0.38 - d * 0.11);
-            trees.push(TK.disc, x, y, px, h + hgt * (0.62 + d * 0.15), pz + Math.sin(lean) * hgt * (0.62 + d * 0.15),
+            trees.push(TK.disc, x, y, 0, h + hgt * (0.62 + d * 0.15), Math.sin(lean) * hgt * (0.62 + d * 0.15),
               w, 1.2, w * 0.8, 0, r * 6 + d, d === 0 ? 0x24401f : 0x2c4d26);
           }
           continue;
@@ -881,13 +884,11 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
         if (h < 30 && roadD < 160 && r < 0.45) continue; // 町はずれの畑・草地
         const hgt = 5 + hash2(i, j, 14) * 9;
         const conifer = hash2(i, j, 15) < 0.35 + Math.min(h / 600, 0.4);
-        const px = x - ox;
-        const pz = -(y - oy);
-        trees.push(near && !conifer ? TK.trunkNear : TK.trunk, x, y, px, h - 0.3, pz, 1, hgt * 0.45, 1, 0, r * 6);
+        trees.push(near && !conifer ? TK.trunkNear : TK.trunk, x, y, 0, h - 0.3, 0, 1, hgt * 0.45, 1, 0, r * 6);
         const plants = season?.plants(h);
         if (conifer) {
           const base = r < 0.5 ? 0x264a26 : 0x2f5a2c;
-          trees.push(near ? TK.coneNear : TK.cone, x, y, px, h + hgt * 0.22, pz, hgt * 0.24, hgt * 0.8, hgt * 0.24, 0, r * 6,
+          trees.push(near ? TK.coneNear : TK.cone, x, y, 0, h + hgt * 0.22, 0, hgt * 0.24, hgt * 0.8, hgt * 0.24, 0, r * 6,
             plants ? coniferColor(base, plants) : base);
         } else {
           let w = hgt * (0.3 + hash2(i, j, 16) * 0.15);
@@ -901,7 +902,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
             color = look.color;
             w *= look.scale;
           }
-          trees.push(near ? TK.ballNear : TK.ball, x, y, px, h + hgt * 0.35, pz, w, hgt * 0.32, w, 0, r * 6, color);
+          trees.push(near ? TK.ballNear : TK.ball, x, y, 0, h + hgt * 0.35, 0, w, hgt * 0.32, w, 0, r * 6, color);
         }
       }
       yield;
@@ -920,8 +921,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     let done = false;
     while (!(done = treeJob.steps.next().done) && performance.now() < until);
     if (!done) return;
-    const [x, y] = treeJob.at;
-    trees.commit(x, y);
+    trees.commit();
     markBusyFrames(s); // 木を GPU へ送るフレーム(と描き終わりを待つ次のフレーム)は自動調整で測らない
     treeAt = treeJob.at;
     treeJob = null;
