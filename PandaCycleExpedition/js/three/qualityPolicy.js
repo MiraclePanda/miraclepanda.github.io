@@ -8,7 +8,10 @@
 //     まず画素の倍率をその段階の上限まで戻し、それから段階を1つ上げる(上げた段階は等倍から始める)。
 //   - 上げてから FREEZE_WINDOWS 窓のうちにまた下げることになったら、その走行の間はもう上げない(上げ下げを繰り返して
 //     画面がちらついたり、そのたびにシェーダーを組み直して止まったりしないように)。
-// 一時的に重い区間(町なか)で下げても、軽い区間に戻れば元の画質に戻る。
+//   - 下げたあと、次に上げてみるまで少なくとも HOLD_WINDOWS 窓(約 1 分)待ち、下げるたびに待ちを倍にする
+//     (HOLD_MAX_DOUBLINGS 回まで)。軽い所(海沿い)で上げて重い所(森・町)で下げる、を数十秒おきに繰り返して、
+//     そのたびにシェーダーの組み直しや木の置き直しで止まらないように。
+// 一時的に重い区間(町なか)で下げても、軽い区間に戻れば(待ちのあと)元の画質に戻る。
 
 export const SLOW_FRAME_MS = 45; // 約22fps未満が続いたら下げる
 export const VERY_SLOW_FRAME_MS = 180; // ソフトウェアで描いている等
@@ -16,16 +19,25 @@ export const FAST_FRAME_MS = 22; // 60Hz の画面でほぼ毎回描けている
 export const DOWN_AFTER_WINDOWS = 2; // 遅い窓がこれだけ続いたら下げる(約1秒)
 export const RAISE_AFTER_WINDOWS = 6; // 速い窓がこれだけ続いたら上げる(約1秒)
 export const FREEZE_WINDOWS = 30;
+export const HOLD_WINDOWS = 300; // 下げてから上げてみるまでの最短の窓の数(10 フレームの窓 × 300 ≒ 30 fps で 100 秒、60 fps で 50 秒)
+export const HOLD_MAX_DOUBLINGS = 3; // 待ちを倍にするのはここまで(最長 HOLD_WINDOWS × 8)
 const PIXEL_STEP = 0.75;
 
 /**
  * 自動調整の状態。
- * @typedef {{index:number, pixelRatio:number, fastWindows:number, slowWindows:number, sinceUp:number, frozen:boolean}} QualityState
+ * drops: この走行で下げた回数、sinceDown: 最後に下げてからの窓の数(上げてみるまでの待ちに使う)
+ * @typedef {{index:number, pixelRatio:number, fastWindows:number, slowWindows:number, sinceUp:number, frozen:boolean,
+ *   drops:number, sinceDown:number}} QualityState
  */
 
 /** 段階 index・画素の倍率 pixelRatio から始める状態。 */
 export function initialQualityState(index, pixelRatio) {
-  return { index, pixelRatio, fastWindows: 0, slowWindows: 0, sinceUp: Infinity, frozen: false };
+  return { index, pixelRatio, fastWindows: 0, slowWindows: 0, sinceUp: Infinity, frozen: false, drops: 0, sinceDown: Infinity };
+}
+
+/** drops 回下げたあと、次に上げてみるまでに待つ窓の数。 */
+export function holdWindows(drops) {
+  return drops > 0 ? HOLD_WINDOWS * 2 ** Math.min(drops - 1, HOLD_MAX_DOUBLINGS) : 0;
 }
 
 /**
@@ -37,9 +49,10 @@ export function initialQualityState(index, pixelRatio) {
  * @returns {QualityState} 新しい状態(段階・倍率が変わったかは呼び出し側で比べる)
  */
 export function nextQualityState(st0, medianMs, { lowest, maxRatio }) {
-  const st = { ...st0, sinceUp: st0.sinceUp + 1 };
+  const st = { ...st0, sinceUp: st0.sinceUp + 1, drops: st0.drops ?? 0, sinceDown: (st0.sinceDown ?? Infinity) + 1 };
   const down = (index, pixelRatio) => ({
     index, pixelRatio, fastWindows: 0, slowWindows: 0, sinceUp: Infinity, frozen: st.frozen || st.sinceUp <= FREEZE_WINDOWS,
+    drops: st.drops + 1, sinceDown: 0,
   });
   if (medianMs > VERY_SLOW_FRAME_MS && st.index < lowest) return down(lowest, maxRatio(lowest));
   if (medianMs > SLOW_FRAME_MS) {
@@ -50,7 +63,7 @@ export function nextQualityState(st0, medianMs, { lowest, maxRatio }) {
     return { ...st, fastWindows: 0, slowWindows: 0 };
   }
   st.slowWindows = 0;
-  if (medianMs >= FAST_FRAME_MS || st.frozen) return { ...st, fastWindows: 0 };
+  if (medianMs >= FAST_FRAME_MS || st.frozen || st.sinceDown < holdWindows(st.drops)) return { ...st, fastWindows: 0 };
   const fast = st.fastWindows + 1;
   if (fast < RAISE_AFTER_WINDOWS) return { ...st, fastWindows: fast };
   const top = maxRatio(st.index);
