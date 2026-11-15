@@ -6,14 +6,25 @@
 // 画面の外・影の範囲の外の区画は three.js の視野の判定で描かないようにする。どの木をどこに置くかは呼び出し側
 // (realRoadScene の placeTrees)のままで、見た目は1つにまとめていたときと同じ。
 //
-// 置き直しは数フレームに分けて CPU 側の配列へ入れ(begin → push …)、できあがったら commit で一度に GPU へ送る。
+// 置き直しは数フレームに分けて CPU 側の配列へ入れ(begin → push …)、できあがったら commit で GPU へ送る。
 // それまでは前の木をそのまま描く(表と裏の2組のメッシュを持たなくてよい)。
+//
+// 木の位置は区画の角からの相対で持つ(ライダーの位置からの相対ではなく)。こうすると、ライダーが進んで置き直しても
+// 中身の変わらない区画(画面の大半)は前と同じ数字になるので、GPU へ送り直さずにメッシュの位置を動かすだけで済む。
+// 前は置き直すたび(約 40 m ごと)に全部の木を送り直していて、遅い端末では数秒おきにそのフレームが止まっていた。
 
 import THREE from './three.js';
 
 const _obj = new THREE.Object3D();
 const _color = new THREE.Color();
 const MIN_CAPACITY = 16;
+
+/** a と b の先頭 n 個が同じか。 */
+function sameArray(a, b, n) {
+  if (!a || a.length < n) return false;
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 /**
  * @param {THREE.Scene} scene
@@ -34,7 +45,13 @@ export function createTreeChunks(scene, kinds) {
     const key = (k * 4096 + ci) * 4096 + cj;
     let b = buckets.get(key);
     if (!b) {
-      b = { k, mat: new Float32Array(MIN_CAPACITY * 16), col: new Float32Array(MIN_CAPACITY * 3), n: 0, mesh: null };
+      b = {
+        k, mat: new Float32Array(MIN_CAPACITY * 16), col: new Float32Array(MIN_CAPACITY * 3), n: 0, mesh: null,
+        // 区画の角(区間の平面の座標)。木の位置はここからの相対
+        x0: Math.floor(ax / size) * size, y0: Math.floor(ay / size) * size,
+        sentN: -1, // GPU へ送った本数(-1 = まだ送っていない)。中身が変わっていなければ送り直さない
+        sentMat: null, sentCol: null,
+      };
       resetBounds(b);
       buckets.set(key, b);
     }
@@ -67,6 +84,11 @@ export function createTreeChunks(scene, kinds) {
   return {
     /** 置き直しを始める(区画の大きさ: 遠くの木 far m、近くの木 near m)。前に入れた木は commit まで描かれたまま。 */
     begin(far, near) {
+      if (far !== farM || near !== nearM) {
+        // 区画の大きさが変わった(描画品質を変えた)ら、区画を全部作り直す
+        for (const b of buckets.values()) removeMesh(b);
+        buckets.clear();
+      }
       farM = far;
       nearM = near;
       counts.fill(0);
@@ -77,14 +99,16 @@ export function createTreeChunks(scene, kinds) {
     },
 
     /**
-     * 種類 k の木を1本置く。(ax, ay) は区画を決める区間の平面の座標、(px, py, pz) は commit の原点からの位置。
-     * 拡大・回転・色は sceneKit.js の pushInstance と同じ。
+     * 種類 k の木を1本置く。(ax, ay) は木の根元の区間の平面の座標(区画もこれで決める)、py は高さ、
+     * (dx, dz) は根元からのずらし(画面の座標の x・z)。拡大・回転・色は sceneKit.js の pushInstance と同じ。
      */
-    push(k, ax, ay, px, py, pz, sx, sy, sz, rotX, rotY, colorHex) {
+    push(k, ax, ay, dx, py, dz, sx, sy, sz, rotX, rotY, colorHex) {
       if (counts[k] >= kinds[k].max) return;
       counts[k]++;
       const b = bucketFor(k, ax, ay);
       if (b.n * 16 >= b.mat.length) grow(b);
+      const px = ax - b.x0 + dx;
+      const pz = -(ay - b.y0) + dz;
       _obj.position.set(px, py, pz);
       _obj.rotation.set(rotX, rotY, 0);
       _obj.scale.set(sx, sy, sz);
@@ -105,8 +129,11 @@ export function createTreeChunks(scene, kinds) {
       if (reach > b.reach) b.reach = reach;
     },
 
-    /** 置き直した木を GPU へ送り、全部のメッシュを原点 (ox, oy)(区間の平面の座標)に置く。 */
-    commit(ox, oy) {
+    /**
+     * 置き直した木のうち中身の変わった区画だけを GPU へ送る(メッシュは区画の角に置く)。送った区画の数を返す。
+     */
+    commit() {
+      let sent = 0;
       for (const [key, b] of buckets) {
         if (b.n === 0) {
           // この置き直しで木の無くなった区画は、メッシュごと捨てる(遠ざかった区画がたまらないように)
@@ -117,6 +144,7 @@ export function createTreeChunks(scene, kinds) {
         const kind = kinds[b.k];
         if (!b.mesh || b.mesh.instanceMatrix.count < b.n) {
           removeMesh(b);
+          b.sentN = -1;
           let cap = MIN_CAPACITY;
           while (cap < b.n) cap *= 2;
           const mesh = new THREE.InstancedMesh(kind.geo, kind.mat, cap);
@@ -129,6 +157,12 @@ export function createTreeChunks(scene, kinds) {
           b.mesh = mesh;
         }
         const mesh = b.mesh;
+        mesh.position.set(b.x0, 0, -b.y0);
+        if (b.sentN === b.n && sameArray(b.sentMat, b.mat, b.n * 16) && sameArray(b.sentCol, b.col, b.n * 3)) continue;
+        b.sentN = b.n;
+        b.sentMat = b.mat.slice(0, b.n * 16);
+        b.sentCol = b.col.slice(0, b.n * 3);
+        sent++;
         mesh.instanceMatrix.array.set(b.mat.subarray(0, b.n * 16));
         mesh.instanceColor.array.set(b.col.subarray(0, b.n * 3));
         // GPU へ送るのは使った分だけ
@@ -142,8 +176,8 @@ export function createTreeChunks(scene, kinds) {
         const sp = mesh.boundingSphere;
         sp.center.set((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2);
         sp.radius = Math.hypot(b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ) / 2 + b.reach;
-        mesh.position.set(ox, 0, -oy);
       }
+      return sent;
     },
 
     /** いま描いている木のメッシュの数(確認用)。 */
