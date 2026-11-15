@@ -1,7 +1,8 @@
 // 描画品質の自動調整の決め方(純粋な計算。three.js を使わないので Node でテストできる)。
 //
 // 10 フレームごとのフレーム間隔の中央値で、
-//   - 遅い(SLOW_FRAME_MS より長い)なら下げる。高のうちは先に画面の細かさ(画素の倍率)を 3/4 ずつ下げ、
+//   - 遅い(SLOW_FRAME_MS より長い)窓が DOWN_AFTER_WINDOWS 回続いたら下げる(1窓だけの遅れは、木の置き直し・
+//     写真の読み込みなどの重なりのことが多いので下げない)。高のうちは先に画面の細かさ(画素の倍率)を 3/4 ずつ下げ、
 //     等倍まで下げても遅ければ段階を1つ下げる。桁違いに遅い(VERY_SLOW_FRAME_MS)なら最低へ直行する。
 //   - 速い(FAST_FRAME_MS より短い)窓が RAISE_AFTER_WINDOWS 回続いたら上げる。下げたときの逆順で、
 //     まず画素の倍率をその段階の上限まで戻し、それから段階を1つ上げる(上げた段階は等倍から始める)。
@@ -12,18 +13,19 @@
 export const SLOW_FRAME_MS = 45; // 約22fps未満が続いたら下げる
 export const VERY_SLOW_FRAME_MS = 180; // ソフトウェアで描いている等
 export const FAST_FRAME_MS = 22; // 60Hz の画面でほぼ毎回描けている
+export const DOWN_AFTER_WINDOWS = 2; // 遅い窓がこれだけ続いたら下げる(約1秒)
 export const RAISE_AFTER_WINDOWS = 6; // 速い窓がこれだけ続いたら上げる(約1秒)
 export const FREEZE_WINDOWS = 30;
 const PIXEL_STEP = 0.75;
 
 /**
  * 自動調整の状態。
- * @typedef {{index:number, pixelRatio:number, fastWindows:number, sinceUp:number, frozen:boolean}} QualityState
+ * @typedef {{index:number, pixelRatio:number, fastWindows:number, slowWindows:number, sinceUp:number, frozen:boolean}} QualityState
  */
 
 /** 段階 index・画素の倍率 pixelRatio から始める状態。 */
 export function initialQualityState(index, pixelRatio) {
-  return { index, pixelRatio, fastWindows: 0, sinceUp: Infinity, frozen: false };
+  return { index, pixelRatio, fastWindows: 0, slowWindows: 0, sinceUp: Infinity, frozen: false };
 }
 
 /**
@@ -37,14 +39,17 @@ export function initialQualityState(index, pixelRatio) {
 export function nextQualityState(st0, medianMs, { lowest, maxRatio }) {
   const st = { ...st0, sinceUp: st0.sinceUp + 1 };
   const down = (index, pixelRatio) => ({
-    index, pixelRatio, fastWindows: 0, sinceUp: Infinity, frozen: st.frozen || st.sinceUp <= FREEZE_WINDOWS,
+    index, pixelRatio, fastWindows: 0, slowWindows: 0, sinceUp: Infinity, frozen: st.frozen || st.sinceUp <= FREEZE_WINDOWS,
   });
   if (medianMs > VERY_SLOW_FRAME_MS && st.index < lowest) return down(lowest, maxRatio(lowest));
   if (medianMs > SLOW_FRAME_MS) {
+    const slow = (st.slowWindows ?? 0) + 1;
+    if (slow < DOWN_AFTER_WINDOWS) return { ...st, fastWindows: 0, slowWindows: slow };
     if (st.index === 0 && st.pixelRatio > 1.01) return down(0, Math.max(1, st.pixelRatio * PIXEL_STEP));
     if (st.index < lowest) return down(st.index + 1, maxRatio(st.index + 1));
-    return { ...st, fastWindows: 0 };
+    return { ...st, fastWindows: 0, slowWindows: 0 };
   }
+  st.slowWindows = 0;
   if (medianMs >= FAST_FRAME_MS || st.frozen) return { ...st, fastWindows: 0 };
   const fast = st.fastWindows + 1;
   if (fast < RAISE_AFTER_WINDOWS) return { ...st, fastWindows: fast };

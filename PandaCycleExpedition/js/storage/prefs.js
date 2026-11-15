@@ -83,27 +83,15 @@ export function saveSoundOn(on, storage = globalThis.localStorage) {
 }
 
 const AUTO_QUALITY_KEY = 'pce_auto_quality_v1';
-const AUTO_QUALITY_MAX_INDEX = 2; // js/three/sceneKit.js の QUALITY_TIERS の最後の番号
 
 /**
- * 描画品質「自動」が前に落ち着いた段階 { index, pixelRatio }(この端末で次の走行をそこから始める)。無ければ null。
+ * 前の版が覚えていた、描画品質「自動」の落ち着いた段階を消す。前の版はそこから次の走行を始めていたため、
+ * 一時的に重くて下げただけでも、次からずっと低い画質で始まっていた。今は走行ごとに一番よい段階から測り直す。
  */
-export function loadAutoQuality(storage = globalThis.localStorage) {
+export function forgetAutoQuality(storage = globalThis.localStorage) {
   try {
-    const v = JSON.parse(storage?.getItem(AUTO_QUALITY_KEY) ?? 'null');
-    if (!v || !Number.isInteger(v.index) || v.index < 0 || v.index > AUTO_QUALITY_MAX_INDEX) return null;
-    if (!Number.isFinite(v.pixelRatio) || v.pixelRatio <= 0 || v.pixelRatio > 4) return null;
-    return { index: v.index, pixelRatio: v.pixelRatio };
+    storage?.removeItem(AUTO_QUALITY_KEY);
   } catch {
-    return null;
-  }
-}
-
-export function saveAutoQuality(value, storage = globalThis.localStorage) {
-  if (!value || !Number.isInteger(value.index) || !Number.isFinite(value.pixelRatio)) return;
-  try {
-    storage?.setItem(AUTO_QUALITY_KEY, JSON.stringify({ index: value.index, pixelRatio: value.pixelRatio }));
-  } catch {
-    // 保存できない環境では、次の走行は高から測り直す
+    // 消せない環境では残るが、もう読まない
   }
 }

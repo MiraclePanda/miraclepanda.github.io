@@ -5,8 +5,9 @@
 //   2. 元の絵に重ね、彩度・コントラストを少し整え、画面の四隅をわずかに暗くする(周辺減光)
 //   3. 最後にトーンマッピング(renderer.toneMapping)と sRGB 変換をして画面へ出す
 // の順で仕上げる。画面外バッファは MSAA(4 サンプル)なので、直接描くときと同じく縁はなめらか。
-// 画素の倍率が高い(1.75 以上)ときは、画素が細かいぶん縁のぎざぎざは目立たないので 2 サンプルにする
-// (画面外バッファの大きさと書き込みの量がほぼ半分になる)。
+// 高精細の画面(端末の画素の倍率 1.75 以上)では、画素が細かいぶん縁のぎざぎざは目立たないので 2 サンプルにする
+// (画面外バッファの大きさと書き込みの量がほぼ半分になる)。サンプル数は端末で決め、自動調整で画素の倍率を
+// 下げても変えない(倍率 1.5 で 4 サンプルに増やすと、倍率 2・2 サンプルより重くなり、軽くするつもりが逆に重くなっていた)。
 //
 // three.js の examples(EffectComposer 等)は素の 'three' を import していて importmap なしでは
 // 読めないため、three.js 本体だけで書いている。
@@ -90,9 +91,9 @@ void main() {
   #include <colorspace_fragment>
 }`;
 
-/** 画面外バッファの MSAA のサンプル数(画素の倍率から)。 */
-export function sceneSamples(pixelRatio) {
-  return pixelRatio >= 1.75 ? 2 : 4;
+/** 画面外バッファの MSAA のサンプル数(端末の画素の倍率 devicePixelRatio から)。 */
+export function sceneSamples(devicePixelRatio) {
+  return Math.min(devicePixelRatio || 1, 2) >= 1.75 ? 2 : 4;
 }
 
 /**
@@ -134,7 +135,7 @@ export function createPostFx(renderer) {
     renderer.getDrawingBufferSize(size);
     const nw = Math.max(1, Math.floor(size.x));
     const nh = Math.max(1, Math.floor(size.y));
-    const samples = sceneSamples(renderer.getPixelRatio());
+    const samples = sceneSamples(globalThis.devicePixelRatio);
     if (sceneRT && sceneRT.samples !== samples) {
       sceneRT.dispose();
       sceneRT = null;

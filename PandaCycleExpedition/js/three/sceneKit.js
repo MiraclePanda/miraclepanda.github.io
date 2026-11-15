@@ -4,7 +4,7 @@
 
 import THREE from './three.js';
 import { threeWebGPU } from './gpuBackend.js';
-import { initialQualityState, nextQualityState } from './qualityPolicy.js';
+import { initialQualityState, nextQualityState, DOWN_AFTER_WINDOWS } from './qualityPolicy.js';
 
 // 左側通行: ライダーは左車線の中央付近を走る。
 export const RIDER_X_M = -2.0;
@@ -508,6 +508,10 @@ export const QUALITY_TIERS = [
 // 自動調整では選ばれず、ユーザーが選んだときだけ使う。
 export const QUALITY_MODES = ['auto', 'ultra', 'high', 'medium', 'low'];
 const QUALITY_SAMPLE_FRAMES = 10;
+// 品質を変えた直後(シェーダーの組み直し・画面外バッファの作り直しが何フレームかにわたる)と走り始めは、
+// これだけのフレームを測らない
+const SETTLE_FRAMES = 30;
+const BUSY_MAX_MS = 1000;
 // 遅い・速いの判定のしきい値と上げ下げの決め方は qualityPolicy.js
 const SLOW_FRAME_MS = 45; // 最高(実験)を高へ下げる目安(qualityPolicy.js の SLOW_FRAME_MS と同じ)
 
@@ -549,6 +553,7 @@ export function applyQuality(s, index) {
     }
   }
   s.canvas.dataset.quality = ultra ? 'ultra' : tier.name;
+  markBusyFrames(s, SETTLE_FRAMES);
   s.onUltraChange?.(ultra);
   resizeScene(s);
   s.onQualityChange?.(ultra ? 'ultra' : tier.name);
@@ -623,14 +628,24 @@ export function setQualityMode(s, mode) {
     applyQuality(s, index);
     return;
   }
-  // 自動: この端末で前に落ち着いた段階(s.autoStart)から始める。ソフトウェアで描く端末は最低から
-  const lowest = QUALITY_TIERS.length - 1;
-  const start = s.autoStart;
-  const i0 = Math.min(lowest, Math.max(initialQualityIndex(s.renderer), Number.isInteger(start?.index) ? start.index : 0));
-  const pr = Math.min(maxRatioOf(i0), Number.isFinite(start?.pixelRatio) && start.pixelRatio > 0 ? start.pixelRatio : Infinity);
-  s.qualityState = initialQualityState(i0, pr);
+  // 自動: 走行(区間)ごとに、その端末で一番よい段階から測り直す(ソフトウェアで描く端末は最低から)。
+  // 前の走行で下げた段階は覚えない: 一時的に重かっただけでも、次からずっと低い画質で始まってしまうため
+  const i0 = initialQualityIndex(s.renderer);
+  s.qualityState = initialQualityState(i0, maxRatioOf(i0));
   applyQuality(s, i0);
   applyAutoState(s, s.qualityState);
+}
+
+/**
+ * これから n フレーム(長くても BUSY_MAX_MS の間)は品質の自動調整で測らない(木の置き直しを GPU へ送る・
+ * 写真を送る・空を焼くなど、たまにだけある重い仕事のフレームと、その描き終わりを待つ次のフレーム)。
+ * 実際の重さで下げるのは続く遅さだけにする。時間で区切るのは、とても遅い端末で長く測らずにいないように。
+ */
+export function markBusyFrames(s, n = 2) {
+  s.busyFrames = Math.max(s.busyFrames ?? 0, n);
+  s.busyUntil = performance.now() + BUSY_MAX_MS;
+  // 品質を変えたとき: 変える前に測った分も捨てる
+  if (n >= SETTLE_FRAMES && s.frameIntervals) s.frameIntervals.length = 0;
 }
 
 /** 段階 index の画素の倍率の上限(端末の倍率で頭打ち)。 */
@@ -651,7 +666,10 @@ export function adaptQuality(s) {
   // 最高(実験)も測る: 遅ければ「高」へ下げ、以後は自動と同じく必要なら更に下げる
   if (s.forcedQuality || (!s.autoQuality && !s.ultra)) return;
   const now = performance.now();
-  if (s.lastDrawAt !== null) {
+  if (s.busyFrames > 0 && now < s.busyUntil) {
+    // 重い仕事のあったフレームは測らない(markBusyFrames)
+    s.busyFrames--;
+  } else if (s.lastDrawAt !== null) {
     const interval = now - s.lastDrawAt;
     // 一時停止やタブ非表示で空いた間隔は計測対象外。
     if (interval < 1000) s.frameIntervals.push(interval);
@@ -663,7 +681,9 @@ export function adaptQuality(s) {
   const median = sorted[Math.floor(sorted.length / 2)];
   s.frameIntervals.length = 0;
   if (s.ultra) {
-    if (median > SLOW_FRAME_MS) {
+    s.ultraSlow = median > SLOW_FRAME_MS ? (s.ultraSlow ?? 0) + 1 : 0;
+    if (s.ultraSlow >= DOWN_AFTER_WINDOWS) {
+      s.ultraSlow = 0;
       s.ultra = false;
       s.autoQuality = true;
       applyQuality(s, 0);
@@ -677,8 +697,7 @@ export function adaptQuality(s) {
   s.qualityState = next;
   if (next.index === prev.index && next.pixelRatio === prev.pixelRatio) return;
   applyAutoState(s, next);
-  // 落ち着いた段階をこの端末で覚えて、次の区間・次の走行はそこから始める
-  s.onAutoSettle?.({ index: next.index, pixelRatio: next.pixelRatio });
+  markBusyFrames(s, SETTLE_FRAMES);
 }
 
 // ---- 走行開始の準備 ----
