@@ -29,6 +29,7 @@ import { surfaceAtM } from '../physics/segmentRoute.js';
 import { surfaceOf } from '../physics/surfaces.js';
 import { createRoadside } from './roadsideParts.js';
 import { createTreeChunks } from './treeChunks.js';
+import { parseOffParam } from './debugOff.js';
 import { broadleafLook, coniferColor, evergreenShare, photoTint, snowCover, vegetationColor, withSnow } from './seasonLook.js';
 import { VIEW_RIGS, normalizeCameraView, estimateCadenceRpm, fpBobM, fpFovDeg } from './cameraViews.js';
 
@@ -243,13 +244,14 @@ export function createRealRoadScene(canvas, segment, sc, {
   startM = 0,
 } = {}) {
   const W = gpuRenderer ? threeWebGPU() : null; // WebGPU で描くときの three.js(ノードと TSL)
+  const off = parseOffParam(globalThis.location?.search); // 確認用に外す要素(?off=、debugOff.js)
   // 描画の土台は走行画面をまたいで使い回す(WebGL は canvas ごと、WebGPU は gpuBackend.js の sharedWebGPURenderer)
   const renderer = gpuRenderer ?? sharedWebGLRenderer(canvas);
   applyRenderLook(renderer);
   renderer.setRenderTarget(null);
   const postFx = W ? createPostFxGpu(renderer, W) : createPostFx(renderer);
   renderer.autoClear = false; // 遠景 → 近くの景色の順に重ねて描く
-  const pano = panorama ? createPanorama(panorama, sc, season) : null;
+  const pano = panorama && !off.has('pano') ? createPanorama(panorama, sc, season) : null;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0xd3e6f3, 0.00035);
@@ -304,7 +306,7 @@ export function createRealRoadScene(canvas, segment, sc, {
   // WebGPU では同じ判定を TSL で書き、maskNode(false の所を描かない)にする
   const tunGpu = W ? tunnelMaskGpu(W, tunUniforms) : null;
   function cutTunnels(mat) {
-    if (!tunPieces.length) return mat;
+    if (!tunPieces.length || off.has('tunnel')) return mat;
     if (tunGpu) {
       mat.maskNode = tunGpu.keep; // WebGPURenderer がノードマテリアルへ変換するときに引き継がれる
       return mat;
@@ -677,7 +679,9 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     k.geo.computeBoundingSphere();
     k.reach = k.geo.boundingSphere.center.length() + k.geo.boundingSphere.radius; // 大きさ 1 のときの原点からの届く距離
   }
-  const trees = createTreeChunks(scene, TREE_KINDS);
+  // WebGPU では木の区画のメッシュを uniform buffer の上限より大きい器にして、区画ごとに別のシェーダーを作らせない(treeChunks.js)
+  const uniformLimit = W ? renderer.backend?.capabilities?.getUniformBufferLimit?.() ?? 65536 : 0;
+  const trees = createTreeChunks(scene, TREE_KINDS, { meshMinCapacity: W ? Math.floor(uniformLimit / 64) + 1 : 0 });
   for (const p of Object.values(pools)) scene.add(p.mesh);
   // 電柱と電線・カーブミラー・標識(配置は roadsideLayout.js)
   const roadPlan = planRoadside({
@@ -714,7 +718,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   let treeAt = null;
   let treeJob = null; // 置き直し中の木 { at, steps }
   // 地面の航空写真(最高・高のとき、まわりのタイルだけ)
-  const photos = createAerialPhotos(sc, {
+  const photos = off.has('photo') ? null : createAerialPhotos(sc, {
     anisotropy: Math.min(16, W ? renderer.getMaxAnisotropy() : renderer.capabilities.getMaxAnisotropy()), patchMaterial: cutTunnels,
     // 写真を GPU へ送るフレームと、地面に貼るフレームは自動調整で測らない
     initTexture: (t) => {
@@ -1034,7 +1038,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     const local = (p, off, dz = 0) => [p.x - p.hy * off - ox, p.z + dz, -(p.y + p.hx * off - oy)];
     const yawOf = (p) => Math.atan2(p.hx, -p.hy);
 
-    stepTrees(ox, oy);
+    if (!off.has('trees')) stepTrees(ox, oy);
 
     if (poolAt === null || Math.abs(m0 - poolAt) >= POOL_REBUILD_M) {
       poolAt = m0;
@@ -1046,7 +1050,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     // 建物は描画品質の距離まで
     for (const mesh of bldMeshes) {
       const [cx, cy] = mesh.userData.center;
-      mesh.visible = Math.hypot(cx - ox, cy - oy) < tier.bldM + 800;
+      mesh.visible = !off.has('bld') && Math.hypot(cx - ox, cy - oy) < tier.bldM + 800;
     }
 
     // ライダー(左側通行: 進む向きの左 2 m)・カメラ・影
@@ -1103,7 +1107,8 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     }
 
     adaptQuality(s);
-    postFx.begin(s.postOn);
+    if (off.has('shadow')) renderer.shadowMap.enabled = false; // 品質の段階を当て直すと戻るので毎フレーム
+    postFx.begin(s.postOn && !off.has('post'));
     renderer.clear();
     if (pano) {
       pano.follow(camera);
@@ -1140,7 +1145,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     draw,
     prepare,
     /** 描画の重さ(?perf=1 の表示用)。 */
-    stats: () => ({ ...sceneStats(s), treeMeshes: trees.meshCount() }),
+    stats: () => ({ ...sceneStats(s), treeMeshes: trees.meshCount(), off: [...off] }),
     resize: () => resizeScene(s),
     setQualityMode: (mode) => setQualityMode(s, mode),
     /** 視点('chase' | 'fp' | 'high')。 */
