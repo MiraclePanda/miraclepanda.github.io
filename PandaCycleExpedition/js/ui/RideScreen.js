@@ -20,7 +20,7 @@ import { nextCameraView } from '../three/cameraViews.js';
 import { WakeLockManager } from '../utils/wakeLock.js';
 import {
   loadRenderQuality, saveRenderQuality, RENDER_QUALITY_VALUES, loadShowRideMap, saveShowRideMap,
-  loadCameraView, saveCameraView, loadSoundOn, saveSoundOn, loadAutoQuality, saveAutoQuality,
+  loadCameraView, saveCameraView, loadSoundOn, saveSoundOn, forgetAutoQuality,
 } from '../storage/prefs.js';
 import { AutoSaver } from '../storage/autosave.js';
 import { sharedPhotoStore, captureThumbnail } from '../storage/photoStore.js';
@@ -117,9 +117,9 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       stageRef.current?.prepend(canvas);
       const opts = {
         qualityMode: loadRenderQuality(), onQualityChange: setActiveTier, cameraView: loadCameraView(),
-        // 自動調整が落ち着いた段階をこの端末で覚え、次の区間・次の走行はそこから始める
-        autoStart: loadAutoQuality(), onAutoSettle: saveAutoQuality,
       };
+      // 自動調整は走行ごとに測り直す。前の版が覚えていた「下げた段階」は消す(次からずっと低い画質で始まっていた)
+      forgetAutoQuality();
       try {
         // 景色の季節(既定は実際の今日の日付)。区間の原点の経緯度で桜・紅葉の進み具合と日の出入りを決める
         const season = sc ? createSeason({ mode: session.trip.settings.season, latDeg: sc.origin[1], lonDeg: sc.origin[0] }) : null;

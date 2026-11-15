@@ -70,7 +70,7 @@ function cellRand(i, salt) {
  * @param {{qualityMode?:string, onQualityChange?:(tier:string)=>void}} [opts]
  *   qualityMode: 'auto' | 'ultra' | 'high' | 'medium' | 'low'。onQualityChange には実際に使っている段階が届く。
  */
-export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQualityChange, autoStart = null, onAutoSettle } = {}) {
+export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQualityChange } = {}) {
   // canvas ごとに使い回す WebGL(描画の設定は sharedWebGLRenderer が初期値に戻す)
   const renderer = sharedWebGLRenderer(canvas);
   const postFx = createPostFx(renderer);
@@ -184,7 +184,7 @@ export function createSeaRoadScene(canvas, segment, { qualityMode = 'auto', onQu
 
   const s = {
     renderer, scene, camera, canvas, sunLight, textures: [], sky: null, clock: new THREE.Clock(),
-    skyKey: null, disposed: false, onQualityChange, sharedRenderer: true, autoStart, onAutoSettle,
+    skyKey: null, disposed: false, onQualityChange, sharedRenderer: true,
     // 最高: 影の範囲を広げ(遠くの電柱・建物まで影が落ちる)、画面の解像度を端末いっぱいまで上げる。
     // 影マップを 4096 にするのは sceneKit の applyQuality がする。
     onUltraChange(on) {

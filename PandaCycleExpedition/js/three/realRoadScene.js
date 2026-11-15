@@ -11,7 +11,7 @@ import THREE from './three.js';
 import {
   RIDER_X_M, bakeSkySteps, createAvatar, updateRiderAvatar, makePool, pushInstance, pushInstanceYawPitch, commitPool,
   setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene, setCameraFov, setAvatarVisible, applyRenderLook,
-  sharedWebGLRenderer, frameStatsBegin, frameStatsEnd, sceneStats,
+  sharedWebGLRenderer, frameStatsBegin, frameStatsEnd, sceneStats, markBusyFrames,
 } from './sceneKit.js';
 import { createPostFx } from './postFx.js';
 import { createPostFxGpu } from './postFxGpu.js';
@@ -206,7 +206,6 @@ function groundColor(h, ny, roadD, built, r, season) {
  *   season: 景色の季節(js/trip/season.js の createSeason)。無ければ夏の景色・6時〜18時の太陽
  *   renderer: 初期化済みの WebGPURenderer(gpuBackend.js の sharedWebGPURenderer)。無ければ WebGL で描く
  *   startM: 走り始める区間の距離(prepare で、そこの木を置いてシェーダーを組み立てておく)
- *   autoStart / onAutoSettle: 描画品質「自動」の始める段階と、落ち着いた段階の知らせ(sceneKit.js の setQualityMode)
  */
 /**
  * トンネルの筒の中の地面を描かない判定(WebGPU 用、cutTunnels の GLSL と同じ式)。
@@ -241,7 +240,7 @@ function tunnelMaskGpu(W, u) {
 
 export function createRealRoadScene(canvas, segment, sc, {
   qualityMode = 'auto', onQualityChange, panorama = null, cameraView = 'chase', season = null, renderer: gpuRenderer = null,
-  startM = 0, autoStart = null, onAutoSettle,
+  startM = 0,
 } = {}) {
   const W = gpuRenderer ? threeWebGPU() : null; // WebGPU で描くときの three.js(ノードと TSL)
   // 描画の土台は走行画面をまたいで使い回す(WebGL は canvas ごと、WebGPU は gpuBackend.js の sharedWebGPURenderer)
@@ -717,12 +716,16 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
   // 地面の航空写真(最高・高のとき、まわりのタイルだけ)
   const photos = createAerialPhotos(sc, {
     anisotropy: Math.min(16, W ? renderer.getMaxAnisotropy() : renderer.capabilities.getMaxAnisotropy()), patchMaterial: cutTunnels,
-    initTexture: (t) => renderer.initTexture(t),
+    // 写真を GPU へ送るフレームと、地面に貼るフレームは自動調整で測らない
+    initTexture: (t) => {
+      markBusyFrames(s, 3);
+      renderer.initTexture(t);
+    },
     ...(season ? { color: photoTint(season.plants(0)) } : {}),
   });
   const s = {
     renderer, scene, camera, canvas, sunLight, textures, sky: null, clock: new THREE.Clock(),
-    skyKey: null, disposed: false, sharedRenderer: true, autoStart, onAutoSettle,
+    skyKey: null, disposed: false, sharedRenderer: true,
     onQualityChange(name) {
       tier = TIER_SCENERY[name] ?? TIER_SCENERY.high;
       camera.far = tier.far;
@@ -789,6 +792,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     }
     if (!skyJob) return;
     let r;
+    markBusyFrames(s);
     do r = skyJob.steps.next(); while (now && !r.done);
     if (!r.done) return;
     skyJob.apply(r.value);
@@ -918,6 +922,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     if (!done) return;
     const [x, y] = treeJob.at;
     trees.commit(x, y);
+    markBusyFrames(s); // 木を GPU へ送るフレーム(と描き終わりを待つ次のフレーム)は自動調整で測らない
     treeAt = treeJob.at;
     treeJob = null;
   }
@@ -1034,6 +1039,7 @@ for (int i = 0; i < ${TUN_MAX}; i++) {
     if (poolAt === null || Math.abs(m0 - poolAt) >= POOL_REBUILD_M) {
       poolAt = m0;
       placeRoadPools(m0, ox, oy, local, yawOf);
+      markBusyFrames(s);
     }
     roadside.update(m0, ox, oy);
 
