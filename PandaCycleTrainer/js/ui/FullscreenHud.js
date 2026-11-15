@@ -73,21 +73,25 @@ export const FullscreenHud = forwardRef(function FullscreenHud(
     update(v) {
       const e = els.current;
       for (const key of TEXT_KEYS) {
-        if (e[key] && v[key] !== undefined) e[key].textContent = v[key];
+        // 値が変わったときだけ書き換える(レビュー Q11)
+        if (e[key] && v[key] !== undefined && e[key].textContent !== v[key]) e[key].textContent = v[key];
       }
       // デモではトレーナーへ送らないので送信値は出さない
-      if (e.controlCalculated) e.controlCalculated.textContent = controlUnit ? (v.controlCalculated ?? '--') : '--';
+      const sent = controlUnit ? (v.controlCalculated ?? '--') : '--';
+      if (e.controlCalculated && e.controlCalculated.textContent !== sent) e.controlCalculated.textContent = sent;
 
       // パワーゾーン(7段)。値がまだ無ければ全段を薄く、ゾーン名は '--'
       const zone = Number.isInteger(v.powerZone) && v.powerZone >= 0 && v.powerZone <= 6 ? v.powerZone : null;
       if (e.zoneBars) {
         const bars = e.zoneBars.children;
         for (let i = 0; i < bars.length; i++) {
-          bars[i].className = `fs-zone-bar${zone === null ? '' : i === zone ? ' is-current' : i < zone ? ' is-below' : ''}`;
+          const cls = `fs-zone-bar${zone === null ? '' : i === zone ? ' is-current' : i < zone ? ' is-below' : ''}`;
+          if (bars[i].className !== cls) bars[i].className = cls;
         }
       }
       if (e.zoneName) {
-        e.zoneName.textContent = zone === null ? '--' : `Z${zone + 1} ${ZONE_NAMES[zone]}${ftpW ? ` · FTP ${ftpW}W` : ''}`;
+        const name = zone === null ? '--' : `Z${zone + 1} ${ZONE_NAMES[zone]}${ftpW ? ` · FTP ${ftpW}W` : ''}`;
+        if (e.zoneName.textContent !== name) e.zoneName.textContent = name;
       }
 
       // 勾配の傾き線(見やすいよう実際の角度の 2.5 倍)

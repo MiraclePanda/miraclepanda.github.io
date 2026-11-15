@@ -4,7 +4,8 @@ import { COURSE_PROFILES } from '../physics/courseProfiles.js';
 import { PhysicsConstants } from '../physics/physicsConstants.js';
 import { buildRealCourse, suggestScenery } from '../physics/realCourse.js';
 import { CourseEngine } from '../physics/courseEngine.js';
-import { parseGpx } from '../storage/gpx.js';
+import { parseGpx, gpxSizeError } from '../storage/gpx.js';
+import { prepareGpuBackend, hasWebGPU } from '../three/gpuBackend.js';
 import {
   validateWeight,
   validateBikeWeight,
@@ -27,10 +28,12 @@ import {
   loadFriendGhosts,
   loadPackEnabled,
   savePackEnabled,
+  loadGpuBackend,
+  saveGpuBackend,
   PB_GHOST_ID,
   MAX_GHOSTS,
 } from '../storage/prefs.js';
-import { getAllRides, getAllCourses, saveCourse, deleteCourse, updateCourseScenery } from '../storage/db.js';
+import { getRideSummaries, getRide, getAllCourses, saveCourse, deleteCourse, updateCourseScenery } from '../storage/db.js';
 import { bestRecordFor, fromRecord } from '../storage/ghostTrack.js';
 import { GHOST_COLORS } from './ghostRace.js';
 import { TIME_OPTIONS, WEATHER_OPTIONS, supportsWeather } from './rideOptions.js';
@@ -108,7 +111,7 @@ export function SetupScreen({
   const [packEnabled, setPackEnabled] = useState(loadPackEnabled);
   useEffect(() => {
     let alive = true;
-    getAllRides().then((list) => alive && setRides(list)).catch(() => alive && setRides([]));
+    getRideSummaries().then((list) => alive && setRides(list)).catch(() => alive && setRides([]));
     getAllCourses().then((list) => alive && setSavedCourses(list)).catch(() => alive && setSavedCourses([]));
     return () => { alive = false; };
   }, []);
@@ -147,6 +150,8 @@ export function SetupScreen({
     if (!file) return;
     setGpxBusy(true);
     try {
+      const sizeError = gpxSizeError(file.size);
+      if (sizeError) throw new Error(sizeError);
       const gpx = parseGpx(await file.text());
       const name = gpx.name || file.name.replace(/\.gpx$/i, '');
       const { profile, stats } = buildRealCourse(gpx.points, { name });
@@ -227,6 +232,18 @@ export function SetupScreen({
     () => (rides && distanceCheck.valid ? bestRecordFor(rides, courseId, Number(distanceKm)) : null),
     [rides, courseId, distanceKm, distanceCheck.valid]
   );
+  // 自己ベストのゴーストは毎秒のサンプルから細かいトラックを作る(一覧は要約だけなので、選べる記録が決まったら読む)。
+  // 読み終わる前に走り出したときは、要約に控えた距離ごとの走行時間(ghostSplits)で走る
+  const [pbTrack, setPbTrack] = useState(null);
+  useEffect(() => {
+    setPbTrack(null);
+    if (!pbRecord) return undefined;
+    let alive = true;
+    getRide(pbRecord.id)
+      .then((full) => { if (alive && full) setPbTrack({ id: pbRecord.id, track: fromRecord(full) }); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [pbRecord?.id]);
   const friendGhosts = useMemo(() => (ghostsSupported ? loadFriendGhosts(courseId) : []), [courseId, ghostsSupported]);
   const pbReason = rides === null
     ? '記録を読み込み中...'
@@ -249,7 +266,12 @@ export function SetupScreen({
     : [];
   const buildGhostTracks = () =>
     activeGhostIds.map((id) => {
-      if (id === PB_GHOST_ID) return { ...fromRecord(pbRecord), id, color: GHOST_COLORS.pb };
+      if (id === PB_GHOST_ID) {
+        const track = pbTrack?.id === pbRecord.id
+          ? pbTrack.track
+          : { ...fromRecord(pbRecord), points: Float64Array.from(pbRecord.ghostSplits ?? []) };
+        return { ...track, id, color: GHOST_COLORS.pb };
+      }
       const g = friendGhosts.find((x) => x.id === id);
       return { id: g.id, name: g.name, courseId: g.courseId, points: g.points, color: GHOST_COLORS.friend };
     });
@@ -600,6 +622,7 @@ export function SetupScreen({
         ? segmented('天候', 'envWeather', WEATHER_OPTIONS, environment.weather, (id) => changeEnvironment({ weather: id }))
         : h('p', { className: 'muted small' }, `${courseProfile.name}は時間帯だけが反映されます(天候は変わりません)。`),
       h('p', { className: 'muted small' }, '※ 走行中の3D表示の見た目だけが変わります。速度・距離の計算やトレーナーの負荷は変わりません。景観は走行中にも切り替えられます。'),
+      h(BackendPicker),
 
       h('p', { className: 'field-title' }, '集団走行'),
       ghostsSupported
@@ -751,6 +774,28 @@ function ghostOption({ id, name, color, checked, disabled, note, onToggle }) {
 }
 
 /** 小さな選択肢の横並び(ラジオボタン)。 */
+/**
+ * 描画の方式(WebGL / WebGPU)。端末ごとに覚え、次の走行から使う(PandaCycleExpedition のホームと同じ)。
+ * 既定は WebGL。WebGPU は試験的で、使えない端末では WebGL で描く。URL の ?gpu= はこの選択より優先する。
+ */
+function BackendPicker() {
+  const [value, setValue] = useState(loadGpuBackend);
+  const gpu = hasWebGPU();
+  const options = [
+    { id: 'webgl', label: 'WebGL(標準)' },
+    { id: 'webgpu', label: gpu ? 'WebGPU(試験的)' : 'WebGPU(この端末では使えません)' },
+  ];
+  return h(
+    'div', { className: 'backend-pick' },
+    segmented('描画の方式', 'gpuBackend', options, value, (id) => {
+      saveGpuBackend(id);
+      setValue(id);
+      prepareGpuBackend(id);
+    }),
+    h('p', { className: 'muted small' }, 'ふだんは WebGL で描きます。WebGPU は端末によって速くも遅くもなります(選んでも使えない端末では WebGL で描きます)。')
+  );
+}
+
 function segmented(title, name, options, value, onChange) {
   return h(
     'div', { className: 'segmented-field', role: 'radiogroup', 'aria-label': title },

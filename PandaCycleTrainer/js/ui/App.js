@@ -2,7 +2,8 @@ import { h, useState, useRef, useCallback, useEffect } from './h.js';
 import { FtmsClient } from '../ble/ftmsClient.js';
 import { getCourseProfile } from '../physics/courseProfiles.js';
 import { loadPrefs, savePrefs } from '../storage/prefs.js';
-import { saveRide } from '../storage/db.js';
+import { saveRide, loadRideDraft, clearRideDraft, requestPersistentStorage } from '../storage/db.js';
+import { ConfirmDialog } from './Modal.js';
 import { isBluetoothSupported, isSecureContextOk, UnsupportedGuidance } from './CompatibilityGate.js';
 import { SetupScreen } from './SetupScreen.js';
 import { RideScreen } from './RideScreen.js';
@@ -15,6 +16,9 @@ export function App() {
   const [deviceState, setDeviceState] = useState({ connected: false, connecting: false, deviceName: null, controlMode: null, error: null });
   const [sessionConfig, setSessionConfig] = useState(null);
   const [lastRecord, setLastRecord] = useState(null);
+  // 前回、保存されずに終わった走行の下書き(タブのクラッシュ・再読み込み。レビュー Q1)
+  const [draft, setDraft] = useState(null);
+  const [draftMessage, setDraftMessage] = useState(null);
 
   const ftmsClientRef = useRef(null);
   if (!ftmsClientRef.current) {
@@ -34,6 +38,34 @@ export function App() {
     };
     client.addEventListener('disconnected', onDisconnected);
     return () => client.removeEventListener('disconnected', onDisconnected);
+  }, []);
+
+  // 起動時に、前回の走行の下書きが残っていれば保存するか尋ねる
+  useEffect(() => {
+    let alive = true;
+    loadRideDraft()
+      .then((d) => {
+        if (alive && d?.record && Array.isArray(d.record.samples) && d.record.samples.length > 0) setDraft(d);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const handleDraftSave = useCallback(async () => {
+    const d = draft;
+    setDraft(null);
+    try {
+      await saveRide({ ...d.record, recovered: true });
+      await clearRideDraft();
+      setDraftMessage({ error: false, text: `前回の走行(${d.record.courseName}・${(d.record.totalDistanceM / 1000).toFixed(2)} km)を走行記録に保存しました。` });
+    } catch (err) {
+      setDraftMessage({ error: true, text: `前回の走行を保存できませんでした: ${err?.message ?? err}` });
+    }
+  }, [draft]);
+
+  const handleDraftDiscard = useCallback(() => {
+    setDraft(null);
+    clearRideDraft().catch(() => {});
   }, []);
 
   const handleConnectDevice = useCallback(async () => {
@@ -89,6 +121,8 @@ export function App() {
     ftmsClientRef.current.setSimulationCoefficients({ crr: config.crr, cdaM2: config.cdaM2 });
     // FTMS User Data Service (体重書き込み) はベストエフォート。結果は待たずに進める。
     ftmsClientRef.current.tryWriteUserWeight(config.weightKg).catch(() => {});
+    // 走行記録をブラウザに消されないよう頼む(断られても走れる)
+    requestPersistentStorage();
     setSessionConfig({
       ...config,
       // GPX の実在コースはセットアップ画面が profile ごと渡す
@@ -120,12 +154,17 @@ export function App() {
       ? { connected: true, connecting: false, deviceName: client.device?.name || '(不明なデバイス)', controlMode: client.controlMode, error: null }
       : { connected: false, connecting: false, deviceName: null, controlMode: null, error: null });
     let id = null;
+    let saveError = null;
     try {
       id = await saveRide(record);
+      // 保存できたら途中保存の下書きは要らない(失敗したら残しておき、次に開いたときに保存し直せる)
+      await clearRideDraft().catch(() => {});
     } catch (e) {
-      // IndexedDB保存失敗時もリザルト表示自体は継続する。
+      // IndexedDB保存失敗時もリザルト表示自体は継続し、失敗したことと TCX の書き出しを促す(レビュー Q8)
+      console.error('走行記録を保存できませんでした:', e);
+      saveError = e?.message ?? String(e);
     }
-    setLastRecord({ ...record, id });
+    setLastRecord({ ...record, id, saveError });
     setScreen('result');
   }, []);
 
@@ -161,8 +200,24 @@ export function App() {
     onOpenHistory: openHistory,
   };
 
+  // 前回の走行の下書きの確認(セットアップ画面の上に出す)
+  const draftUi = [
+    draft && h(ConfirmDialog, {
+      key: 'draft',
+      title: '前回の走行が保存されていません',
+      message: `${new Date(draft.record.startTime).toLocaleString('ja-JP')} に始めた「${draft.record.courseName}」の走行(${(draft.record.totalDistanceM / 1000).toFixed(2)} km)が、終了の操作をしないまま終わっています(途中保存: ${new Date(draft.savedAt).toLocaleTimeString('ja-JP')})。走行記録に保存しますか？`,
+      confirmLabel: '保存する',
+      cancelLabel: '破棄する',
+      onConfirm: handleDraftSave,
+      onCancel: handleDraftDiscard,
+    }),
+    draftMessage && h('div', { key: 'draft-msg', className: `banner ${draftMessage.error ? 'banner-warning' : 'banner-info'}`, role: 'status' },
+      draftMessage.text,
+      h('button', { className: 'btn btn-link', onClick: () => setDraftMessage(null) }, '閉じる')),
+  ];
+
   if (screen === 'setup') {
-    return h(SetupScreen, setupProps);
+    return h(React.Fragment, null, ...draftUi, h(SetupScreen, setupProps));
   }
 
   if (screen === 'riding' && sessionConfig) {
@@ -201,5 +256,5 @@ export function App() {
     return h(HistoryScreen, { onBack: closeHistory });
   }
 
-  return h(SetupScreen, setupProps);
+  return h(React.Fragment, null, ...draftUi, h(SetupScreen, setupProps));
 }

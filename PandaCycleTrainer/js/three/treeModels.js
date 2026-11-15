@@ -177,6 +177,12 @@ export function canopyBlobGeometry() {
   return merge([lump(2, [0, 0, 0], [1, 0.85, 1], 0.7, [0, -0.4, 0], shade)]);
 }
 
+/** 遠くの樹冠の塊(上野の公園の木。形・陰影は canopyBlobGeometry と同じで、面の数は 4 分の 1)。 */
+export function canopyBlobFarGeometry() {
+  const shade = (x, y, z, ly) => Math.min(1.05, 0.68 + 0.18 * (ly + 1));
+  return merge([lump(1, [0, 0, 0], [1, 0.85, 1], 0.7, [0, -0.4, 0], shade)]);
+}
+
 /** 近くの木の幹: 7 角の幹の先から 3 本の枝が樹冠へ伸びる。 */
 export function trunkNearGeometry() {
   const parts = [paint(new THREE.CylinderGeometry(0.11, 0.2, 1, 7).translate(0, 0.5, 0), (y) => 0.75 + 0.25 * y)];

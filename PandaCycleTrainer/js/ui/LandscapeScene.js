@@ -1,6 +1,5 @@
-import { h, useRef, useEffect, useState } from './h.js';
+import { useSceneHost } from './sceneHost.js';
 import THREE from '../three/three.js';
-import { startSceneRenderer } from '../three/gpuBackend.js';
 import { broadleafFarGeometry, coniferFarGeometry, coniferNearGeometry, trunkNearGeometry } from '../three/treeModels.js';
 import { mulberry32 } from '../three/cityLayout.js';
 import {
@@ -11,12 +10,12 @@ import { createLandscapeTextures } from '../three/landscapeMaterials.js';
 import { createAnchoredRoute, headingAtM, lateralSigmaM, curvatureAtM, hasCurve } from '../three/routeLayout.js';
 import {
   RIDER_X_M, bakeSky, buildCanopyGeometry, createAvatar, updateRiderAvatar,
-  makePool, pushInstance, pushInstanceYawPitch, commitPool, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
+  makePool, pushInstance, pushInstanceYawPitch, commitPool, disposeScene,
   setCameraFov, setAvatarVisible,
-  reportReadyAfterDraw, renderScene, maxAnisotropy,
+  renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
 import {
-  createCineDirector, normalizeCameraView, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
+  createCineDirector, riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
   AERIAL_BACK_M, AERIAL_HEIGHT_M, AERIAL_SIDE_M, AERIAL_LOOKAHEAD_M, AERIAL_LOOK_HEIGHT_M, AERIAL_FOV_DEG,
 } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
@@ -25,13 +24,12 @@ import { createOtherRiders } from '../three/otherRiders.js';
 import { createRoadsideActors } from '../three/roadsideActors.js';
 import { clearZones, inClearZone } from '../three/roadsideLayout.js';
 import { landmarkActors } from '../three/happeningsLayout.js';
-import { createBackdrop } from '../three/backdrops.js';
 import { createOcean } from '../three/oceanWater.js';
 import { createRealTerrain } from '../three/realTerrain.js';
 import { REAL_TERRAIN, GSI_ATTRIBUTION } from '../three/gsiTerrain.js';
 import { buildTourParts, placeTourObjects } from '../three/tourParts.js';
 
-const { forwardRef, useImperativeHandle } = React;
+const { forwardRef } = React;
 
 const fract01 = (x) => x - Math.floor(x);
 
@@ -48,22 +46,6 @@ const ATMOSPHERE = {
     // 左後方の高い太陽: 正面の山並みが順光で立体的に見える
     sunDir: new THREE.Vector3(-0.45, 0.72, 0.3).normalize(),
     hemiSky: 0xd2e1f3, hemiGround: 0x6a6a5c, fog: 0.00034, water: 0x3a6c70,
-  },
-  // 秋晴れの京都: 左前方の太陽が通りの町家に斜めの日差しを落とす。京都タワー・西山が霞みすぎないよう薄めのフォグ
-  kyoto: {
-    zenith: '#3576c8', horizon: '#dfe6ea', ground: '#9a9a92', sunColor: '#fff0d8',
-    sunDir: new THREE.Vector3(-0.42, 0.6, -0.55).normalize(),
-    hemiSky: 0xd6e2ef, hemiGround: 0x7a7466, fog: 0.00028, water: 0x3d6460,
-  },
-  nara: {
-    zenith: '#3a7cc9', horizon: '#dbe5ea', ground: '#90a08a', sunColor: '#fff2dc',
-    sunDir: new THREE.Vector3(-0.45, 0.6, -0.55).normalize(),
-    hemiSky: 0xd0e2f2, hemiGround: 0x6f7a5a, fog: 0.00032, water: 0x3c5f58,
-  },
-  kawaguchiko: {
-    zenith: '#3a7cc9', horizon: '#d3e3ee', ground: '#8ea39a', sunColor: '#fff3de',
-    sunDir: new THREE.Vector3(-0.5, 0.6, -0.62).normalize(),
-    hemiSky: 0xcfe2f5, hemiGround: 0x6f7a5a, fog: 0.00032, water: 0x2d6075,
   },
   // 竜宮城の海底: 真上から差し込む光と、青く霞む海の中(見通し約320m)。空は水面を見上げた色で焼き(underwater)、
   // 時間帯は海の中の色(palettes)で変える。夜は深海の暗さ
@@ -125,7 +107,7 @@ const WATER_TILE_M = 18;
 const WATER_SIZE_M = 50000;
 // 描画品質「最高(実験)」で水面を映り込む水面にする景色(水面が見えるもの。熱海は AtamiScene。京都・奈良は水面を地形の下に
 // 隠しているだけ、竜宮城は海の中なので対象外。描く手間が倍になるので見えない水面には使わない)
-const REFLECTIVE_WATER = new Set(['lakeside', 'mountain', 'kawaguchiko']);
+const REFLECTIVE_WATER = new Set(['lakeside', 'mountain']);
 const CAMERA_FAR_M = 25000;
 const GUARDRAIL_POST_SPACING_M = 4;
 const WALL_SEGMENT_M = 4;
@@ -172,63 +154,16 @@ const MAX_BOATS = 16;
  * - curve がないコースは従来どおり景色側の L.curves による横ずらしの蛇行
  *   (lateralX/roadCenterX/roadSlopeX)。見た目を変えないため、計算式もそのまま使う。
  */
-export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine, landscape, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
-  const canvasRef = useRef(null);
-  const sceneRef = useRef(null);
-  // 実在の地形(最高(実験))を出している間の出典表示。毎フレームの再描画を避けるため DOM を直接書き換える
-  const attributionRef = useRef(null);
-  const [renderError, setRenderError] = useState(null);
-  // 品質段階の変化(自動調整による段階変更を含む)を親へ通知する。最新のコールバックを参照するためrefで持つ。
-  const onQualityChangeRef = useRef(onQualityChange);
-  onQualityChangeRef.current = onQualityChange;
-  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
-  const onReadyRef = useRef(onReady);
-  onReadyRef.current = onReady;
-  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
-  useEffect(() => {
-    if (renderError) onReadyRef.current?.();
-  }, [renderError]);
-
-  useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
-      const s = sceneRef.current;
-      if (!s) return;
-      try {
-        adaptQuality(s);
-        drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
-        reportReadyAfterDraw(s);
-      } catch (err) {
-        // 実行時にWebGLコンテキストロスト等が起きても、アプリ全体を巻き込んでクラッシュさせない。
-        console.error('3D の描画に失敗しました:', err);
-        setRenderError(String(err));
-      }
-    },
-    /** フルスクリーン切替などでキャンバスの表示サイズが変わった時に呼ぶ。 */
-    resize() {
-      if (sceneRef.current) resizeScene(sceneRef.current);
-    },
-  }));
-
-  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
-  const live = useRef({});
-  live.current = { qualityMode, environment, cameraView };
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !courseEngine) return;
-    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
-    return startSceneRenderer(canvas, (renderer) => {
-      let scene3d;
-      try {
-        scene3d = initScene(canvas, courseEngine, getLandscape(landscape), vehicle, renderer);
-        // 走る日の季節(竜宮城の海底は null)。地形・木の色は次の組み立て(rebuild)から使う
-        scene3d.season = scene3d.L.underwater ? null : season;
-        sceneRef.current = scene3d;
-        scene3d.onReady = () => onReadyRef.current?.();
-      } catch (err) {
-        setRenderError(String(err));
-        return;
-      }
-
+export const LandscapeScene = forwardRef(function LandscapeScene(props, ref) {
+  const { courseEngine, landscape, vehicle = 'bike', season = null } = props;
+  const { shell } = useSceneHost(ref, props, {
+    enabled: !!courseEngine,
+    build(canvas, renderer, host) {
+      const scene3d = initScene(canvas, courseEngine, getLandscape(landscape), vehicle, renderer);
+      // 走る日の季節(竜宮城の海底は null)。地形・木の色は次の組み立て(rebuild)から使う
+      scene3d.season = scene3d.L.underwater ? null : season;
+      // 実在の地形(最高(実験))を出している間の出典表示。毎フレームの再描画を避けるため DOM を直接書き換える
+      scene3d.attributionEl = host.attributionEl;
       // 走行環境(時間帯・天候)。昼・晴れなら何もしない(従来の見た目のまま)。
       const pools = scene3d.pools;
       scene3d.env = createEnvironmentController(scene3d, {
@@ -244,57 +179,20 @@ export const LandscapeScene = forwardRef(function LandscapeScene({ courseEngine,
         weather: !scene3d.L.underwater,
         season: scene3d.season,
       });
-      scene3d.env.set(live.current.environment, { immediate: true });
-      scene3d.cam.view = normalizeCameraView(live.current.cameraView);
-
-      const resize = () => resizeScene(scene3d);
-      scene3d.attributionEl = attributionRef.current;
-      scene3d.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-      scene3d.appliedQualityMode = live.current.qualityMode;
-      setupQuality(scene3d, live.current.qualityMode);
-      window.addEventListener('resize', resize);
-
-      return () => {
-        window.removeEventListener('resize', resize);
-        // 差し替え中の水面マテリアル・実在の地形の写真はシーンをたどっても見つからないので先に解放する
-        scene3d.ocean?.dispose();
-        scene3d.realTerrain?.dispose();
-        // 裏の組の地形・道路(シーンに入っていないので disposeScene では見つからない)
-        for (const g of Object.values(scene3d.geoSets[1 - scene3d.front])) g.dispose();
-        disposeScene(scene3d);
-        sceneRef.current = null;
-      };
-    }, (err) => setRenderError(String(err)));
-  }, []);
-
-  // 走行中に描画品質のモードが変更されたら適用する(初回はsetupQualityで適用済み)。
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s || s.appliedQualityMode === qualityMode) return;
-    s.appliedQualityMode = qualityMode;
-    setQualityMode(s, qualityMode);
-  }, [qualityMode]);
-
-  // 走行中に時間帯・天候が変わったら、空を焼き直し、光・霧などを約1.5秒かけて切り替える。
-  useEffect(() => {
-    sceneRef.current?.env?.set(environment);
-  }, [environment?.time, environment?.weather]);
-
-  // 視点の切り替え(即時)。次の draw() から反映される。
-  useEffect(() => {
-    if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView);
-  }, [cameraView]);
-
-  return h(
-    'div', { className: 'city-scene-wrap' },
-    h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': getLandscape(landscape).id, 'data-vehicle': vehicle }),
-    h('div', { ref: attributionRef, className: 'scene-attribution', hidden: true }),
-    renderError &&
-      h(
-        'div', { className: 'city-scene-fallback' },
-        '3D表示を利用できません(WebGL非対応の可能性があります)。走行データはダッシュボードでご確認ください。'
-      )
-  );
+      return scene3d;
+    },
+    draw(s, { distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
+      drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
+    },
+    dispose(s) {
+      // 差し替え中の水面マテリアル・実在の地形の写真はシーンをたどっても見つからないので先に解放する
+      s.ocean?.dispose();
+      s.realTerrain?.dispose();
+      // 裏の組の地形・道路(シーンに入っていないので disposeScene では見つからない)
+      for (const g of Object.values(s.geoSets[1 - s.front])) g.dispose();
+    },
+  });
+  return shell({ 'data-scenery': getLandscape(landscape).id, 'data-vehicle': vehicle }, { attribution: 'hidden' });
 });
 
 // ---- シーン初期化 ----
@@ -409,9 +307,6 @@ function initScene(canvas, courseEngine, L, vehicle, renderer) {
   const floor = createFloorModel(elev, loopM, L.valley.minDropM, { fixedLength: !!courseEngine.profile.fixedLength });
   const curve = courseEngine.profile.curve;
 
-  // 空と一緒に回る遠景(富士山など)。コースプロファイルの backdrop で選ぶ。シーンに入れるので disposeScene で解放される
-  const backdrop = createBackdrop(courseEngine.profile.backdrop);
-  if (backdrop) scene.add(backdrop.object);
 
   // 描画品質「最高(実験)」(sceneKit の s.ultra): 水面の見える景色は映り込む水面に、実在の場所をモデルにした
   // 景色(河口湖・京都・奈良)は国土地理院のタイルから作る実在の地形の遠景を足す
@@ -459,7 +354,6 @@ function initScene(canvas, courseEngine, L, vehicle, renderer) {
     profile: courseEngine.profile,
     // 沿道のハプニング・名所。他のライダーと同じく inner に置く。模型は初めて出るときに作る
     actors: createRoadsideActors(inner, tex.all),
-    backdrop,
   };
   // 配置物は控えのプールに置いておき、入れ替えるときに本物のプールへ写す
   st.staging = Object.fromEntries(Object.entries(st.pools).map(([k, pool]) => [k, stagingPool(pool)]));
@@ -1071,13 +965,6 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
 
   // 走行環境の補間と雨粒(カメラ位置を使うのでカメラの後)
   st.env.update();
-  // 遠景は空と同じだけ回し、麓を湖面の高さに置く。色は走行環境を反映した後の光・フォグから決める
-  if (st.backdrop) {
-    st.backdrop.update({
-      skyHeading, baseY: st.water.position.y, sunDir: st.env.sunDir,
-      hemiLight: st.hemiLight, sunLight: st.sunLight, fog: st.scene.fog,
-    });
-  }
   if (st.realTerrain) {
     st.realTerrain.update({
       enabled: st.ultraOn, skyHeading,
@@ -1085,9 +972,6 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
       baseY: st.realCfg.anchor === 'origin' ? st.rider.group.position.y : st.water.position.y,
       sunDir: st.env.sunDir, hemiLight: st.hemiLight, sunLight: st.sunLight, fog: st.scene.fog,
     });
-    const real = st.realTerrain.object.visible;
-    // 実在の地形に本物の富士山があるので、手続き生成のものは隠す
-    if (st.realCfg.hideBackdrop && st.backdrop) st.backdrop.object.visible = !real;
   }
   st.ocean?.render(st.renderer, st.scene, st.camera, t);
   renderScene(st);

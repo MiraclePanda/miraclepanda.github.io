@@ -7,6 +7,7 @@ import { createPostFx } from './postFx.js';
 import { createPostFxGpu } from './postFxGpu.js';
 import { threeWebGPU } from './gpuBackend.js';
 import { canopyBlobGeometry } from './treeModels.js';
+import { initialQualityState, nextQualityState, SLOW_FRAME_MS, DOWN_AFTER_WINDOWS } from './qualityPolicy.js';
 
 // 左側通行: ライダーは左車線の中央付近を走る。
 export const RIDER_X_M = -2.0;
@@ -676,7 +677,7 @@ export function uploadInstances(mesh, n, ...extra) {
 
 // 描画品質の段階。トレーナー横に置くタブレット等の非力な端末でフレームレートが
 // 落ちると物理演算のdt上限(PhysicsEngine: 0.25s)を超えて走行が実時間より遅れて
-// しまうため、実測のフレーム間隔が遅ければ自動で1段ずつ品質を下げる(上げ直しはしない)。
+// しまうため、実測のフレーム間隔が遅ければ自動で品質を下げ、速さに余裕が戻れば上げ直す(qualityPolicy.js)。
 // post: 仕上げのポストエフェクト(postFx.js: 光のにじみ・色の整え・周辺減光)を使うか。
 // treeNearR: 葉の塊・枝の段まで作り込んだ形で描く木の半径(m。treeModels.js。外側は軽い形)。
 export const QUALITY_TIERS = [
@@ -693,8 +694,13 @@ export const QUALITY_TIERS = [
 export const ULTRA_TREE_NEAR_R = 220;
 export const QUALITY_MODES = ['auto', 'ultra', 'high', 'medium', 'low'];
 const QUALITY_SAMPLE_FRAMES = 10;
-const SLOW_FRAME_MS = 45; // 約22fps未満が続いたら品質を下げる
-const VERY_SLOW_FRAME_MS = 180; // 桁違いに遅い(ソフトウェアGL等)なら最低品質へ直行する
+// 品質を変えた直後(シェーダーの組み直し・画面外バッファの作り直しが何フレームかにわたる)と走り始めは、
+// これだけのフレームを測らない
+const SETTLE_FRAMES = 30;
+const BUSY_MAX_MS = 1000;
+// 遅い・速いの判定のしきい値と上げ下げの決め方は qualityPolicy.js(PandaCycleExpedition と同じ)。
+// 以前は1窓(10フレーム)遅いだけで下げ、上げ直さなかったので、木の組み直しなど一時的な重さで
+// 下がった画質がその走行の間ずっと戻らなかった(レビュー Q12)。
 
 /**
  * シーン状態sに品質段階を適用する。sは { renderer, scene, sunLight, sky, canvas, camera } を持つこと。
@@ -738,6 +744,7 @@ export function applyQuality(s, index) {
     }
   }
   s.canvas.dataset.quality = ultra ? 'ultra' : tier.name;
+  markBusyFrames(s, SETTLE_FRAMES);
   s.onUltraChange?.(ultra);
   resizeScene(s);
   s.onQualityChange?.(ultra ? 'ultra' : tier.name);
@@ -808,7 +815,42 @@ export function setQualityMode(s, mode) {
   s.frameIntervals = [];
   s.lastDrawAt = null;
   s.canvas.dataset.qualityMode = index < 0 ? 'auto' : mode;
-  applyQuality(s, index < 0 ? initialQualityIndex(s.renderer) : index);
+  s.ultraSlow = 0;
+  if (index >= 0) {
+    applyQuality(s, index);
+    return;
+  }
+  // 自動: 走行ごとに、その端末で一番よい段階から測る(ソフトウェアで描く端末は最低から)
+  const i0 = initialQualityIndex(s.renderer);
+  s.qualityState = initialQualityState(i0, maxRatioOf(i0));
+  applyQuality(s, i0);
+  applyAutoState(s, s.qualityState);
+}
+
+/**
+ * これから n フレーム(長くても BUSY_MAX_MS の間)は品質の自動調整で測らない(木の組み直し・景色の入れ替え・
+ * 空を焼くなど、たまにだけある重い仕事のフレームと、その描き終わりを待つ次のフレーム)。
+ * 実際の重さで下げるのは続く遅さだけにする。
+ */
+export function markBusyFrames(s, n = 2) {
+  s.busyFrames = Math.max(s.busyFrames ?? 0, n);
+  s.busyUntil = performance.now() + BUSY_MAX_MS;
+  // 品質を変えたとき: 変える前に測った分も捨てる
+  if (n >= SETTLE_FRAMES && s.frameIntervals) s.frameIntervals.length = 0;
+}
+
+/** 段階 index の画素の倍率の上限(端末の倍率で頭打ち)。 */
+function maxRatioOf(index) {
+  return Math.min(globalThis.devicePixelRatio || 1, QUALITY_TIERS[index].maxPixelRatio);
+}
+
+/** 自動調整の状態(段階・画素の倍率)をシーンに当てる。 */
+function applyAutoState(s, st) {
+  if (st.index !== s.qualityIndex) applyQuality(s, st.index);
+  if (Math.abs(s.renderer.getPixelRatio() - st.pixelRatio) > 1e-3) {
+    s.renderer.setPixelRatio(st.pixelRatio);
+    resizeScene(s);
+  }
 }
 
 export function adaptQuality(s) {
@@ -817,7 +859,10 @@ export function adaptQuality(s) {
   if (s.forcedQuality || (!s.autoQuality && !s.ultra)) return;
   if (s.ultra && !s.readyReported) return;
   const now = performance.now();
-  if (s.lastDrawAt !== null) {
+  if (s.busyFrames > 0 && now < s.busyUntil) {
+    // 重い仕事のあったフレームは測らない(markBusyFrames)
+    s.busyFrames--;
+  } else if (s.lastDrawAt != null) {
     const interval = now - s.lastDrawAt;
     // 一時停止やタブ非表示で空いた間隔は計測対象外。
     if (interval < 1000) s.frameIntervals.push(interval);
@@ -828,25 +873,25 @@ export function adaptQuality(s) {
   const sorted = s.frameIntervals.slice().sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
   s.frameIntervals.length = 0;
-  const lowest = QUALITY_TIERS.length - 1;
   if (s.ultra) {
-    if (median > SLOW_FRAME_MS) {
+    // 最高は遅い窓が続いたら「高」+自動へ(上げ直しで最高には戻さない。最高は選んだときだけ)
+    s.ultraSlow = median > SLOW_FRAME_MS ? (s.ultraSlow ?? 0) + 1 : 0;
+    if (s.ultraSlow >= DOWN_AFTER_WINDOWS) {
+      s.ultraSlow = 0;
       s.ultra = false;
       s.autoQuality = true;
       applyQuality(s, 0);
+      s.qualityState = initialQualityState(0, s.renderer.getPixelRatio());
     }
     return;
   }
-  if (median > VERY_SLOW_FRAME_MS && s.qualityIndex < lowest) {
-    applyQuality(s, lowest);
-  } else if (median > SLOW_FRAME_MS && s.qualityIndex === 0 && s.renderer.getPixelRatio() > 1.01) {
-    // 高のまま(影・光のにじみは残して)まず画面の細かさだけ下げる。高精細の画面の端末では、
-    // 画素の数が重さの大半なので、これで足りることが多い(それでも遅ければ次から中へ)
-    s.renderer.setPixelRatio(Math.max(1, s.renderer.getPixelRatio() * 0.75));
-    resizeScene(s);
-  } else if (median > SLOW_FRAME_MS && s.qualityIndex < lowest) {
-    applyQuality(s, s.qualityIndex + 1);
-  }
+  s.qualityState ??= initialQualityState(s.qualityIndex, s.renderer.getPixelRatio());
+  const prev = s.qualityState;
+  const next = nextQualityState(prev, median, { lowest: QUALITY_TIERS.length - 1, maxRatio: maxRatioOf });
+  s.qualityState = next;
+  if (next.index === prev.index && next.pixelRatio === prev.pixelRatio) return;
+  applyAutoState(s, next);
+  markBusyFrames(s, SETTLE_FRAMES);
 }
 
 // ---- 走行開始の準備 ----
@@ -873,6 +918,42 @@ export function reportReadyAfterDraw(s) {
   requestAnimationFrame(() => {
     if (!s.disposed) s.onReady?.();
   });
+}
+
+// ---- 描画の重さの計測(走行画面の ?perf=1。PandaCycleExpedition と同じ) ----
+
+/** 1フレームの描画の始め: フレームの間隔を測り、描画命令・三角形の数え直しを始める。 */
+export function frameStatsBegin(s) {
+  const now = performance.now();
+  if (s.statLast != null) {
+    const dt = now - s.statLast;
+    if (dt < 1000) s.statFrameMs = s.statFrameMs == null ? dt : s.statFrameMs * 0.9 + dt * 0.1;
+  }
+  s.statLast = now;
+  s.statT0 = now;
+  // 1フレームに何回も render する(水面の映り込み・景色・仕上げ)ので、自動では数え直さず、ここで1フレームぶんに区切る
+  s.renderer.info.autoReset = false;
+  s.renderer.info.reset();
+}
+
+/** 1フレームの描画の終わり(景色の更新と描画の命令にかかった CPU の時間を測る。GPU の時間は測れない)。 */
+export function frameStatsEnd(s) {
+  const dt = performance.now() - s.statT0;
+  s.statDrawMs = s.statDrawMs == null ? dt : s.statDrawMs * 0.9 + dt * 0.1;
+}
+
+/** 直近の描画の重さ(走行画面の計測の表示に使う)。 */
+export function sceneStats(s) {
+  const r = s.renderer.info.render;
+  return {
+    frameMs: s.statFrameMs ?? NaN,
+    drawMs: s.statDrawMs ?? NaN,
+    calls: r.drawCalls ?? r.calls,
+    triangles: r.triangles,
+    tier: s.canvas.dataset.quality,
+    pixelRatio: s.renderer.getPixelRatio(),
+    backend: s.renderer.isWebGPURenderer ? (s.renderer.backend?.isWebGPUBackend ? 'WebGPU' : 'WebGPU(WebGL2)') : 'WebGL',
+  };
 }
 
 // ---- 描画 ----

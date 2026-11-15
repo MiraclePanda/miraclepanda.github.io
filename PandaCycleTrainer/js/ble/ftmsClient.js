@@ -28,6 +28,11 @@ export class FtmsClient extends EventTarget {
 
     this.lastSentGradePercent = null;
     this.lastSentErgWatts = null;
+    // 送信待ち(キューに積んで、まだ成功していない)の勾配・目標W。成功したら lastSent* に移す。
+    // 以前は積んだ時点で「送信済み」としていたので、送信が破棄されると勾配が一定の区間では再送されなかった(レビュー Q9 a)
+    this._pendingGrade = null;
+    this._pendingErg = null;
+    this._targetSentAt = 0; // 最後に勾配・目標Wを送った時刻(performance.now。最小間隔のため)
     this.prePauseTarget = null; // { mode, value } 一時停止前の目標値
     this.isPaused = false;
     this.sessionEnded = false; // endSession() 後、beginSession() で制御権を取り直すまで true
@@ -39,6 +44,8 @@ export class FtmsClient extends EventTarget {
 
     this._pendingControlResponse = null;
     this._lastValidSample = null;
+    this._reconnectGen = 0; // reconnect() の回(endSession で進め、終わったつなぎ直しを捨てる)
+    this._quietDisconnect = false;
 
     this.queue = new CommandQueue({
       maxRetries: DeviceProfile.COMMAND_MAX_RETRIES,
@@ -56,7 +63,8 @@ export class FtmsClient extends EventTarget {
 
     this._onDisconnected = this._onDisconnected.bind(this);
     this._onIndoorBikeData = (ev) => {
-      this._emit('bike-data', this._parseIndoorBikeData(ev.target.value));
+      const sample = this._parseIndoorBikeData(ev.target.value);
+      if (sample) this._emit('bike-data', sample);
     };
     this._onControlPointResponse = (ev) => {
       this._handleControlPointResponse(ev.target.value);
@@ -95,15 +103,72 @@ export class FtmsClient extends EventTarget {
     try {
       return await this._setUpConnection();
     } catch (err) {
-      // 途中で失敗したら GATT 接続を残さない(半端な接続のまま次の接続を始めないため)
-      await this.disconnect();
+      // 途中で失敗したら GATT 接続を残さない(半端な接続のまま次の接続を始めないため)。
+      // 自分で切る切断は「切れた」と知らせない(走行画面が自動の再接続をまた始めて、止まらなくなるため)
+      await this._disconnectQuietly();
       throw err;
     }
+  }
+
+  /**
+   * 切断後、選択済みの同じ機器へつなぎ直す(機器の選択画面は出さない。レビュー F2)。
+   * 接続シーケンス(Request Control → Start or Resume → 初回目標値)は connect() と同じ。
+   * 機器をまだ選んでいなければ例外を投げる(呼び出し側で connect() してもらう)。
+   */
+  async reconnect() {
+    if (!this.device?.gatt) throw new Error('つなぎ直す機器がありません。');
+    if (this.isConnected) return { deviceName: this.device.name, controlMode: this.controlMode };
+    // 前の接続の特性に付けたリスナーを外し、送りかけのコマンドを捨ててから始める
+    this.queue.clear();
+    this.indoorBikeDataChar?.removeEventListener('characteristicvaluechanged', this._onIndoorBikeData);
+    this.controlPointChar?.removeEventListener('characteristicvaluechanged', this._onControlPointResponse);
+    // 応答待ちのコマンドは捨てずに失敗させる(待ったままにするとキューの呼び出し側が戻らない)
+    this._rejectPendingControlResponse(new Error('接続が切れたため、Control Point の応答待ちを打ち切りました'));
+    const gen = ++this._reconnectGen;
+    try {
+      const result = await this._setUpConnection();
+      // つなぎ直している間に走行が終わった(endSession)なら、取った制御権を手放して待機させる
+      if (gen !== this._reconnectGen) {
+        await this.endSession();
+        throw new Error('走行が終わったため、つなぎ直しをやめました');
+      }
+      return result;
+    } catch (err) {
+      if (gen === this._reconnectGen) await this._disconnectQuietly();
+      throw err;
+    }
+  }
+
+  /** つなぎ直しの途中なら、終わったあとに使わないよう印を付ける(endSession から呼ぶ)。 */
+  cancelReconnect() {
+    this._reconnectGen++;
+  }
+
+  /** 自分で切る(接続に失敗した後始末): 「切れた」の知らせは出さない。 */
+  async _disconnectQuietly() {
+    this._quietDisconnect = true;
+    try {
+      await this.disconnect();
+    } finally {
+      // gattserverdisconnected は gatt.disconnect() の中か直後に届くので、少し待ってから戻す
+      setTimeout(() => {
+        this._quietDisconnect = false;
+      }, 0);
+    }
+  }
+
+  _rejectPendingControlResponse(err) {
+    const pending = this._pendingControlResponse;
+    this._pendingControlResponse = null;
+    pending?.reject(err);
   }
 
   async _setUpConnection() {
     // 新しい接続は接続シーケンスで制御権を取るので、beginSession() でのやり直しは不要
     this.sessionEnded = false;
+    this._pendingGrade = null;
+    this._pendingErg = null;
+    this._lastValidSample = null;
 
     this.server = await this.device.gatt.connect();
     const ftmsService = await this.server.getPrimaryService(C.FTMS_SERVICE);
@@ -217,6 +282,8 @@ export class FtmsClient extends EventTarget {
   }
 
   _onDisconnected() {
+    this._rejectPendingControlResponse(new Error('接続が切れたため、Control Point の応答待ちを打ち切りました'));
+    if (this._quietDisconnect) return;
     this._emit('disconnected', {});
   }
 
@@ -373,28 +440,53 @@ export class FtmsClient extends EventTarget {
   setGrade(gradePercent) {
     if (this.controlMode !== 'simulation' || this.isPaused) return null;
     const clamped = clamp(gradePercent, DeviceProfile.GRADE_MIN_PERCENT, DeviceProfile.GRADE_MAX_PERCENT);
-    if (
-      this.lastSentGradePercent !== null &&
-      Math.abs(clamped - this.lastSentGradePercent) < DeviceProfile.GRADE_RESEND_THRESHOLD_PERCENT
-    ) {
-      return { sent: false, calculated: gradePercent, actual: this.lastSentGradePercent };
+    // 送信待ちがあればそれと比べる(同じ値を何度も積まない)。無ければ成功した最後の値と比べる
+    const ref = this._pendingGrade ?? this.lastSentGradePercent;
+    if (ref !== null && Math.abs(clamped - ref) < DeviceProfile.GRADE_RESEND_THRESHOLD_PERCENT) {
+      return { sent: false, calculated: gradePercent, actual: ref };
     }
-    this.lastSentGradePercent = clamped;
-    this.queue.enqueueLatest('control-target', () => this._sendSimulationParams(clamped), { name: 'set-grade' }).catch(() => {});
+    this._pendingGrade = clamped;
+    this.queue
+      .enqueueLatest('control-target', async () => {
+        await this._waitTargetInterval();
+        await this._sendSimulationParams(clamped);
+        this.lastSentGradePercent = clamped;
+      }, { name: 'set-grade' })
+      .then(() => {
+        if (this._pendingGrade === clamped) this._pendingGrade = null;
+      }, () => {
+        // 破棄・新しい値で置き換え: 送れていないので、次のフレームで送り直せるように待ちを外す
+        if (this._pendingGrade === clamped) this._pendingGrade = null;
+      });
     return { sent: true, calculated: gradePercent, actual: clamped };
+  }
+
+  /** 勾配・目標Wの送信を、前の送信から DeviceProfile.CONTROL_TARGET_MIN_INTERVAL_MS 空ける。 */
+  async _waitTargetInterval() {
+    const wait = this._targetSentAt + DeviceProfile.CONTROL_TARGET_MIN_INTERVAL_MS - performance.now();
+    if (wait > 0) await delay(wait);
+    this._targetSentAt = performance.now();
   }
 
   setErgTarget(watts) {
     if (this.controlMode !== 'erg' || this.isPaused) return null;
     const clamped = clamp(Math.round(watts), DeviceProfile.ERG_MIN_WATTS, DeviceProfile.ERG_MAX_WATTS);
-    if (
-      this.lastSentErgWatts !== null &&
-      Math.abs(clamped - this.lastSentErgWatts) < DeviceProfile.ERG_RESEND_THRESHOLD_WATTS
-    ) {
-      return { sent: false, calculated: watts, actual: this.lastSentErgWatts };
+    const ref = this._pendingErg ?? this.lastSentErgWatts;
+    if (ref !== null && Math.abs(clamped - ref) < DeviceProfile.ERG_RESEND_THRESHOLD_WATTS) {
+      return { sent: false, calculated: watts, actual: ref };
     }
-    this.lastSentErgWatts = clamped;
-    this.queue.enqueueLatest('control-target', () => this._sendErgTarget(clamped), { name: 'set-erg' }).catch(() => {});
+    this._pendingErg = clamped;
+    this.queue
+      .enqueueLatest('control-target', async () => {
+        await this._waitTargetInterval();
+        await this._sendErgTarget(clamped);
+        this.lastSentErgWatts = clamped;
+      }, { name: 'set-erg' })
+      .then(() => {
+        if (this._pendingErg === clamped) this._pendingErg = null;
+      }, () => {
+        if (this._pendingErg === clamped) this._pendingErg = null;
+      });
     return { sent: true, calculated: watts, actual: clamped };
   }
 
@@ -403,6 +495,9 @@ export class FtmsClient extends EventTarget {
    * 次の走行は beginSession() で制御権を取り直してから始める。失敗しても例外は投げない。
    */
   async endSession() {
+    this.cancelReconnect();
+    this._pendingGrade = null;
+    this._pendingErg = null;
     this.isPaused = false;
     this.prePauseTarget = null;
     this.sessionEnded = true;
@@ -446,11 +541,14 @@ export class FtmsClient extends EventTarget {
   /** 一時停止: トレーナーへ無負荷相当を送信し、直前の目標値を保存する。 */
   async pause() {
     if (this.isPaused) return;
+    // 戻す値は、送信待ちがあればそれ(走行画面が最後に求めた負荷)
     if (this.controlMode === 'simulation') {
-      this.prePauseTarget = { mode: 'simulation', value: this.lastSentGradePercent ?? 0 };
+      this.prePauseTarget = { mode: 'simulation', value: this._pendingGrade ?? this.lastSentGradePercent ?? 0 };
     } else if (this.controlMode === 'erg') {
-      this.prePauseTarget = { mode: 'erg', value: this.lastSentErgWatts ?? 0 };
+      this.prePauseTarget = { mode: 'erg', value: this._pendingErg ?? this.lastSentErgWatts ?? 0 };
     }
+    this._pendingGrade = null;
+    this._pendingErg = null;
     this.isPaused = true;
     if (!this.isConnected) return; // 切断中は無駄な送信・警告を出さない
     if (this.controlMode === 'simulation') {
@@ -466,18 +564,22 @@ export class FtmsClient extends EventTarget {
   async resume() {
     if (!this.isPaused) return;
     this.isPaused = false;
-    if (this.prePauseTarget?.mode === 'simulation') {
-      this.lastSentGradePercent = this.prePauseTarget.value;
+    const saved = this.prePauseTarget;
+    this.prePauseTarget = null;
+    // 一時停止中のつなぎ直しで制御の方式が変わることがある(Simulation ↔ ERG)。今の方式で送り、
+    // 方式が変わった値は使わない(勾配を W として送らない)。走行画面が次のフレームで新しい目標を求める
+    const value = saved?.mode === this.controlMode ? saved.value : 0;
+    if (this.controlMode === 'simulation') {
+      this.lastSentGradePercent = value;
       this.queue
-        .enqueueLatest('control-target', () => this._sendSimulationParams(this.prePauseTarget.value), { name: 'resume-restore' })
+        .enqueueLatest('control-target', () => this._sendSimulationParams(value), { name: 'resume-restore' })
         .catch(() => {});
-    } else if (this.prePauseTarget?.mode === 'erg') {
-      this.lastSentErgWatts = this.prePauseTarget.value;
+    } else if (this.controlMode === 'erg') {
+      this.lastSentErgWatts = value;
       this.queue
-        .enqueueLatest('control-target', () => this._sendErgTarget(this.prePauseTarget.value), { name: 'resume-restore' })
+        .enqueueLatest('control-target', () => this._sendErgTarget(value), { name: 'resume-restore' })
         .catch(() => {});
     }
-    this.prePauseTarget = null;
   }
 
   /**
@@ -486,19 +588,36 @@ export class FtmsClient extends EventTarget {
    * { supported: boolean } を返すのみとする。
    */
   async tryWriteUserWeight(weightKg) {
+    if (!this.isConnected) return { supported: false, reason: 'not connected' };
+    // Control Point の負荷設定と同じキューに通す(Android では GATT の操作が重なると失敗しやすい。
+    // レビュー Q9 b)。中で失敗をすべて受け止めて結果を返すので、キューのリトライには掛からない
+    return this.queue
+      .enqueue(
+        () => withTimeout(this._writeUserWeight(weightKg), DeviceProfile.USER_WEIGHT_TIMEOUT_MS, '体重の書き込みが時間内に終わりませんでした'),
+        { name: 'user-weight' }
+      )
+      .catch((err) => ({ supported: false, reason: String(err) }));
+  }
+
+  async _writeUserWeight(weightKg) {
     try {
       const udsService = await this.server.getPrimaryService(C.USER_DATA_SERVICE);
       const userIndexChar = await udsService.getCharacteristic(C.CHAR_USER_INDEX);
-      await userIndexChar.readValue();
+      const index = await userIndexChar.readValue();
+      const unknownUser = index.byteLength < 1 || index.getUint8(0) === C.UDS_UNKNOWN_USER_INDEX;
 
-      const controlPointChar = await udsService.getCharacteristic(C.CHAR_USER_CONTROL_POINT).catch(() => null);
-      if (controlPointChar) {
-        await controlPointChar.startNotifications().catch(() => {});
-        // Register New User (consent code 0) -> Consent
-        try {
-          await controlPointChar.writeValueWithResponse(new Uint8Array([C.UCP_REGISTER_NEW_USER, 0x00]));
-        } catch (e) {
-          /* 一部機種は未対応の場合がある */
+      // 「新規ユーザー登録」は、まだ利用者が決まっていない(User Index が未登録)ときだけ送る
+      // (以前は走行のたびに送っていて、機種によっては利用者が増え続ける)
+      if (unknownUser) {
+        const controlPointChar = await udsService.getCharacteristic(C.CHAR_USER_CONTROL_POINT).catch(() => null);
+        if (controlPointChar) {
+          await controlPointChar.startNotifications().catch(() => {});
+          // Register New User (consent code 0) -> Consent
+          try {
+            await controlPointChar.writeValueWithResponse(new Uint8Array([C.UCP_REGISTER_NEW_USER, 0x00]));
+          } catch (e) {
+            /* 一部機種は未対応の場合がある */
+          }
         }
       }
 
@@ -519,10 +638,16 @@ export class FtmsClient extends EventTarget {
 
   // ---- Indoor Bike Data parsing ----
 
+  /**
+   * Indoor Bike Data を読む。フラグが示す長さに届かない(壊れた・途中で切れた)通知は捨てて null を返す
+   * (以前は長さを確かめずに読み、範囲外の読み出しで例外になっていた。レビュー Q9 c)。
+   */
   _parseIndoorBikeData(dataView) {
+    if (!dataView || dataView.byteLength < 2) return null;
     let offset = 0;
     const flags = dataView.getUint16(offset, true);
     offset += 2;
+    if (dataView.byteLength < indoorBikeDataLength(flags)) return null;
 
     const sample = {
       instSpeedKmh: null,
@@ -599,6 +724,36 @@ export class FtmsClient extends EventTarget {
     this._lastValidSample = validated;
     return validated;
   }
+}
+
+/** Indoor Bike Data のフラグが示す全体の長さ(バイト。フラグの 2 バイトを含む)。 */
+export function indoorBikeDataLength(flags) {
+  let n = 2;
+  if (!C.bitSet(flags, C.IBD_FLAG_MORE_DATA)) n += 2; // 瞬間速度
+  if (C.bitSet(flags, C.IBD_FLAG_AVG_SPEED)) n += 2;
+  if (C.bitSet(flags, C.IBD_FLAG_INST_CADENCE)) n += 2;
+  if (C.bitSet(flags, C.IBD_FLAG_AVG_CADENCE)) n += 2;
+  if (C.bitSet(flags, C.IBD_FLAG_TOTAL_DISTANCE)) n += 3;
+  if (C.bitSet(flags, C.IBD_FLAG_RESISTANCE_LEVEL)) n += 2;
+  if (C.bitSet(flags, C.IBD_FLAG_INST_POWER)) n += 2;
+  if (C.bitSet(flags, C.IBD_FLAG_AVG_POWER)) n += 2;
+  if (C.bitSet(flags, C.IBD_FLAG_EXPENDED_ENERGY)) n += 5;
+  if (C.bitSet(flags, C.IBD_FLAG_HEART_RATE)) n += 1;
+  if (C.bitSet(flags, C.IBD_FLAG_METABOLIC_EQUIVALENT)) n += 1;
+  if (C.bitSet(flags, C.IBD_FLAG_ELAPSED_TIME)) n += 2;
+  if (C.bitSet(flags, C.IBD_FLAG_REMAINING_TIME)) n += 2;
+  return n;
+}
+
+/** promise が ms 以内に終わらなければ失敗にする(キューを止め続けないため)。 */
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function clamp(value, min, max) {

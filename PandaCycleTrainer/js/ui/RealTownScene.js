@@ -1,6 +1,5 @@
-import { h, useRef, useEffect, useState } from './h.js';
+import { useSceneHost } from './sceneHost.js';
 import THREE from '../three/three.js';
-import { startSceneRenderer } from '../three/gpuBackend.js';
 import {
   broadleafFarGeometry, broadleafNearGeometry, coniferFarGeometry, coniferNearGeometry, trunkFarGeometry, trunkNearGeometry,
 } from '../three/treeModels.js';
@@ -10,12 +9,12 @@ import { createCountryRoadTexture, createTerrainDetailTexture, createWaterNormal
 import { createAtamiRoute, createTerrainSampler } from '../three/atamiRealLayout.js';
 import { REAL_TOWNS, loadTownData, townGroundColor, analyzeGrid, planTrees, waterLevelAt, waterCells, townBuildingLook } from '../three/realTownLayout.js';
 import { buildTerrainMesh, buildRouteMeshes, buildStreetGeometry, buildBuildingGeometries } from '../three/atamiParts.js';
+import { createTreeCells } from '../three/treeCells.js';
 import {
-  bakeSky, createAvatar, makePool, pushInstance, uploadInstances,
-  applyQuality, setupQuality, setQualityMode, adaptQuality, resizeScene, disposeScene,
-  reportReadyAfterDraw, renderScene, maxAnisotropy,
+  bakeSky, createAvatar,
+  applyQuality, renderScene, maxAnisotropy,
 } from '../three/sceneKit.js';
-import { createCineDirector, normalizeCameraView } from '../three/cameraViews.js';
+import { createCineDirector } from '../three/cameraViews.js';
 import { createEnvironmentController } from '../three/sceneEnvironment.js';
 import { seasonalTree, seasonalGround } from '../three/seasonLook.js';
 import { createOtherRiders } from '../three/otherRiders.js';
@@ -26,7 +25,7 @@ import { REAL_TERRAIN, GSI_ATTRIBUTION } from '../three/gsiTerrain.js';
 import { placeOnRoad, actorLateral, groundAboveRoadM, updateRide } from './realSceneShared.js';
 import { SIGHT_FOOTPRINTS } from '../three/roadsideLayout.js';
 
-const { forwardRef, useImperativeHandle } = React;
+const { forwardRef } = React;
 
 // 晴れた日。太陽は南東の空(高さ・空の色・霞は走る日の季節で sceneEnvironment が変える)
 const ATMO = {
@@ -57,64 +56,15 @@ const TREE_COLORS = {
  * 作る js/data/<id>-town.json)は非同期に読むので、読み終わるまでは空だけを描く(canvas の data-town-data)。
  * 名所(大鳥居・五重塔・大仏殿など)はコースの landmarks として、ハプニングと同じ actors で届く。
  */
-export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, town, vehicle = 'bike', qualityMode = 'auto', onQualityChange, onReady, environment, cameraView = 'chase', season = null }, ref) {
-  const canvasRef = useRef(null);
-  const sceneRef = useRef(null);
-  const attributionRef = useRef(null);
-  const [renderError, setRenderError] = useState(null);
-  const [dataError, setDataError] = useState(false);
-  const onQualityChangeRef = useRef(onQualityChange);
-  onQualityChangeRef.current = onQualityChange;
-  // 景色の準備ができたら1回だけ知らせる(RideScreen はそれまで走行を始めない)
-  const onReadyRef = useRef(onReady);
-  onReadyRef.current = onReady;
-  // 3D 表示が使えない(WebGL の初期化・描画の失敗)ときは景色なしで走れるよう、準備完了として知らせる
-  useEffect(() => {
-    if (renderError) onReadyRef.current?.();
-  }, [renderError]);
+export const RealTownScene = forwardRef(function RealTownScene(props, ref) {
+  const { courseEngine, town, vehicle = 'bike', season = null } = props;
   const label = REAL_TOWNS[town]?.label ?? '街';
-
-  useImperativeHandle(ref, () => ({
-    draw({ distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
-      const s = sceneRef.current;
-      if (!s) return;
-      try {
-        adaptQuality(s);
-        drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
-        reportReadyAfterDraw(s);
-      } catch (err) {
-        console.error('3D の描画に失敗しました:', err);
-        setRenderError(String(err));
-      }
-    },
-    resize() {
-      if (sceneRef.current) resizeScene(sceneRef.current);
-    },
-  }));
-
-  // 組み立てのときの最新の値(WebGPU の初期化を待つ間に変わってもよいように ref で読む)
-  const live = useRef({});
-  live.current = { qualityMode, environment, cameraView };
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !courseEngine) return;
-    // WebGPU を使える端末なら WebGPU(初期化を待つ)、それ以外は今まで通り WebGL(すぐ)のレンダラーで組み立てる
-    return startSceneRenderer(canvas, (renderer) => {
-      let st;
-      try {
-        st = initScene(canvas, courseEngine, town, vehicle, renderer);
-        st.season = season;
-        sceneRef.current = st;
-      } catch (err) {
-        setRenderError(String(err));
-        return;
-      }
-      st.attributionEl = attributionRef.current;
-      st.onQualityChange = (tierName) => onQualityChangeRef.current?.(tierName);
-      st.onReady = () => onReadyRef.current?.();
-      st.appliedQualityMode = live.current.qualityMode;
-      st.envSetting = live.current.environment;
-      st.cam.view = normalizeCameraView(live.current.cameraView);
+  const { shell } = useSceneHost(ref, props, {
+    enabled: !!courseEngine,
+    build(canvas, renderer, host) {
+      const st = initScene(canvas, courseEngine, town, vehicle, renderer);
+      st.season = season;
+      st.attributionEl = host.attributionEl;
       canvas.dataset.townData = 'loading';
       loadTownData(town).then(
         (data) => {
@@ -125,61 +75,32 @@ export const RealTownScene = forwardRef(function RealTownScene({ courseEngine, t
             canvas.dataset.buildings = String(st.buildingCount);
             canvas.dataset.trees = String(st.treeCount);
           } catch (err) {
-            setRenderError(String(err));
+            host.setRenderError(String(err));
           }
         },
         (err) => {
           if (st.disposed) return;
           console.warn('実在の街のデータを読み込めませんでした:', err);
           canvas.dataset.townData = 'error';
-          setDataError(true);
+          host.setDataError(true);
           // 街のデータが無くても走行と記録は続けられるので、走行を始める
-          onReadyRef.current?.();
+          host.onReady();
         }
       );
-      const resize = () => resizeScene(st);
-      setupQuality(st, live.current.qualityMode);
-      window.addEventListener('resize', resize);
-      return () => {
-        window.removeEventListener('resize', resize);
-        st.disposed = true;
-        st.ocean?.dispose();
-        st.realTerrain?.dispose();
-        disposeScene(st);
-        sceneRef.current = null;
-      };
-    }, (err) => setRenderError(String(err)));
-  }, []);
-
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s || s.appliedQualityMode === qualityMode) return;
-    s.appliedQualityMode = qualityMode;
-    setQualityMode(s, qualityMode);
-  }, [qualityMode]);
-
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s) return;
-    s.envSetting = environment;
-    s.env?.set(environment);
-  }, [environment?.time, environment?.weather]);
-
-  useEffect(() => {
-    if (sceneRef.current) sceneRef.current.cam.view = normalizeCameraView(cameraView);
-  }, [cameraView]);
-
-  return h(
-    'div', { className: 'city-scene-wrap' },
-    h('canvas', { ref: canvasRef, className: 'city-scene-canvas', 'data-scenery': town, 'data-real-town': town, 'data-vehicle': vehicle }),
-    h('div', { ref: attributionRef, className: 'scene-attribution' }),
-    dataError && h('div', { className: 'city-scene-fallback' }, `${label}のデータを読み込めませんでした(通信を確認してください)。走行と記録は続けられます。`),
-    renderError &&
-      h(
-        'div', { className: 'city-scene-fallback' },
-        '3D表示を利用できません(WebGL非対応の可能性があります)。走行データはダッシュボードでご確認ください。'
-      )
-  );
+      return st;
+    },
+    draw(s, { distanceKm, speedKmh, cadenceRpm, others, myLaneOffsetM, actors }) {
+      drawFrame(s, distanceKm, speedKmh ?? 0, cadenceRpm, others, Number.isFinite(myLaneOffsetM) ? myLaneOffsetM : 0, actors);
+    },
+    dispose(s) {
+      s.ocean?.dispose();
+      s.realTerrain?.dispose();
+    },
+  });
+  return shell({ 'data-scenery': town, 'data-real-town': town, 'data-vehicle': vehicle }, {
+    attribution: true,
+    dataErrorText: `${label}のデータを読み込めませんでした(通信を確認してください)。走行と記録は続けられます。`,
+  });
 });
 
 // ---- 初期化(データを待たずに作れるもの) ----
@@ -478,19 +399,13 @@ function sightClearZones(st) {
 
 // 作り込んだ形で描く木の数の上限(描画品質の treeNearR の内側でも、これを超えた分は軽い形)
 const TREE_NEAR_MAX = 4000;
-// ライダーがこれだけ動いたら、近く/遠くの木を分け直す(m)
-const TREE_LOD_STEP_M = 25;
-// 分け直しは木が 1 万本を超える町では数 ms かかるので、1 フレームにこの時間ずつ裏の組へ写し、
-// 写し終えたら表の組と入れ替える(写している間は前の分け方のまま描く)
-const TREE_BUDGET_MS = 3;
-// これだけの本数を写すごとに時間を見る
-const TREE_CHUNK = 1024;
+// ライダーがこれだけ動いたら、どの区画を作り込んだ形にするかを選び直す(m。表示の切り替えだけなので軽い)
+const TREE_LOD_STEP_M = 5;
 
 /**
  * 木を置く。形は treeModels.js で、ライダーの近く(描画品質の treeNearR の内側)は葉の塊・枝の段まで
- * 作り込んだ形、遠くは軽い形で描く。木の位置・色は最初に一度だけ決めて控えておき(src)、
- * ライダーが動いたら近く/遠くのプールへ写し直すだけにする(updateTreeLod)。プールは表(描いている組)と
- * 裏(写し直し中の組)の 2 組ある。
+ * 作り込んだ形、遠くは軽い形で描く。木は区画ごとのメッシュ(treeCells.js)にして、画面の外の区画は描かない。
+ * 区画ごとに両方の形を最初に一度だけ作っておき、走行中は区画の距離で見せる方を切り替える(updateTreeLod)。
  */
 function placeTrees(st, trees, colors) {
   const barkMat = new THREE.MeshStandardMaterial({ color: 0x5b4636, roughness: 1, vertexColors: true });
@@ -500,12 +415,11 @@ function placeTrees(st, trees, colors) {
   // 落葉樹の樹冠は y 3.1〜6.6 m・半径約 1.75 m、針葉樹は y 1.4〜10 m・底の半径 2 m
   const broadFit = (g) => g.scale(1.75, 1.75, 1.75).translate(0, 3.1, 0);
   const coniferFit = (g) => g.scale(2, 8.2, 2).translate(0, 1.4, 0);
-  const nBroad = trees.filter((t) => !t.conifer).length;
-  const lods = {
-    trunks: treeLod(trunkNearGeometry(), trunkFarGeometry(), barkMat, trees.length),
-    broad: treeLod(broadFit(broadleafNearGeometry()), broadFit(broadleafFarGeometry()), leafMat, nBroad),
-    conifer: treeLod(coniferFit(coniferNearGeometry()), coniferFit(coniferFarGeometry()), coneMat, trees.length - nBroad),
-  };
+  const cells = createTreeCells(st.world, {
+    trunks: { near: trunkNearGeometry(), far: trunkFarGeometry(), material: barkMat },
+    broad: { near: broadFit(broadleafNearGeometry()), far: broadFit(broadleafFarGeometry()), material: leafMat },
+    conifer: { near: coniferFit(coniferNearGeometry()), far: coniferFit(coniferFarGeometry()), material: coneMat },
+  });
   // 落葉樹のうち桜の割合(町なか・公園の桜。春に満開になる)
   const sakura = st.townCfg.sakura ?? 0.12;
   for (const t of trees) {
@@ -513,114 +427,35 @@ function placeTrees(st, trees, colors) {
     const yaw = t.tone * Math.PI * 2;
     const r1 = (t.tone * 7919) % 1;
     if (t.conifer) {
-      lodPush(lods.trunks, t.x, t.z - 0.3, -t.y, s * 1.2, 2 * s, s * 1.2, 0, yaw);
+      cells.push('trunks', t.x, t.z - 0.3, -t.y, s * 1.2, 2 * s, s * 1.2, 0, yaw, undefined, true);
       const base = colors.conifer[Math.floor(t.tone * colors.conifer.length) % colors.conifer.length];
-      lodPush(lods.conifer, t.x, t.z, -t.y, s, s, s, 0, yaw, seasonalTree(st.season, base, t.z, r1, { conifer: true }).color);
+      cells.push('conifer', t.x, t.z, -t.y, s, s, s, 0, yaw, seasonalTree(st.season, base, t.z, r1, { conifer: true }).color);
     } else {
-      lodPush(lods.trunks, t.x, t.z - 0.3, -t.y, s, 4 * s, s, 0, yaw);
+      cells.push('trunks', t.x, t.z - 0.3, -t.y, s, 4 * s, s, 0, yaw, undefined, true);
       const look = seasonalTree(st.season, colors.broad[Math.floor(t.tone * 997) % colors.broad.length], t.z, r1, { sakura });
       const k = s * look.scale;
-      lodPush(lods.broad, t.x, t.z, -t.y, k, s, k, 0, yaw, look.color);
+      cells.push('broad', t.x, t.z, -t.y, k, s, k, 0, yaw, look.color);
     }
   }
-  for (const lod of Object.values(lods)) {
-    lodSeal(lod);
-    for (const set of lod.sets) st.world.add(set.near.mesh, set.far.mesh);
-  }
-  st.treeLods = lods;
+  cells.seal();
+  st.treeCells = cells;
   st.treeLodAt = null;
-  st.treeJob = null;
-  // 最初はライダーの出発点(まだ置いていないので原点)の近くで分けておく
-  updateTreeLod(st, 0, 0, true);
-}
-
-/** 近く(作り込んだ形)と遠く(軽い形)の 2 つのプールを表裏の 2 組と、全部の木の控え。 */
-function treeLod(nearGeo, farGeo, material, count) {
-  const set = () => ({
-    near: makePool(nearGeo, material, Math.min(count, TREE_NEAR_MAX) + 1, { cast: false }),
-    far: makePool(farGeo, material, count + 1, { cast: false }),
-  });
-  return {
-    sets: [set(), set()],
-    shown: 0,
-    pos: new Float32Array((count + 1) * 2),
-    n: 0,
-    src: null,
-    srcColor: null,
-  };
-}
-
-/** 木を1本控える(いったん 1 組目の遠くのプールへ置き、行列と色を lodSeal で写し取る)。 */
-function lodPush(lod, x, y, z, sx, sy, sz, rotX, rotY, colorHex) {
-  const far = lod.sets[0].far;
-  if (lod.n >= far.max) return;
-  pushInstance(far, x, y, z, sx, sy, sz, rotX, rotY, colorHex);
-  lod.pos[lod.n * 2] = x;
-  lod.pos[lod.n * 2 + 1] = z;
-  lod.n++;
-}
-
-function lodSeal(lod) {
-  const far = lod.sets[0].far.mesh;
-  lod.src = far.instanceMatrix.array.slice(0, lod.n * 16);
-  lod.srcColor = far.instanceColor.array.slice(0, lod.n * 3);
+  // 最初はライダーの出発点(まだ置いていないので原点)の近くで選んでおく
+  updateTreeLod(st, 0, 0);
 }
 
 /**
- * ライダー(x, z)のまわり treeNearR の内側の木を作り込んだ形のプールへ、残りを軽い形のプールへ分け直す。
- * 分け直しは裏の組へ TREE_BUDGET_MS ずつ進め、終わったら表と入れ替える。最初・描画品質を変えたとき
- * (force、または treeNearR が変わったとき)は一度に終える。
+ * ライダー(x, z)から treeNearR の内側にかかる区画の木を作り込んだ形に、残りを軽い形にする。
+ * ライダーが TREE_LOD_STEP_M 動くか、描画品質(treeNearR)が変わったときだけ選び直す。
  */
-function updateTreeLod(st, x, z, force = false) {
-  const lods = st.treeLods;
-  if (!lods) return;
+function updateTreeLod(st, x, z) {
+  const cells = st.treeCells;
+  if (!cells) return;
   const r = st.treeNearR ?? 0;
   const at = st.treeLodAt;
-  const sync = force || !at || at.r !== r;
-  if (st.treeJob && (sync || st.treeJob.r !== r)) st.treeJob = null;
-  if (!st.treeJob) {
-    if (!sync && (at.x - x) ** 2 + (at.z - z) ** 2 < TREE_LOD_STEP_M ** 2) return;
-    st.treeJob = { x, z, r, steps: splitTrees(lods, x, z, r) };
-  }
-  const job = st.treeJob;
-  const until = sync ? Infinity : performance.now() + TREE_BUDGET_MS;
-  let done = false;
-  while (!(done = job.steps.next().done) && performance.now() < until);
-  if (!done) return;
-  for (const lod of Object.values(lods)) {
-    const back = lod.sets[1 - lod.shown];
-    for (const p of Object.values(lod.sets[lod.shown])) p.mesh.visible = false;
-    for (const p of Object.values(back)) p.mesh.visible = true;
-    lod.shown = 1 - lod.shown;
-  }
-  st.treeLodAt = { x: job.x, z: job.z, r: job.r };
-  st.treeJob = null;
-}
-
-/** 裏の組へ近く/遠くを分けて写す(ジェネレーター。TREE_CHUNK 本ごとに区切る)。 */
-function* splitTrees(lods, x, z, r) {
-  const r2 = r * r;
-  for (const lod of Object.values(lods)) {
-    const { near, far } = lod.sets[1 - lod.shown];
-    const { pos, src, srcColor } = lod;
-    const nm = near.mesh.instanceMatrix.array;
-    const nc = near.mesh.instanceColor.array;
-    const fm = far.mesh.instanceMatrix.array;
-    const fc = far.mesh.instanceColor.array;
-    let a = 0;
-    let b = 0;
-    for (let i = 0; i < lod.n; i++) {
-      const isNear = a < near.max && (pos[i * 2] - x) ** 2 + (pos[i * 2 + 1] - z) ** 2 < r2;
-      const m = isNear ? nm : fm;
-      const c = isNear ? nc : fc;
-      const k = isNear ? a++ : b++;
-      for (let j = 0; j < 16; j++) m[k * 16 + j] = src[i * 16 + j];
-      for (let j = 0; j < 3; j++) c[k * 3 + j] = srcColor[i * 3 + j];
-      if (i % TREE_CHUNK === TREE_CHUNK - 1) yield;
-    }
-    uploadInstances(near.mesh, a);
-    uploadInstances(far.mesh, b);
-  }
+  if (at && at.r === r && (at.x - x) ** 2 + (at.z - z) ** 2 < TREE_LOD_STEP_M ** 2) return;
+  st.treeNearCount = cells.update(x, z, r, TREE_NEAR_MAX);
+  st.treeLodAt = { x, z, r };
 }
 
 // ---- 毎フレーム ----
@@ -633,7 +468,7 @@ function drawFrame(st, distanceKm, speedKmh, cadenceRpm, others, myLaneM, actors
     return;
   }
   updateRide(st, distanceKm * 1000, speedKmh, cadenceRpm, others, myLaneM, actors);
-  // 近くの木だけ作り込んだ形に(ライダーが TREE_LOD_STEP_M 動くか、描画品質が変わったら分け直す)
+  // 近くの区画の木だけ作り込んだ形に(ライダーが TREE_LOD_STEP_M 動くか、描画品質が変わったら選び直す)
   updateTreeLod(st, st.rider.group.position.x, st.rider.group.position.z);
   st.env.update();
   st.realTerrain.update({

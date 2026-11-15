@@ -206,7 +206,7 @@ export const REAL_TERRAIN = {
     minDistM: 0,
   },
   // 河口湖の北岸(大石公園のあたり)。湖を左手に西へ走ると、左手(南)の湖の向こうに本物の富士山(約18km)。
-  // 富士山まで入るよう z12(1枚約8km)で、中心を南へずらす。本物の富士山が出たら手続き生成の富士山は隠す。
+  // 富士山まで入るよう z12(1枚約8km)で、中心を南へずらす。
   kawaguchiko: {
     origin: { lon: 138.7400, lat: 35.5225 },
     bearingDeg: 270,
@@ -219,7 +219,6 @@ export const REAL_TERRAIN = {
     gridN: 240,
     innerRadiusM: 2400,
     openSideX: -400,
-    hideBackdrop: true,
   },
   // 京都・東山(清水寺の下あたり)。東山を右手に北へ走る。比叡山・大文字山・西山・北山が盆地を囲む。
   kyoto: {

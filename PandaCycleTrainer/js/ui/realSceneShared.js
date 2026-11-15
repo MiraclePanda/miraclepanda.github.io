@@ -3,6 +3,7 @@
 // createAtamiRoute)・heightAt・sidewalkM・groundFloor(地面の高さの下限: 熱海は海面 0)を持つ。
 
 import { curvatureAtM } from '../three/routeLayout.js';
+import { snapShadowCenter, shadowTexelM } from '../three/shadowSnap.js';
 import { RIDER_X_M, updateRiderAvatar, setCameraFov, setAvatarVisible } from '../three/sceneKit.js';
 import {
   riderRollRad, fpCameraRollRad, estimateCadenceRpm, fpBobM, fpFovDeg, CHASE_FOV_DEG,
@@ -103,8 +104,10 @@ export function updateRide(st, dist, speedKmh, cadenceRpm, others, myLaneM, acto
   updateRiderAvatar(st.rider, st.clock, speedKmh, pitchAt(st, dist), roll);
 
   // 影はライダーの周りだけ描けばよいので、影カメラごとライダーに付いていく
-  st.sunLight.target.position.set(pos[0], pos[1], pos[2]);
-  st.sunLight.position.set(pos[0], pos[1], pos[2]).addScaledVector(st.env.sunDir, 220);
+  // 中心は影の1画素の刻みに丸める(走行中に影の縁がちらつかないように。shadowSnap.js)
+  const c = snapShadowCenter(pos[0], pos[1], pos[2], st.env.sunDir, shadowTexelM(st.sunLight));
+  st.sunLight.target.position.set(c[0], c[1], c[2]);
+  st.sunLight.position.set(c[0], c[1], c[2]).addScaledVector(st.env.sunDir, 220);
 
   st.others.update(others, dist, {
     dt: st.rider.dt ?? 0,

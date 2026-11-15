@@ -1,7 +1,7 @@
 import { h, useState, useEffect } from './h.js';
 import { fmtTime } from '../utils/format.js';
 import { downloadTcx } from '../storage/tcx.js';
-import { getAllRides } from '../storage/db.js';
+import { getRideSummaries } from '../storage/db.js';
 import { getCourseProfile } from '../physics/courseProfiles.js';
 import { recordKcal, gourmetVerdict } from '../utils/gourmet.js';
 import { journeyTotalKm } from '../utils/journey.js';
@@ -18,7 +18,7 @@ export function ResultScreen({ record, onBackToSetup, onOpenHistory }) {
   const rideKm = record.totalDistanceM / 1000;
   useEffect(() => {
     let alive = true;
-    getAllRides()
+    getRideSummaries()
       .then((rides) => alive && setTotalKm(journeyTotalKm(rides) + (record.id == null ? rideKm : 0)))
       .catch(() => alive && setTotalKm(rideKm));
     return () => { alive = false; };
@@ -29,6 +29,10 @@ export function ResultScreen({ record, onBackToSetup, onOpenHistory }) {
   return h(
     'div', { className: 'screen result-screen' },
     h('h1', null, 'リザルト'),
+    // 保存に失敗した(レビュー Q8): 記録は次に開いたときに保存し直せる(途中保存の下書きが残る)が、
+    // 念のため今のうちに TCX で書き出してもらう
+    record.saveError && h('div', { className: 'banner banner-warning', role: 'alert' },
+      `⚠ 走行記録を保存できませんでした(${record.saveError})。下の「TCX形式でエクスポート」で書き出しておいてください。次にアプリを開いたとき、保存し直すかどうかを尋ねます。`),
     h(
       'section', { className: 'card' },
       h('h2', null, record.courseName),

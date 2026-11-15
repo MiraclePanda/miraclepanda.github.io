@@ -1,0 +1,16 @@
+# プルリクエストと main への push で検証ハーネスを回す(node harness/verify.mjs。Node の標準機能だけで動く)。
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node harness/verify.mjs

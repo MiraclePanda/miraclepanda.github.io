@@ -160,7 +160,8 @@ export function timeAtDistance(track, distanceM) {
 }
 
 // 同じコースで goal 以上を走った記録のうち、goal 地点への到達走行時間が最短の記録を返す。
-// 該当なしは null。到達時刻は fromRecord のトラックを補間して求める。
+// 該当なしは null。到達時刻は fromRecord のトラックを補間して求める。サンプルを持たない要約
+// (db.js の getRideSummaries。rideRecord.js)は、要約に控えた距離ごとの走行時間の表(ghostSplits)で求める。
 export function bestRecordFor(rides, courseId, goalDistanceKm) {
   if (!Array.isArray(rides) || courseId === null || courseId === undefined) return null;
   if (!isNum(goalDistanceKm) || goalDistanceKm <= 0) return null;
@@ -170,7 +171,10 @@ export function bestRecordFor(rides, courseId, goalDistanceKm) {
   for (const ride of rides) {
     if (!ride || ride.courseId !== courseId) continue;
     if (!isNum(ride.totalDistanceM) || ride.totalDistanceM < goalM) continue;
-    const t = timeAtDistance(fromRecord(ride), goalM);
+    const track = !Array.isArray(ride.samples) && Array.isArray(ride.ghostSplits)
+      ? { points: Float64Array.from(ride.ghostSplits) }
+      : fromRecord(ride);
+    const t = timeAtDistance(track, goalM);
     if (t === null || !Number.isFinite(t)) continue;
     if (t < bestT) {
       bestT = t;

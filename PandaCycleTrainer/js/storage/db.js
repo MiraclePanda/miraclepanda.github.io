@@ -7,16 +7,35 @@
 // 返らなくなる(走行記録の保存も止まる)ため、blocked はエラーにし、こちらの接続は
 // 別タブの更新要求(versionchange)で閉じるようにしている。
 
+// バージョン3で走行記録を要約(rides)と毎秒のサンプル(rideSamples)に分け(レビュー Q10。合計距離や一覧は
+// 要約だけ読めば済むように)、走行中の下書き(rideDraft。レビュー Q1)を足した。v2 までの記録は
+// 更新のときにサンプルを rideSamples へ移す(rides には要約だけが残る。rideRecord.js)。
+//
+// 接続は1つを使い回す(以前は呼ぶたびに開いて閉じなかった)。書き込みはトランザクションの完了
+// (oncomplete)を待ってから返す(要求の成功だけでは、ディスクへ書けたとは限らない)。
+
+import { splitRecord, joinRecord } from './rideRecord.js';
+import { workKjFromSamples } from '../utils/gourmet.js';
+
 const DB_NAME = 'PandaCycleTrainerDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = 'rides';
+const SAMPLE_STORE = 'rideSamples';
 const COURSE_STORE = 'courses';
+const DRAFT_STORE = 'rideDraft';
+const DRAFT_KEY = 'current';
+
+let dbPromise = null;
+/** 開いている接続(開き終わってから閉じるまで)。 */
+let openHandle = null;
 
 function openDb() {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (ev) => {
       const db = req.result;
+      const tx = req.transaction;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         const store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
         store.createIndex('startTime', 'startTime', { unique: false });
@@ -24,63 +43,159 @@ function openDb() {
       if (!db.objectStoreNames.contains(COURSE_STORE)) {
         db.createObjectStore(COURSE_STORE, { keyPath: 'id', autoIncrement: true });
       }
+      if (!db.objectStoreNames.contains(DRAFT_STORE)) db.createObjectStore(DRAFT_STORE);
+      if (!db.objectStoreNames.contains(SAMPLE_STORE)) {
+        db.createObjectStore(SAMPLE_STORE);
+        // v2 までの記録: サンプルを rideSamples へ移し、rides には要約だけを残す
+        if (ev.oldVersion > 0) migrateSamples(tx);
+      }
     };
     req.onblocked = () => reject(new Error('別のタブで PandaCycleTrainer が開いています。他のタブを閉じてから再読み込みしてください。'));
     req.onsuccess = () => {
       const db = req.result;
-      db.onversionchange = () => db.close();
+      openHandle = db;
+      // 別のタブが新しい版で開こうとしたら閉じて譲る。閉じた接続は次の呼び出しで開き直す
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+        openHandle = null;
+      };
+      db.onclose = () => {
+        dbPromise = null;
+        openHandle = null;
+      };
       resolve(db);
     };
     req.onerror = () => reject(req.error);
   });
+  dbPromise.catch(() => {
+    dbPromise = null;
+  });
+  return dbPromise;
 }
 
+function migrateSamples(tx) {
+  const rides = tx.objectStore(STORE_NAME);
+  const samples = tx.objectStore(SAMPLE_STORE);
+  rides.openCursor().onsuccess = (e) => {
+    const cursor = e.target.result;
+    if (!cursor) return;
+    const rec = cursor.value;
+    if (Array.isArray(rec.samples)) {
+      const { summary, samples: list } = splitRecord(rec, workKjFromSamples);
+      samples.put(list, rec.id);
+      cursor.update(summary);
+    }
+    cursor.continue();
+  };
+}
+
+/** 1つのトランザクションで fn(tx) を実行し、完了(oncomplete)したら fn の結果で解決する。 */
+// 開いた接続があれば await を挟まずに使う(タブを閉じる直前の下書き保存を、イベントの中で同期的に始めるため)
+async function withTx(stores, mode, fn) {
+  const db = openHandle ?? (await openDb());
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(stores, mode);
+    let result;
+    try {
+      result = fn(tx);
+    } catch (err) {
+      tx.abort();
+      reject(err);
+      return;
+    }
+    tx.oncomplete = () => resolve(typeof result === 'function' ? result() : result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error('保存が中断されました。'));
+  });
+}
+
+/** 走行記録(samples 付き)を保存し、id を返す。要約とサンプルは同じトランザクションで書く。 */
 export async function saveRide(record) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const req = store.add(record);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-export async function getAllRides() {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const req = store.getAll();
+  const { summary, samples } = splitRecord(record);
+  return withTx([STORE_NAME, SAMPLE_STORE], 'readwrite', (tx) => {
+    let id = null;
+    const req = tx.objectStore(STORE_NAME).add(summary);
     req.onsuccess = () => {
-      const rides = req.result ?? [];
-      rides.sort((a, b) => b.startTime - a.startTime);
-      resolve(rides);
+      id = req.result;
+      tx.objectStore(SAMPLE_STORE).put(samples, id);
     };
-    req.onerror = () => reject(req.error);
+    return () => id;
   });
 }
 
+/** 走行記録の要約(サンプルなし。新しい順)。合計距離・一覧・自己ベストの判定に使う。 */
+export async function getRideSummaries() {
+  return withTx(STORE_NAME, 'readonly', (tx) => {
+    let rides = [];
+    const req = tx.objectStore(STORE_NAME).getAll();
+    req.onsuccess = () => {
+      rides = req.result ?? [];
+      rides.sort((a, b) => b.startTime - a.startTime);
+    };
+    return () => rides;
+  });
+}
+
+/** 走行記録1件をサンプルごと(TCX の書き出し・ゴースト用)。無ければ null。 */
 export async function getRide(id) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const req = store.get(id);
-    req.onsuccess = () => resolve(req.result ?? null);
-    req.onerror = () => reject(req.error);
+  return withTx([STORE_NAME, SAMPLE_STORE], 'readonly', (tx) => {
+    let summary = null;
+    let samples = null;
+    tx.objectStore(STORE_NAME).get(id).onsuccess = (e) => {
+      summary = e.target.result ?? null;
+    };
+    tx.objectStore(SAMPLE_STORE).get(id).onsuccess = (e) => {
+      samples = e.target.result ?? null;
+    };
+    // 移す前の形(rides に samples が残っている)でも読めるように
+    return () => (summary && Array.isArray(summary.samples) ? summary : joinRecord(summary, samples));
   });
 }
 
 export async function deleteRide(id) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const req = store.delete(id);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+  return withTx([STORE_NAME, SAMPLE_STORE], 'readwrite', (tx) => {
+    tx.objectStore(STORE_NAME).delete(id);
+    tx.objectStore(SAMPLE_STORE).delete(id);
   });
+}
+
+// ---- 走行中の下書き(レビュー Q1) ----
+// 走行中は一定間隔で、そこまでの記録(samples 付き)を1件だけ下書きとして上書きする。
+// 正常に終了して保存したら消す。タブのクラッシュ・再読み込みで残った下書きは、次に開いたときに
+// 「前回の走行を保存しますか」と出して記録にできる(App.js)。
+
+/** 下書きを上書き保存する。 */
+export async function saveRideDraft(record) {
+  return withTx(DRAFT_STORE, 'readwrite', (tx) => {
+    tx.objectStore(DRAFT_STORE).put({ savedAt: Date.now(), record }, DRAFT_KEY);
+  });
+}
+
+/** 残っている下書き({ savedAt, record })。無ければ null。 */
+export async function loadRideDraft() {
+  return withTx(DRAFT_STORE, 'readonly', (tx) => {
+    let v = null;
+    tx.objectStore(DRAFT_STORE).get(DRAFT_KEY).onsuccess = (e) => {
+      v = e.target.result ?? null;
+    };
+    return () => v;
+  });
+}
+
+export async function clearRideDraft() {
+  return withTx(DRAFT_STORE, 'readwrite', (tx) => {
+    tx.objectStore(DRAFT_STORE).delete(DRAFT_KEY);
+  });
+}
+
+/** ブラウザに保存データを消さないよう頼む(断られても動く。レビュー F6 の一部)。 */
+export function requestPersistentStorage() {
+  try {
+    return navigator.storage?.persist?.().catch(() => false) ?? Promise.resolve(false);
+  } catch {
+    return Promise.resolve(false);
+  }
 }
 
 // ---- GPX から読み込んだ実在コース ----
@@ -144,12 +259,8 @@ export async function updateCourseScenery(id, scenery) {
 }
 
 export async function deleteCourse(id) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(COURSE_STORE, 'readwrite');
-    const req = tx.objectStore(COURSE_STORE).delete(id);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+  return withTx(COURSE_STORE, 'readwrite', (tx) => {
+    tx.objectStore(COURSE_STORE).delete(id);
   });
 }
 

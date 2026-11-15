@@ -1,5 +1,5 @@
 import { h, useState, useEffect } from './h.js';
-import { getAllRides, deleteRide } from '../storage/db.js';
+import { getRideSummaries, getRide, deleteRide } from '../storage/db.js';
 import { downloadTcx } from '../storage/tcx.js';
 import { fmtTime } from '../utils/format.js';
 import { recordKcal } from '../utils/gourmet.js';
@@ -18,21 +18,43 @@ const GHOST_COURSES = COURSE_PROFILES.filter((c) => c.id !== 'ueno');
 export function HistoryScreen({ onBack }) {
   const [rides, setRides] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  // 読み込み・削除・書き出しの失敗(「読み込み中...」のまま止まらないように知らせる。レビュー Q8)
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     load();
   }, []);
 
   const load = async () => {
-    const list = await getAllRides();
-    setRides(list);
+    try {
+      setRides(await getRideSummaries());
+      setError(null);
+    } catch (err) {
+      setRides([]);
+      setError(`走行記録を読み込めませんでした: ${err?.message ?? err}`);
+    }
   };
 
   const handleDeleteConfirm = async () => {
     if (deleteTarget != null) {
-      await deleteRide(deleteTarget);
+      try {
+        await deleteRide(deleteTarget);
+      } catch (err) {
+        setError(`削除できませんでした: ${err?.message ?? err}`);
+      }
       setDeleteTarget(null);
       load();
+    }
+  };
+
+  // 一覧は要約だけなので、書き出すときに毎秒のサンプルごと読む
+  const handleExport = async (r) => {
+    try {
+      const full = await getRide(r.id);
+      if (!full) throw new Error('記録が見つかりません。');
+      downloadTcx(full);
+    } catch (err) {
+      setError(`TCX を書き出せませんでした: ${err?.message ?? err}`);
     }
   };
 
@@ -41,7 +63,8 @@ export function HistoryScreen({ onBack }) {
     h('h1', null, '過去の走行記録'),
     h('button', { className: 'btn btn-secondary', onClick: onBack }, '戻る'),
     rides === null && h('p', null, '読み込み中...'),
-    rides && rides.length === 0 && h('p', { className: 'muted' }, 'まだ走行記録がありません。'),
+    error && h('p', { className: 'error-text', role: 'alert' }, error),
+    rides && rides.length === 0 && !error && h('p', { className: 'muted' }, 'まだ走行記録がありません。'),
     rides &&
       rides.length > 0 &&
       h(
@@ -62,7 +85,7 @@ export function HistoryScreen({ onBack }) {
             ),
             h(
               'div', { className: 'ride-list-actions' },
-              h('button', { className: 'btn btn-secondary', onClick: () => downloadTcx(r) }, 'TCXエクスポート'),
+              h('button', { className: 'btn btn-secondary', onClick: () => handleExport(r) }, 'TCXエクスポート'),
               h('button', { className: 'btn btn-danger', onClick: () => setDeleteTarget(r.id) }, '削除')
             )
           )

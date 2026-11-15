@@ -1,7 +1,7 @@
 // 実在の地形の遠景(実験。描画品質「最高(実験)」で、熱海・河口湖・京都・奈良で使う。設定は gsiTerrain.js の REAL_TERRAIN)。
 //
 // 国土地理院の標高タイルと写真タイル(計算は gsiTerrain.js)から、ライダーのまわり約20km四方の
-// 山並み・海岸線・島(熱海なら初島、河口湖なら富士山)を1枚のメッシュにする。backdrops.js の富士山と同じく、空と一緒に回る遠景として
+// 山並み・海岸線・島(熱海なら初島、河口湖なら富士山)を1枚のメッシュにする。空と一緒に回る遠景として
 // ライダーに付いて動き(走っても位置は変わらない)、フォグは使わず自前のシェーダーで
 // 光の色・強さと大気遠近(フォグ色へ溶かす)を走行環境から読む。
 // - 海(標高データなし)とライダーのまわり innerRadiusM の内側は描かない(海は水面、近くは手続き生成の街と山)。
@@ -25,7 +25,7 @@ import {
 } from './gsiTerrain.js';
 import { photoTintMul, seasonalGround } from './seasonLook.js';
 
-// 大気遠近: backdrops.js と同じ考え方(フォグ密度 × 距離 × 係数)。実際のフォグより弱く
+// 大気遠近: フォグ密度 × 距離 × 係数。実際のフォグより弱く
 const HAZE_SCALE = 0.11;
 const HAZE_MAX = 0.9;
 
@@ -329,7 +329,7 @@ export function createRealTerrain(cfg, { onStatus, anisotropy = 4, season = null
       }
     },
     /**
-     * 毎フレーム、カメラを動かした後に呼ぶ(backdrops.js の update と同じ引数)。
+     * 毎フレーム、カメラを動かした後に呼ぶ。
      * enabled が false か、まだ読めていなければ隠す。
      */
     update({ enabled, skyHeading, baseY, sunDir, hemiLight, sunLight, fog }) {

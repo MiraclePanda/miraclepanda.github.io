@@ -60,6 +60,8 @@ export const RESULT_CONTROL_NOT_PERMITTED = 0x05;
 export const UCP_REGISTER_NEW_USER = 0x01;
 export const UCP_CONSENT = 0x02;
 export const UCP_RESPONSE_CODE = 0x20;
+// User Index の「未登録の利用者」(UDS の仕様)。この値のときだけ Register New User を送る
+export const UDS_UNKNOWN_USER_INDEX = 0xff;
 
 // ---- Indoor Bike Data flags (bit position) ----
 export const IBD_FLAG_MORE_DATA = 0; // 1のとき瞬間速度フィールドは"なし"
