@@ -12,7 +12,7 @@ import { sustainableWatts, satietyLabel } from '../trip/body.js';
 import { canAfford, canHelp, SNACK, HELP_WORK } from '../trip/dayEvents.js';
 import { createSeaRoadScene } from '../three/seaRoadScene.js';
 import { createRealRoadScene } from '../three/realRoadScene.js';
-import { sceneCanvas, sharedWebGPURenderer } from '../three/gpuBackend.js';
+import { sceneCanvas, sharedWebGPURenderer, wantsWebGPU } from '../three/gpuBackend.js';
 import { createSeason } from '../trip/season.js';
 import { loadScenery, loadPanorama } from '../three/sceneryData.js';
 import { RideMap } from './RideMap.js';
@@ -20,7 +20,7 @@ import { nextCameraView } from '../three/cameraViews.js';
 import { WakeLockManager } from '../utils/wakeLock.js';
 import {
   loadRenderQuality, saveRenderQuality, RENDER_QUALITY_VALUES, loadShowRideMap, saveShowRideMap,
-  loadCameraView, saveCameraView, loadSoundOn, saveSoundOn, forgetAutoQuality,
+  loadCameraView, saveCameraView, loadSoundOn, saveSoundOn, forgetAutoQuality, loadGpuBackend,
 } from '../storage/prefs.js';
 import { AutoSaver } from '../storage/autosave.js';
 import { sharedPhotoStore, captureThumbnail } from '../storage/photoStore.js';
@@ -106,8 +106,8 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     let alive = true;
     Promise.all([loadScenery(segment), loadPanorama()]).then(async ([sc, panorama]) => {
       if (!alive) return;
-      // 実在の景色は、WebGPU を使える端末なら WebGPU で描く(使えなければ null → WebGL)
-      const gpuRenderer = sc ? await sharedWebGPURenderer() : null;
+      // 実在の景色は、ホームで WebGPU を選んでいて使える端末なら WebGPU で描く(ほかは WebGL。gpuBackend.js)
+      const gpuRenderer = sc && wantsWebGPU(loadGpuBackend()) ? await sharedWebGPURenderer() : null;
       if (!alive) return;
       setGpuBackend(!!gpuRenderer);
       // 景色の canvas と描画の土台は走行画面を作り直しても同じものを使う(分かれ道で次の区間に入るたびに

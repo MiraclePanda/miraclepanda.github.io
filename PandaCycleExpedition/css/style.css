@@ -378,6 +378,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .trainer-bar b { font-family: var(--serif); letter-spacing: 0.1em; }
 .trainer-bar button { padding: 4px 14px; background: transparent; color: inherit; border-color: currentColor; }
 .trainer-on { font-size: 0.9rem; }
+.trainer-conn { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.backend-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
+.backend-pick select { padding: 2px 6px; border-radius: 8px; border: 1px solid currentColor; background: #3b2819; color: inherit; font: inherit; }
 .trainer-on::before { content: "● "; color: #8fcf8f; }
 .course-trip { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--sea); color: var(--accent-ink);
   font-size: 0.75rem; font-weight: 400; white-space: nowrap; }
