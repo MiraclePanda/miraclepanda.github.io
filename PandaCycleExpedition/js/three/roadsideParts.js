@@ -1,14 +1,16 @@
 // 道ばたの置き物の描画: 電柱と電線・カーブミラー・標識(速度・カーブの警戒・青い案内)。
-// 配置は roadsideLayout.js(純粋な計算)が決め、ここは毎フレーム、ライダーの前後にあるものだけを
-// インスタンスのプールに並べ直す(ライダーの位置を原点にした座標。realRoadScene の置き物と同じやり方)。
+// 配置は roadsideLayout.js(純粋な計算)が決め、ここはライダーが REBUILD_M 進むごとに、前後にあるものだけを
+// インスタンスのプールに並べ直す(並べ直した所を原点にした座標。realRoadScene の置き物と同じやり方)。
+// 並べ直すまでに進む分だけ、前後の範囲を広くとっておく。
 // 青い案内標識だけは文字が1枚ずつ違うので、読み込み時に1枚ずつメッシュを作り、近い物だけ見せる。
 
 import THREE from './three.js';
 import { makePool, pushInstance, pushInstanceYawPitch, commitPool } from './sceneKit.js';
 import { firstIndexFrom, wireSagM } from './roadsideLayout.js';
 
-const BEHIND_M = 40;
-const AHEAD_M = 360;
+const REBUILD_M = 20;
+const BEHIND_M = 40 + REBUILD_M;
+const AHEAD_M = 360 + REBUILD_M;
 const GUIDE_VIEW_M = 900;
 const GOAL_VIEW_M = 1500; // ゴールの門はこの手前から見える
 const POLE_H = 11;
@@ -258,7 +260,12 @@ export function createRoadside(scene, plan, at, { textures }) {
     pushInstance(back, x + P.hx * 0.025, P.z + y, z - P.hy * 0.025, size, size, 1, 0, yaw);
   }
 
+  let builtAt = null;
   function update(m0, ox, oy) {
+    for (const g of guides) g.grp.visible = g.m > m0 - 60 && g.m < m0 + GUIDE_VIEW_M;
+    if (goal) goal.grp.visible = goal.m < m0 + GOAL_VIEW_M; // 着いた後も見えたまま
+    if (builtAt !== null && Math.abs(m0 - builtAt) < REBUILD_M) return;
+    builtAt = m0;
     const from = m0 - BEHIND_M;
     const to = m0 + AHEAD_M;
     // 電柱と電線
@@ -321,8 +328,6 @@ export function createRoadside(scene, plan, at, { textures }) {
       commitPool(p);
       p.mesh.position.set(ox, 0, -oy);
     }
-    for (const g of guides) g.grp.visible = g.m > m0 - 60 && g.m < m0 + GUIDE_VIEW_M;
-    if (goal) goal.grp.visible = goal.m < m0 + GOAL_VIEW_M; // 着いた後も見えたまま
   }
 
   /** 電柱の根もと(世界の座標。z は北 = 負)と、電線をかける点を返す。out には電柱の所の道の向きが入る。 */

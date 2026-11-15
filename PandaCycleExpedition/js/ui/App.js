@@ -48,11 +48,14 @@ export function App() {
   const segment = segmentId && isSegmentLoaded(segmentId) ? getSegment(segmentId) : null;
 
   if (loading) return h('div', { className: 'page' }, h('p', null, '旅の記録を読み込み中...'));
-  if (segmentId && !segment) {
-    return h('div', { className: 'page' },
-      h('p', null, segLoad.error ? `${segLoad.error}。通信できる所でもう一度読み込んでください。` : '道のデータを読み込み中...'),
-      segLoad.error && h('button', { onClick: () => setSegLoad((s) => ({ ...s, error: null, n: s.n + 1 })) }, 'もう一度読み込む'));
+  // 道のデータを読めないとき(通信できない・区間が無くなった)も、ホームは出す: 別のコースの旅への切り替えと、
+  // この旅の書き出しはできるようにする(走ることだけができない)
+  if (segmentId && !segment && !segLoad.error) {
+    return h('div', { className: 'page' }, h('p', null, '道のデータを読み込み中...'));
   }
+  const segmentError = segmentId && !segment
+    ? { message: segLoad.error, retry: () => setSegLoad((s) => ({ ...s, error: null, n: s.n + 1 })) }
+    : null;
 
   if (screen.name === 'ride' && trip && segment) {
     return h(RideScreen, {
@@ -69,12 +72,12 @@ export function App() {
   if (screen.name === 'dayEnd' && trip && segment) {
     return h(DayEndScreen, {
       trip, segment, store, reason: screen.reason,
-      onDone: (t) => { setTrip(t); setScreen({ name: 'home' }); },
+      onDone: (t, message) => { setTrip(t); if (message) setNotice(message); setScreen({ name: 'home' }); },
       onBackToRide: () => { setRideKey((k) => k + 1); setScreen({ name: 'ride', demo: screen.demo }); },
     });
   }
   return h(HomeScreen, {
-    trip, segment, store, persistent, notice, client: clientRef.current,
+    trip, segment, segmentError, store, persistent, notice, client: clientRef.current,
     onTripChange: (t) => { setTrip(t); setNotice(null); },
     onRide: (demo) => { setRideKey((k) => k + 1); setScreen({ name: 'ride', demo }); },
   });

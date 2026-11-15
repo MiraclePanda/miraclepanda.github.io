@@ -3,6 +3,13 @@
 // ファイルには形式名とスキーマのバージョンを入れ、読み込み時は migrateTrip() で今の形式にそろえて確かめる。
 
 import { migrateTrip } from './tripState.js';
+import { SEGMENTS } from '../data/catalog.js';
+
+const REVERSE_SUFFIX = '~rev'; // js/trip/network.js と同じ(storage から trip へは依存しない)
+/** 区間 id(逆向きも可)が今のアプリの区間一覧にあるか。 */
+export function knownSegment(id, segments = SEGMENTS) {
+  return typeof id === 'string' && !!segments[id.endsWith(REVERSE_SUFFIX) ? id.slice(0, -REVERSE_SUFFIX.length) : id];
+}
 
 export const FILE_FORMAT = 'PandaCycleExpedition-trip';
 
@@ -28,7 +35,12 @@ export function parseTripFile(text) {
     return { ok: false, error: 'JSON として読めないファイルです。' };
   }
   if (!obj || obj.format !== FILE_FORMAT) return { ok: false, error: 'PandaCycleExpedition の旅のファイルではありません。' };
-  return migrateTrip(obj.trip);
+  const r = migrateTrip(obj.trip);
+  if (!r.ok) return r;
+  // 区間を作り直して id が変わった・別の版で作られた旅は、走れないまま読み込まない
+  const unknown = [r.trip.position.segmentId, ...r.trip.legs.map((l) => l.segmentId)].find((id) => !knownSegment(id));
+  if (unknown) return { ok: false, error: `このアプリには無い区間(${unknown})を走っている旅です。アプリを更新してください。` };
+  return r;
 }
 
 /** ファイル名(例: expedition-day3-2026-11-03.json)。 */
@@ -51,10 +63,16 @@ export function downloadTrip(trip) {
 
 /**
  * 選ばれたファイル(<input type="file"> の File)を読み、TripStore に 'import' として保存する。
- * @returns {Promise<{ok:true, trip:object} | {ok:false, error:string}>}
+ * confirm(trip) が false を返したら保存しない(今の旅を置き換える前に確かめる)。
+ * @param {(trip:object)=>boolean|Promise<boolean>} [confirm]
+ * @returns {Promise<{ok:true, trip:object} | {ok:false, error:string, cancelled?:boolean}>}
  */
-export async function importTripFile(file, store) {
+export async function importTripFile(file, store, confirm = () => true) {
   const r = parseTripFile(await file.text());
-  if (r.ok) await store.save(r.trip, 'import');
-  return r;
+  if (!r.ok) return r;
+  if (!(await confirm(r.trip))) return { ok: false, cancelled: true, error: '読み込みをやめました。' };
+  // 読み込んだ旅をいちばん新しい旅にする(前の世代は残るので「前の保存に戻す」で戻せる)
+  const t = { ...r.trip, updatedAt: Date.now() };
+  await store.save(t, 'import');
+  return { ok: true, trip: t };
 }

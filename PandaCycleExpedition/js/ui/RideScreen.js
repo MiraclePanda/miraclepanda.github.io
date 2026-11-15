@@ -5,60 +5,54 @@
 // 体力・満腹度は表示と旅の判断だけ。トレーナーへは PhysicsEngine#trainerGradePercent()(荷物・路面・風の上乗せ込み)。
 
 import { h, useState, useEffect, useRef } from './h.js';
-import { PhysicsEngine } from '../physics/physicsEngine.js';
-import { packWeightKg, surfaceOf } from '../physics/surfaces.js';
-import { createSegmentRoute, nextPlace, tunnelAtM } from '../physics/segmentRoute.js';
-import { startRide, updateRide, passTripTime, fmtClock, chooseNextSegment, addRideEvent, addRideSample } from '../storage/tripState.js';
-import { routesFrom, segmentSummary, nodeName, cameFromSegmentId, loadSegment } from '../trip/network.js';
-import { soaked } from '../trip/gear.js';
-import { visitSight, stampFood, SIGHT_VISIT_MINUTES } from '../trip/stamps.js';
-import { AutoSaver } from '../storage/autosave.js';
-import { stepBody, checkFailure, satietyLabel, sustainableWatts, BODY } from '../trip/body.js';
-import {
-  forecastDay, weatherAt, WEATHER_LABELS, planEncounters, applyEncounter, eatMeal, eatSnack, canAfford, failDay, SNACK,
-} from '../trip/dayEvents.js';
-import { planCompanion, CompanionTalk, talkCeilingW, recordCompanion, recordCompanionMet } from '../trip/companion.js';
+import { RideSession } from '../trip/rideSession.js';
+import { segmentSummary, nodeName, loadSegment } from '../trip/network.js';
+import { SIGHT_VISIT_MINUTES } from '../trip/stamps.js';
+import { sustainableWatts, satietyLabel } from '../trip/body.js';
+import { canAfford, SNACK } from '../trip/dayEvents.js';
 import { createSeaRoadScene } from '../three/seaRoadScene.js';
 import { createRealRoadScene } from '../three/realRoadScene.js';
-import { createWebGPURenderer } from '../three/gpuBackend.js';
-import { createSeason, seasonDayOfYear } from '../trip/season.js';
-import { seasonOfDay, recentTaleIds } from '../trip/encounters.js';
+import { sceneCanvas, sharedWebGPURenderer } from '../three/gpuBackend.js';
+import { createSeason } from '../trip/season.js';
 import { loadScenery, loadPanorama } from '../three/sceneryData.js';
 import { RideMap } from './RideMap.js';
 import { nextCameraView } from '../three/cameraViews.js';
 import { WakeLockManager } from '../utils/wakeLock.js';
 import {
   loadRenderQuality, saveRenderQuality, RENDER_QUALITY_VALUES, loadShowRideMap, saveShowRideMap,
-  loadCameraView, saveCameraView, loadSoundOn, saveSoundOn,
+  loadCameraView, saveCameraView, loadSoundOn, saveSoundOn, loadAutoQuality, saveAutoQuality,
 } from '../storage/prefs.js';
+import { AutoSaver } from '../storage/autosave.js';
+import { fmtClock } from '../storage/tripState.js';
 import { soundMix } from '../utils/soundMix.js';
 import { createSoundscape } from '../utils/soundscape.js';
 
 const TOAST_MS = 6000;
 const QUALITY_LABELS = { auto: '自動', ultra: '最高', high: '高', medium: '中', low: '低' };
-/** 地点の手前この距離(m)で、店・宿の案内を出す。 */
-const PROMPT_AHEAD_M = 80;
-
-/** デモ(トレーナーなし)のパワー: 坂で少し踏み、下りで休む。 */
-function demoPower(grade) {
-  return Math.min(320, Math.max(60, 150 + grade * 14));
-}
+/** タブが裏にあって描画が止まっている間も、旅をこの間隔(ms)で進める。 */
+const HIDDEN_TICK_MS = 250;
+/** URL に ?perf=1 をつけたときだけ、描画の重さの計測を出す。 */
+const SHOW_PERF = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('perf') === '1';
+  } catch {
+    return false;
+  }
+})();
 
 export function RideScreen({ trip: initialTrip, segment, store, client, demo, onEnd }) {
+  const stageRef = useRef(null);
   const canvasRef = useRef(null);
-  const tripRef = useRef(null);
-  const runningRef = useRef(true);
-  const powerRef = useRef(0);
-  const cadenceRef = useRef(0);
-  const promptRef = useRef(null);
-  const endedRef = useRef(false);
+  const sessionRef = useRef(null);
   const [hud, setHud] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [prompt, setPrompt] = useState(null);
   const [paused, setPaused] = useState(false);
   const [warning, setWarning] = useState(null);
+  const [saveError, setSaveError] = useState(null);
+  const [offline, setOffline] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [junction, setJunction] = useState(null);
-  const junctionRef = useRef(null);
   const ctxRef = useRef(null);
   const sceneRef = useRef(null);
   const [qualityMode, setQualityMode] = useState(loadRenderQuality);
@@ -74,6 +68,7 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
   const mapApiRef = useRef(null);
   const [soundOn, setSoundOn] = useState(loadSoundOn);
   const soundRef = useRef(null);
+  const [perf, setPerf] = useState(null);
 
   function toast(text) {
     const id = Math.random();
@@ -81,48 +76,14 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), TOAST_MS);
   }
 
-  function showPrompt(p) {
-    promptRef.current = p;
-    setPrompt(p);
-  }
-
   useEffect(() => {
-    // ---- 準備: 走行中の記録を続ける(落ちた後の再開)か、その日のライドを始める ----
-    let trip = startRide(initialTrip);
-    tripRef.current = trip;
-    const ride = trip.ride;
-    const route = createSegmentRoute(segment, trip.position.segmentM - ride.distanceM);
-    const physics = new PhysicsEngine({
-      riderWeightKg: trip.rider.weightKg,
-      bikeWeightKg: trip.bike.weightKg,
-      packWeightKg: packWeightKg(trip.bike.pack),
-      route,
-    });
-    physics.distanceM = ride.distanceM;
-    physics.elevationGainM = ride.elevationGainM;
-    let rideSeconds = ride.rideSeconds;
-    const forecast = forecastDay(trip.tripId, trip.day);
-    // 道ばたの出会いは、その日の季節(景色と同じ季節の設定)と最近の日誌に出た話も見て選ぶ
-    const encounters = planEncounters(segment, trip.tripId, trip.day, {
-      season: seasonOfDay(seasonDayOfYear(trip.settings.season)), recentIds: recentTaleIds(trip),
-    });
+    // ---- 準備: 1日の進行(走行中の記録があれば続きから) ----
+    const session = new RideSession({ trip: initialTrip, segment, demo });
+    sessionRef.current = session;
     const seaSide = !!segment.seaSide && segment.seaSide !== 'none';
-    let encIdx = encounters.findIndex((e) => e.atM > trip.position.segmentM);
-    if (encIdx < 0) encIdx = encounters.length;
-    const places = (segment.places ?? []).filter((p) => p.kind !== 'encounter');
-    let placeIdx = places.findIndex((p) => p.atM - PROMPT_AHEAD_M > trip.position.segmentM);
-    if (placeIdx < 0) placeIdx = places.length;
-    // 道連れ: しばらく並走して話してくれる(会話できる楽なペースの目安。表示だけ)
-    const companionPlan = planCompanion(segment, trip, trip.position.segmentM);
-    const talk = companionPlan ? new CompanionTalk({ plan: companionPlan, trip }) : null;
-    const allPlaces = segment.places ?? [];
-    let lastWeather = null;
-    let warnedHungry = trip.rider.satiety < BODY.HUNGRY_BELOW;
-    let inTunnel = null;
-    let lastSurface = null;
+    let ended = false;
 
     // 走行中の音(ファイルを使わずに作る)。出発のボタンを押した後なので、そのまま鳴らせる
-    const season = seasonOfDay(seasonDayOfYear(trip.settings.season));
     let sound = null;
     try {
       sound = createSoundscape({ enabled: loadSoundOn() });
@@ -133,282 +94,196 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     soundRef.current = sound;
     let lastSound = 0;
 
-    const saver = new AutoSaver({ store, getTrip: () => tripRef.current });
+    const saver = new AutoSaver({ store, getTrip: () => session.trip });
     saver.start();
     const wake = new WakeLockManager();
     wake.enable().catch(() => {});
 
     // 景色データ(国土地理院の地形・建物)を読んでから 3D を作る。読めなければ簡易の海沿いの景色にする。
-    // 読み込みの間も走行・記録は進む(3D が出ていないだけ)。
+    // 読み込みの間も走行・記録は進む(3D が出ていないだけ)。シェーダーの組み立てまで済ませてから出す
     let scene = null;
     let alive = true;
     Promise.all([loadScenery(segment), loadPanorama()]).then(async ([sc, panorama]) => {
       if (!alive) return;
       // 実在の景色は、WebGPU を使える端末なら WebGPU で描く(使えなければ null → WebGL)
-      const gpuRenderer = sc ? await createWebGPURenderer(canvasRef.current) : null;
-      if (!alive) {
-        gpuRenderer?.dispose();
-        return;
-      }
+      const gpuRenderer = sc ? await sharedWebGPURenderer() : null;
+      if (!alive) return;
       setGpuBackend(!!gpuRenderer);
-      setScenery(sc);
-      const opts = { qualityMode: loadRenderQuality(), onQualityChange: setActiveTier, cameraView: loadCameraView() };
+      // 景色の canvas と描画の土台は走行画面を作り直しても同じものを使う(分かれ道で次の区間に入るたびに
+      // WebGL の文脈・WebGPU の機器を作り直して止まらないように)。大きさを測れるよう、作る前に枠へ入れる
+      const canvas = gpuRenderer ? gpuRenderer.domElement : sceneCanvas('webgl');
+      canvasRef.current = canvas;
+      stageRef.current?.prepend(canvas);
+      const opts = {
+        qualityMode: loadRenderQuality(), onQualityChange: setActiveTier, cameraView: loadCameraView(),
+        // 自動調整が落ち着いた段階をこの端末で覚え、次の区間・次の走行はそこから始める
+        autoStart: loadAutoQuality(), onAutoSettle: saveAutoQuality,
+      };
       try {
         // 景色の季節(既定は実際の今日の日付)。区間の原点の経緯度で桜・紅葉の進み具合と日の出入りを決める
-        const season = sc ? createSeason({ mode: tripRef.current.settings.season, latDeg: sc.origin[1], lonDeg: sc.origin[0] }) : null;
-        scene = sc ? createRealRoadScene(canvasRef.current, segment, sc, { ...opts, panorama, season, renderer: gpuRenderer }) : createSeaRoadScene(canvasRef.current, segment, opts);
+        const season = sc ? createSeason({ mode: session.trip.settings.season, latDeg: sc.origin[1], lonDeg: sc.origin[0] }) : null;
+        const sc3 = sc
+          ? createRealRoadScene(canvas, segment, sc, { ...opts, panorama, season, renderer: gpuRenderer, startM: session.trip.position.segmentM })
+          : createSeaRoadScene(canvas, segment, opts);
+        await sc3.prepare?.();
+        if (!alive) { sc3.dispose(); return; }
+        scene = sc3;
         sceneRef.current = scene;
       } catch (e) {
         setWarning(`3D を表示できません(${e.message})。走行と記録は続けられます。`);
       }
+      setScenery(sc);
     });
     const onResize = () => scene?.resize();
     window.addEventListener('resize', onResize);
     // 景色の枠は上下の帯の高さで変わる(帯の折り返しなど)ので、枠の大きさの変化でも描き直す
     const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(onResize) : null;
-    ro?.observe(canvasRef.current.parentElement);
+    ro?.observe(stageRef.current);
 
     // ---- トレーナー ----
     const onBike = (ev) => {
       const d = ev.detail;
-      if (d.instPowerW !== null && d.instPowerW !== undefined) powerRef.current = d.instPowerW;
-      if (d.instCadenceRpm !== null && d.instCadenceRpm !== undefined) cadenceRef.current = d.instCadenceRpm;
+      session.setTrainerData({ powerW: d.instPowerW ?? NaN, cadenceRpm: d.instCadenceRpm ?? NaN });
     };
     const onDisc = () => {
-      runningRef.current = false;
+      // パワーを 0 にして止まり、つなぎ直すまで走り出せない(最後のパワーのまま進まないように)
+      session.trainerLost();
       setPaused(true);
-      setWarning('トレーナーとの接続が切れました。ホームに戻って接続し直してください(ここまでの旅は保存されています)。');
-      saver.saveNow('event');
+      setOffline(true);
+      handle(session.drainEvents());
     };
     if (!demo) {
       client.addEventListener('bike-data', onBike);
       client.addEventListener('disconnected', onDisc);
-      client.beginSession().catch((e) => setWarning(e.message));
+      if (!client.isConnected) onDisc();
+      else client.beginSession().catch((e) => setWarning(e.message));
+    }
+
+    // ---- 出来事の処理(表示・保存・トレーナー) ----
+    function handle(events) {
+      for (const e of events) {
+        if (e.type === 'toast') toast(e.text);
+        else if (e.type === 'prompt') setPrompt(e.place);
+        else if (e.type === 'save') saver.saveNow(e.kind);
+        else if (e.type === 'junction') {
+          // 選んだらすぐ走り出せるように、次の区間のデータを先に読んでおく
+          for (const r of e.routes) loadSegment(r.segmentId).catch(() => {});
+          setJunction(e.routes);
+          setPaused(true);
+          if (!demo) client.pause().catch(() => {});
+        } else if (e.type === 'finish') finish(e.reason);
+      }
     }
 
     // ---- 1日を終える ----
     async function finish(reason) {
-      if (endedRef.current) return;
-      endedRef.current = true;
-      runningRef.current = false;
-      let t = tripRef.current;
-      if (['hungerKnock', 'exhausted', 'sunset'].includes(reason)) {
-        t = failDay(t, segment, reason);
-        tripRef.current = t;
-        await store.save(t, 'dayEnd').catch(() => {});
-      } else {
-        await saver.saveNow('rideEnd');
-      }
+      if (ended) return;
+      ended = true;
+      const { trip: t, failed } = session.endDay(reason);
+      if (failed) await store.save(t, 'dayEnd').catch(() => {});
+      else await saver.saveNow('rideEnd');
       onEnd(t, reason);
     }
 
     // 走行中の操作(ボタン)から使う
     ctxRef.current = {
       finish,
-      eat(place, item) {
-        const r = stampFood(eatMeal(tripRef.current, place, item), place, item);
-        tripRef.current = r.trip;
-        physics.speedMps = 0; // 止まって食べた
-        toast(`${place.name}で${item.name}を食べた(${item.yen.toLocaleString()} 円、旅の時間 30 分)${r.added ? '。スタンプ帳に記録' : ''}`);
-        saver.saveNow('event');
-      },
-      visit(place) {
-        const r = visitSight(tripRef.current, place);
-        tripRef.current = r.trip;
-        physics.speedMps = 0;
-        toast(`${place.name}に立ち寄って写真を撮った(旅の時間 ${SIGHT_VISIT_MINUTES} 分)${r.added ? '。スタンプ帳に記録' : ''}`);
-        saver.saveNow('event');
-      },
-      snack() {
-        const before = tripRef.current;
-        tripRef.current = eatSnack(before);
-        if (tripRef.current === before) toast('補給食が残っていません。');
-        else { toast('補給食を食べた(満腹度 +12)'); saver.saveNow('event'); }
-      },
+      eat(place, item) { session.eat(place, item); handle(session.drainEvents()); },
+      visit(place) { session.visit(place, SIGHT_VISIT_MINUTES); handle(session.drainEvents()); },
+      snack() { session.snack(); handle(session.drainEvents()); },
+      dismissPrompt() { session.dismissPrompt(); handle(session.drainEvents()); },
       /** 分かれ道で次の区間を選ぶ: 走行の記録はそのまま、新しい区間で走行画面を作り直す。 */
       async continueOn(segmentId) {
-        if (endedRef.current) return;
-        endedRef.current = true;
-        const t = chooseNextSegment(tripRef.current, segmentId);
-        tripRef.current = t;
+        if (ended) return;
+        ended = true;
+        const t = session.continueOn(segmentId);
         await store.save(t, 'event').catch(() => {});
         onEnd(t, 'continue');
       },
       togglePause() {
-        if (junctionRef.current) return;
-        runningRef.current = !runningRef.current;
-        setPaused(!runningRef.current);
-        if (!demo) (runningRef.current ? client.resume() : client.pause()).catch(() => {});
-        if (!runningRef.current) saver.saveNow('event');
+        const on = !session.running;
+        if (!session.setRunning(on)) return;
+        setPaused(!on);
+        if (!demo) (on ? client.resume() : client.pause()).catch(() => {});
+        handle(session.drainEvents());
+      },
+      /** 走行画面のまま、トレーナーにつなぎ直す(ボタンを押したときだけ。機器の選択が出る)。 */
+      async reconnect() {
+        setReconnecting(true);
+        try {
+          await client.connect();
+          session.trainerRestored();
+          setOffline(false);
+          setWarning(null);
+          client.pause().catch(() => {}); // 「走り出す」を押すまでは休憩のまま
+        } catch (e) {
+          setWarning(`つなぎ直せませんでした: ${e.message}`);
+        } finally {
+          setReconnecting(false);
+        }
       },
     };
 
-    // ---- 毎フレーム ----
-    let last = performance.now();
+    // ---- 時間を進める: 描画のタイミングで進め、タブが裏にある間はタイマーで進める ----
+    let lastSim = performance.now();
+    function simulate(now) {
+      const events = session.advance((now - lastSim) / 1000);
+      lastSim = now;
+      if (!demo && client.isConnected && session.running) {
+        if (client.controlMode === 'erg') client.setErgTarget(session.ergTargetWatts());
+        else client.setGrade(session.trainerGradePercent());
+      }
+      handle(events);
+    }
+    const hiddenTimer = setInterval(() => {
+      if (document.hidden) simulate(performance.now());
+    }, HIDDEN_TICK_MS);
+    // タブを閉じる・裏に回るときは、その時点を保存する(30 秒ごとの自動保存を待たない)
+    const onHide = () => { if (document.visibilityState === 'hidden' && !ended) saver.saveNow('event'); };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', onHide);
+
     let lastHud = 0;
     let lastMap = 0;
     let raf = 0;
     function frame(now) {
       raf = requestAnimationFrame(frame);
-      const dt = Math.min((now - last) / 1000, 0.25);
-      last = now;
-      let t = tripRef.current;
-      const scale = t.settings.timeScale;
-      const tripMinutes = (dt * scale) / 60;
-      const w = weatherAt(forecast, t.clockMinutes);
-      let power = 0;
-      if (runningRef.current && !endedRef.current) {
-        power = demo ? demoPower(physics.currentGradePercent) : powerRef.current * (t.settings.powerScale ?? 1);
-        // デモでは、道連れと並走中は話せるペースで走る
-        if (demo && talk?.phase === 'together') power = Math.min(power, talkCeilingW(t.rider.stamina, t.rider.ftpW));
-        if (demo) cadenceRef.current = 85;
-        physics.setCurrentPower(power);
-        physics.setConditions(w);
-        const snap = physics.step(dt);
-        rideSeconds += dt;
-        t = updateRide(t, { distanceM: snap.distanceM, rideSeconds, elevationGainM: snap.elevationGainM });
-        // 走行記録(TCX 用、5 走行秒ごと)。デモのパワーは作り物なので残さない
-        if (!demo) t = addRideSample(t, { powerW: power, cadenceRpm: cadenceRef.current });
-        t = { ...t, rider: stepBody(t.rider, { tripMinutes, powerW: power, ftpW: t.rider.ftpW, soaked: soaked(t, w.kind) }) };
-        if (!demo && client.isConnected) {
-          if (client.controlMode === 'erg') client.setErgTarget(physics.computeErgTargetWatts() / (t.settings.powerScale ?? 1));
-          else client.setGrade(physics.trainerGradePercent());
-        }
-      } else if (!endedRef.current) {
-        // 一時停止 = 休憩。旅の時間は進み、体力が少し戻る
-        t = passTripTime(t, tripMinutes);
-        t = { ...t, rider: stepBody(t.rider, { tripMinutes, powerW: 0, ftpW: t.rider.ftpW, resting: true }) };
-      }
-      tripRef.current = t;
-      const segM = t.position.segmentM;
-
-      // 出来事
-      if (lastWeather !== w.kind) {
-        if (lastWeather !== null) {
-          toast((w.kind === 'squall' ? 'スコールが来た!強い向かい風と雨。' : `天気が変わった: ${WEATHER_LABELS[w.kind]}`)
-            + (soaked(t, w.kind) ? '雨具がないので体が冷えて、疲れやすい。' : ''));
-        }
-        lastWeather = w.kind;
-      }
-      while (encIdx < encounters.length && encounters[encIdx].atM <= segM) {
-        const e = encounters[encIdx++];
-        tripRef.current = t = applyEncounter(t, e);
-        toast(e.gift ? `${e.text}(${e.gift.name}をもらった)` : e.text);
-        saver.saveNow('event');
-      }
-      while (placeIdx < places.length && places[placeIdx].atM - PROMPT_AHEAD_M <= segM) {
-        const p = places[placeIdx++];
-        if (p.kind === 'food' || p.kind === 'shop' || p.kind === 'lodging' || p.kind === 'sight') showPrompt(p);
-        else if (p.text) toast(p.text);
-        else if (p.kind === 'town') toast(`${p.name}に入った。`);
-      }
-      if (promptRef.current && segM > promptRef.current.atM + 150) showPrompt(null);
-      const tunnel = tunnelAtM(segment, segM);
-      if (tunnel && tunnel !== inTunnel) toast(`${tunnel.name}に入った。`);
-      inTunnel = tunnel;
-      // 路面が変わったら知らせる(最初の1回は出発地点の路面なので、未舗装のときだけ)
-      const surf = physics.currentSurface;
-      if (surf !== lastSurface) {
-        const sv = surfaceOf(surf);
-        if (lastSurface !== null || sv.unpaved) {
-          toast(sv.unpaved ? `ここから${sv.label}。${physics.wet ? '雨でぬかるんで、ペダルが重い。' : 'タイヤが砂利を噛む音。'}` : `舗装路に戻った。`);
-        }
-        lastSurface = surf;
-      }
-      if (talk) {
-        const said = talk.step({
-          dtSec: dt, powerW: power, ceilingW: talkCeilingW(t.rider.stamina, t.rider.ftpW), segM,
-          moving: runningRef.current && !endedRef.current, weatherKind: w.kind, inTunnel: !!tunnel, places: allPlaces,
-        });
-        const c = talk.companion;
-        if (said.joined) toast(`${c.name}(${c.who})が隣に並んだ。`);
-        if (said.chapterDone !== undefined) tripRef.current = t = recordCompanion(t, c.id, said.chapterDone + 1);
-        if (said.left) {
-          t = recordCompanionMet(t, c.id);
-          tripRef.current = t = addRideEvent(t, 'encounters', {
-            id: `companion-${c.id}`, text: `${c.name}と ${(said.togetherM / 1000).toFixed(1)} km 一緒に走った`,
-          });
-          saver.saveNow('event');
-        }
-      }
-      if (!warnedHungry && t.rider.satiety < BODY.HUNGRY_BELOW) {
-        warnedHungry = true;
-        toast('お腹がすいてきた。補給食か、店で何か食べよう。');
-      }
-
-      if (!endedRef.current) {
-        const failure = checkFailure(t.rider, t.clockMinutes);
-        if (failure) finish(failure);
-        else if (!junctionRef.current && route.finished(physics.distanceM)) {
-          // 区間の終点 = 町の分かれ道。次の道があれば止まって選ぶ(選ぶまでは休憩と同じ扱い)
-          const routes = routesFrom(segment.to, cameFromSegmentId(t));
-          if (routes.length === 0) finish('arrived');
-          else {
-            // 選んだらすぐ走り出せるように、次の区間のデータを先に読んでおく
-            for (const r of routes) loadSegment(r.segmentId).catch(() => {});
-            junctionRef.current = routes;
-            setJunction(routes);
-            showPrompt(null);
-            runningRef.current = false;
-            setPaused(true);
-            physics.speedMps = 0;
-            if (!demo) client.pause().catch(() => {});
-            saver.saveNow('event');
-          }
-        }
-      }
-
+      simulate(now);
+      const v = session.view();
       scene?.draw({
-        segmentM: segM, speedKmh: physics.speedMps * 3.6, gradePercent: physics.currentGradePercent,
-        weatherKind: w.kind, clockMinutes: t.clockMinutes, cadenceRpm: cadenceRef.current,
+        segmentM: v.segM, speedKmh: v.speedKmh, gradePercent: v.grade,
+        weatherKind: v.weatherKind, clockMinutes: v.clock, cadenceRpm: v.cadence,
       });
-
       if (sound && now - lastSound > 100) {
         lastSound = now;
-        const speedKmh = runningRef.current ? physics.speedMps * 3.6 : 0;
+        const speedKmh = session.running ? v.speedKmh : 0;
         sound.update(soundMix({
-          speedKmh, unpaved: surfaceOf(physics.currentSurface).unpaved, seaSide, inTunnel: !!tunnel,
-          weatherKind: w.kind, season, clockMinutes: t.clockMinutes,
+          speedKmh, unpaved: v.unpaved, seaSide, inTunnel: v.inTunnel, weatherKind: v.weatherKind, season: session.season, clockMinutes: v.clock,
         }), speedKmh);
       }
-
       if (now - lastMap > 500) {
         lastMap = now;
-        mapApiRef.current?.draw(segM);
+        mapApiRef.current?.draw(v.segM);
       }
-
       if (now - lastHud > 250) {
         lastHud = now;
-        setHud({
-          speedKmh: physics.speedMps * 3.6,
-          powerW: power,
-          cadence: cadenceRef.current,
-          grade: physics.currentGradePercent,
-          trainerGrade: physics.trainerGradePercent(),
-          surface: surfaceOf(physics.currentSurface).label,
-          todayKm: physics.distanceM / 1000,
-          remainKm: route.remainingM(physics.distanceM) / 1000,
-          clock: t.clockMinutes,
-          weather: WEATHER_LABELS[w.kind],
-          stamina: t.rider.stamina,
-          satiety: t.rider.satiety,
-          yen: t.wallet.yen,
-          food: t.bike.pack.food ?? 0,
-          next: nextPlace(segment, segM + 1, ['town', 'food', 'shop', 'lodging']),
-          segM,
-          talk: talk?.view() ?? null,
-          talkCeilingW: talkCeilingW(t.rider.stamina, t.rider.ftpW),
-        });
+        setHud(v);
+        // 保存に失敗し続けていたら走行中に知らせる(書き出しを勧める)
+        setSaveError(saver.lastError ? saver.lastError.message ?? String(saver.lastError) : null);
+        if (SHOW_PERF) setPerf(scene?.stats?.() ?? null);
       }
     }
     raf = requestAnimationFrame(frame);
 
     return () => {
       cancelAnimationFrame(raf);
+      clearInterval(hiddenTimer);
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', onHide);
       window.removeEventListener('resize', onResize);
       ro?.disconnect();
       saver.stop();
-      wake.disable().catch(() => {});
+      wake.destroy();
       if (!demo) {
         client.removeEventListener('bike-data', onBike);
         client.removeEventListener('disconnected', onDisc);
@@ -417,6 +292,7 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
       alive = false;
       scene?.dispose();
       sceneRef.current = null;
+      canvasRef.current?.remove();
       sound?.dispose();
       soundRef.current = null;
     };
@@ -463,21 +339,28 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
   }
 
   const ctx = ctxRef.current;
-  const t = tripRef.current;
+  const t = sessionRef.current?.trip;
+  // 航空写真を地面に貼るのは 最高・高 の実在の景色だけ(そのときだけ出典に出す)
+  const photoOn = !!scenery && (activeTier === 'high' || activeTier === 'ultra');
   // 上の帯(旅の計器)・景色・下の帯(旅の道具)の3段。帯には景色を重ねない
   return h('div', { className: `ride${hudOpen ? ' hud-open' : ''}${toolsOpen ? ' tools-open' : ''}` },
     h(Hud, {
       hud, ftpW: t?.rider.ftpW ?? 200, demo, day: t?.day ?? initialTrip.day, title: segment.name,
       onToggle: () => setHudOpen((v) => !v),
     }),
-    h('div', { className: 'ride-stage' },
-    h('canvas', { ref: canvasRef }),
+    // 景色の canvas は走行画面をまたいで使い回すので、mount 時にこの枠へ差し込む
+    h('div', { className: 'ride-stage', ref: stageRef },
     h('div', { className: 'toasts' },
+      offline && !demo && h('div', { className: 'toast warn' },
+        'トレーナーとの接続が切れました。止まって休憩しています(ここまでの旅は保存されています)。 ',
+        h('button', { onClick: () => ctx?.reconnect(), disabled: reconnecting }, reconnecting ? '接続中...' : 'つなぎ直す')),
       warning && h('div', { className: 'toast' }, warning),
-      paused && !warning && !junction && h('div', { className: 'toast' }, '休憩中(旅の時間は進み、体力が少しずつ戻ります)'),
+      saveError && h('div', { className: 'toast warn' }, `旅を保存できていません(${saveError})。ホームの「設定と記録」から書き出しておいてください。`),
+      paused && !warning && !offline && !junction && h('div', { className: 'toast' }, '休憩中(旅の時間は進み、体力が少しずつ戻ります)'),
       scenery === undefined && h('div', { className: 'toast' }, '景色を読み込み中…'),
       toasts.map((x) => h('div', { key: x.id, className: 'toast' }, x.text))),
     showMap && h(RideMap, { segment, scenery: scenery ?? null, apiRef: mapApiRef }),
+    perf && h(PerfPanel, { perf }),
     // 画面下の中央: 道連れの話(字幕のように)と、その下に店・宿・分かれ道の案内を重ならないように積む
     h('div', { className: 'ride-bottom' },
     hud?.talk && h(CompanionPanel, { talk: hud.talk, ceilingW: hud.talkCeilingW }),
@@ -488,14 +371,16 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
     }),
     prompt && t && h(PlacePrompt, {
       place: prompt, trip: t,
-      onEat: (item) => { ctx.eat(prompt, item); showPrompt(null); },
-      onVisit: () => { ctx.visit(prompt); showPrompt(null); },
-      onStay: () => { showPrompt(null); ctx.finish('stop'); },
-      onClose: () => showPrompt(null),
+      onEat: (item) => ctx.eat(prompt, item),
+      onVisit: () => ctx.visit(prompt),
+      onStay: () => { ctx.dismissPrompt(); ctx.finish('stop'); },
+      onClose: () => ctx.dismissPrompt(),
     })),
-    h('div', { className: 'attribution' }, scenery ? `${scenery.attribution}・地理院タイル(シームレス空中写真)` : (segment.attribution ?? ''))),
+    h('div', { className: 'attribution' }, scenery
+      ? `${scenery.attribution}${photoOn ? '・地理院タイル(シームレス空中写真)' : ''}`
+      : (segment.attribution ?? ''))),
     h('div', { className: 'ride-bar' },
-      h('button', { className: 'primary', onClick: () => ctx?.togglePause(), disabled: !!junction }, paused ? '走り出す' : '休憩する'),
+      h('button', { className: 'primary', onClick: () => ctx?.togglePause(), disabled: !!junction || (offline && !demo && paused) }, paused ? '走り出す' : '休憩する'),
       // スマホでたたんだ帯を広げる(広い画面では出さない)
       h('button', { className: 'ride-more', onClick: () => setToolsOpen((v) => !v), 'aria-expanded': toolsOpen },
         toolsOpen ? 'たたむ ▾' : 'ほかの操作 ▴'),
@@ -516,6 +401,14 @@ export function RideScreen({ trip: initialTrip, segment, store, client, demo, on
         // 最高で重すぎて自動で下げたときは「最高→高」のように実際の段階も出す
         : activeTier && activeTier !== qualityMode ? `${QUALITY_LABELS[qualityMode]}→${QUALITY_LABELS[activeTier]}`
         : QUALITY_LABELS[qualityMode]}${gpuBackend ? '・WebGPU' : ''}`))));
+}
+
+/** ?perf=1 のときの描画の重さ(1フレームの間隔・描画の処理時間・描画命令と三角形の数)。 */
+function PerfPanel({ perf }) {
+  const f = (x, d = 1) => (Number.isFinite(x) ? x.toFixed(d) : '-');
+  return h('div', { className: 'perf-panel' },
+    `${f(1000 / perf.frameMs, 0)} fps(${f(perf.frameMs)} ms)・描画の処理 ${f(perf.drawMs)} ms`,
+    h('br'), `描画命令 ${perf.calls}・三角形 ${(perf.triangles / 1e3).toFixed(0)} 千・${perf.tier}・画素 ×${f(perf.pixelRatio, 2)}・${perf.backend}`);
 }
 
 const VIEW_LABELS = { chase: '後ろ', fp: '目線', high: '上空' };

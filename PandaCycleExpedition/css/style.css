@@ -230,6 +230,14 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   background: rgba(251, 246, 234, 0.96); color: #2b2620; border-radius: 8px; padding: 8px 12px;
   border-left: 4px solid #c2552c; box-shadow: 0 2px 8px rgba(0,0,0,0.25);
 }
+/* 走れない・保存できていないなど、手を打ってほしい知らせ(ボタンを押せるように) */
+.toast.warn { background: #fff1e0; border-left-color: #b3261e; font-weight: 600; pointer-events: auto; }
+.toast.warn button { margin-left: 6px; padding: 4px 10px; }
+/* ?perf=1 のときの描画の重さ */
+.perf-panel {
+  position: absolute; left: 8px; bottom: 18px; padding: 4px 8px; border-radius: 6px; pointer-events: none;
+  background: rgba(0,0,0,0.6); color: #e8f4ea; font: 0.72rem/1.4 ui-monospace, monospace;
+}
 /* 店・宿・分かれ道の案内: 絵はがき */
 .prompt {
   position: absolute; left: 50%; transform: translateX(-50%); bottom: 64px; width: min(92vw, 540px);

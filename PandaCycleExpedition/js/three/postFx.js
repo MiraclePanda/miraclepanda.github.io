@@ -5,6 +5,8 @@
 //   2. 元の絵に重ね、彩度・コントラストを少し整え、画面の四隅をわずかに暗くする(周辺減光)
 //   3. 最後にトーンマッピング(renderer.toneMapping)と sRGB 変換をして画面へ出す
 // の順で仕上げる。画面外バッファは MSAA(4 サンプル)なので、直接描くときと同じく縁はなめらか。
+// 画素の倍率が高い(1.75 以上)ときは、画素が細かいぶん縁のぎざぎざは目立たないので 2 サンプルにする
+// (画面外バッファの大きさと書き込みの量がほぼ半分になる)。
 //
 // three.js の examples(EffectComposer 等)は素の 'three' を import していて importmap なしでは
 // 読めないため、three.js 本体だけで書いている。
@@ -88,6 +90,11 @@ void main() {
   #include <colorspace_fragment>
 }`;
 
+/** 画面外バッファの MSAA のサンプル数(画素の倍率から)。 */
+export function sceneSamples(pixelRatio) {
+  return pixelRatio >= 1.75 ? 2 : 4;
+}
+
 /**
  * @param {THREE.WebGLRenderer} renderer
  * @returns {{begin(enabled:boolean):void, end():void, dispose():void}}
@@ -127,11 +134,16 @@ export function createPostFx(renderer) {
     renderer.getDrawingBufferSize(size);
     const nw = Math.max(1, Math.floor(size.x));
     const nh = Math.max(1, Math.floor(size.y));
+    const samples = sceneSamples(renderer.getPixelRatio());
+    if (sceneRT && sceneRT.samples !== samples) {
+      sceneRT.dispose();
+      sceneRT = null;
+    }
     if (sceneRT && nw === w && nh === h) return;
     w = nw;
     h = nh;
     if (!sceneRT) {
-      sceneRT = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 4 });
+      sceneRT = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples });
       composite.uniforms.tScene.value = sceneRT.texture;
     } else {
       sceneRT.setSize(w, h);

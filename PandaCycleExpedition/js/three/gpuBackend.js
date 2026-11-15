@@ -57,3 +57,33 @@ export async function createWebGPURenderer(canvas) {
     return null;
   }
 }
+
+// ---- 走行画面をまたいで使い回す canvas と描画の土台 ----
+// 走行画面は区間ごと(分かれ道で次の区間へ進むたび)に作り直すが、canvas と描画の土台(WebGL の文脈・WebGPU の
+// 機器)は使い回す。作り直すと、そのたびに文脈・機器の準備で止まり、ブラウザによっては文脈の数の上限
+// (古いものから捨てられる)にも当たる。WebGPU と WebGL は同じ canvas では使えないので、canvas は方式ごとに分ける。
+
+const canvases = {};
+/** 方式('webgpu' | 'webgl')ごとの、使い回す景色の canvas。 */
+export function sceneCanvas(kind) {
+  canvases[kind] ??= document.createElement('canvas');
+  return canvases[kind];
+}
+
+let gpuRendererPromise = null;
+/**
+ * 使い回す WebGPURenderer(初期化済み)。WebGPU を使えなければ null。機器を失ったら次の呼び出しで作り直す。
+ * @returns {Promise<object|null>}
+ */
+export function sharedWebGPURenderer() {
+  gpuRendererPromise ??= createWebGPURenderer(sceneCanvas('webgpu')).then((r) => {
+    if (r) {
+      r.onDeviceLost = () => {
+        gpuRendererPromise = null;
+        delete canvases.webgpu;
+      };
+    }
+    return r;
+  });
+  return gpuRendererPromise;
+}
