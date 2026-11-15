@@ -24,6 +24,8 @@ import { trackForDay, downloadTrackTcx } from '../storage/tcx.js';
 import { courseProgress, courseMark, tripCourseId, tripsByCourse } from '../trip/courseProgress.js';
 import { travelerJournal, withCompanionsFrom, inheritTrip } from '../trip/journal.js';
 import { sharedPhotoStore } from '../storage/photoStore.js';
+import { loadGpuBackend, saveGpuBackend } from '../storage/prefs.js';
+import { hasWebGPU } from '../three/gpuBackend.js';
 
 const km = (m) => (m / 1000).toFixed(1);
 
@@ -115,10 +117,12 @@ export function HomeScreen({ trip, segment, segmentError, store, persistent, not
   const importInput = h('input', { type: 'file', accept: 'application/json,.json', ref: fileRef, style: { display: 'none' }, onChange: onImport });
   return h('div', { className: 'page' },
     h('div', { className: 'trainer-bar' },
-      h('b', null, 'トレーナー'),
-      conn
-        ? h('span', { className: 'trainer-on' }, `接続中: ${conn.name ?? '(名前なし)'}(${conn.mode === 'erg' ? 'ERG' : 'シミュレーション'}モード)`)
-        : h('button', { onClick: connect, disabled: busy }, busy ? '接続中...' : '接続する')),
+      h('span', { className: 'trainer-conn' },
+        h('b', null, 'トレーナー'),
+        conn
+          ? h('span', { className: 'trainer-on' }, `接続中: ${conn.name ?? '(名前なし)'}(${conn.mode === 'erg' ? 'ERG' : 'シミュレーション'}モード)`)
+          : h('button', { onClick: connect, disabled: busy }, busy ? '接続中...' : '接続する')),
+      h(BackendPicker)),
     h(HeroArt, { compact: true },
       h('p', { className: 'hero-kicker' }, '自分の脚だけで、日本を旅する'),
       h('h1', null, 'PandaCycleExpedition')),
@@ -147,6 +151,23 @@ export function HomeScreen({ trip, segment, segmentError, store, persistent, not
 }
 
 /** 旅の今いる区間のデータを読めないとき: 走れないことと、できること(再読み込み・書き出し・ほかのコース)を出す。 */
+/** 描画の方式(WebGL / WebGPU)の選択。端末ごとに覚え、次に走るときから使う。 */
+function BackendPicker() {
+  const [value, setValue] = useState(loadGpuBackend);
+  const gpu = hasWebGPU();
+  return h('label', { className: 'backend-pick', title: 'WebGPU を選んでも、使えない端末では WebGL で描きます' },
+    '描画の方式',
+    h('select', {
+      value,
+      onChange: (e) => {
+        saveGpuBackend(e.target.value);
+        setValue(e.target.value);
+      },
+    },
+    h('option', { value: 'webgl' }, 'WebGL(標準)'),
+    h('option', { value: 'webgpu' }, gpu ? 'WebGPU(試験的)' : 'WebGPU(この端末では使えません)')));
+}
+
 function SegmentMissingPanel({ trip, error }) {
   const known = !!getSegment(trip.position.segmentId);
   return h('div', { className: 'course-panel' },

@@ -22,6 +22,28 @@ export function saveRenderQuality(value, storage = globalThis.localStorage) {
   }
 }
 
+const GPU_BACKEND_KEY = 'pce_gpu_backend_v1';
+/** 描画の方式(ホームで選ぶ): 'webgl'(標準)/ 'webgpu'(試験的。使えない端末では WebGL で描く)。 */
+export const GPU_BACKEND_VALUES = ['webgl', 'webgpu'];
+
+export function loadGpuBackend(storage = globalThis.localStorage) {
+  try {
+    const value = storage?.getItem(GPU_BACKEND_KEY);
+    return GPU_BACKEND_VALUES.includes(value) ? value : 'webgl';
+  } catch {
+    return 'webgl';
+  }
+}
+
+export function saveGpuBackend(value, storage = globalThis.localStorage) {
+  if (!GPU_BACKEND_VALUES.includes(value)) return;
+  try {
+    storage?.setItem(GPU_BACKEND_KEY, value);
+  } catch {
+    // 保存できない環境では、その回だけの選択になる
+  }
+}
+
 const RIDE_MAP_KEY = 'pce_ride_map_v1';
 
 /** 走行画面の地図を出すか(既定は出す)。 */

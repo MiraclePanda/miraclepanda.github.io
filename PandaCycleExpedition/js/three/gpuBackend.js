@@ -1,9 +1,11 @@
 // 描画の方式(WebGPU / WebGL)を選ぶ。
 //
-// WebGPU を使える端末(多くのパソコン、Android 12 以上の一部)では WebGPU で描き、使えなければ今まで通り
-// WebGL で描く。WebGPU は描く物が多い場面(森の木、建物)で CPU の負担が軽い。
+// どちらで描くかはホームの「描画の方式」で選ぶ(prefs.js の loadGpuBackend。既定は WebGL)。
+// 前は WebGPU を使える端末では WebGPU で描いていたが、three.js の WebGPU 用の描き方は1つの物を描くたびの
+// CPU の手間が大きく(ヘッドレスで同じ景色を描いて CPU の時間が WebGL の約 4 倍)、Intel N100 のパソコンでは
+// WebGL のほうが約 1.5 倍速かった(2026-11-15、ユーザーの実機)。WebGPU を選んでも使えない端末では WebGL で描く。
 // ソフトウェアで動く代替の GPU(isFallbackAdapter)は遅いので選ばない。
-// URL の ?gpu=webgpu / ?gpu=webgl で固定できる(確認用)。?gpu=webgpu-gl は WebGPU 用の描き方(ノード・TSL)を
+// URL の ?gpu=webgpu / ?gpu=webgl はホームの選択より優先する(確認用)。?gpu=webgpu-gl は WebGPU 用の描き方(ノード・TSL)を
 // WebGL2 の上で動かす確認用(ヘッドレスのブラウザでは WebGPU の画面が出ないため)。
 import { loadThreeWebGPU } from './three.js';
 
@@ -62,6 +64,20 @@ export async function createWebGPURenderer(canvas) {
 // 走行画面は区間ごと(分かれ道で次の区間へ進むたび)に作り直すが、canvas と描画の土台(WebGL の文脈・WebGPU の
 // 機器)は使い回す。作り直すと、そのたびに文脈・機器の準備で止まり、ブラウザによっては文脈の数の上限
 // (古いものから捨てられる)にも当たる。WebGPU と WebGL は同じ canvas では使えないので、canvas は方式ごとに分ける。
+
+/**
+ * 走行画面で WebGPU を試すか。URL の ?gpu= があればそれ、無ければホームで選んだ方式 choice('webgl' | 'webgpu')。
+ */
+export function wantsWebGPU(choice) {
+  const forced = forcedBackend();
+  if (forced) return forced !== 'webgl';
+  return choice === 'webgpu';
+}
+
+/** この端末のブラウザに WebGPU があるか(ホームの選択欄の注意書き用。実際に使えるかは作ってみるまで分からない)。 */
+export function hasWebGPU() {
+  return typeof navigator !== 'undefined' && !!navigator.gpu;
+}
 
 const canvases = {};
 /** 方式('webgpu' | 'webgl')ごとの、使い回す景色の canvas。 */
